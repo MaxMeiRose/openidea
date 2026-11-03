@@ -1,0 +1,128 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import type { AgentEntry, AgentTask } from "@/bindings";
+import type { ToolCall } from "./conversation";
+
+const backend = vi.hoisted(() => ({ entries: [] as AgentEntry[] }));
+vi.mock("@/platform/ipc", async (original) => ({
+  ...(await original<typeof import("@/platform/ipc")>()),
+  commands: {
+    agentEntries: async () => ({ status: "ok", data: backend.entries }),
+    agentChanges: async () => ({ status: "ok", data: [] }),
+    vcsBranchInfo: async () => ({ status: "ok", data: { head: "main" } }),
+  },
+}));
+vi.mock("@tauri-apps/api/webview", () => ({
+  getCurrentWebview: () => ({ onDragDropEvent: () => Promise.resolve(() => {}) }),
+}));
+
+import { SessionEditor } from "./SessionEditor";
+import { useAgents } from "./store";
+
+const task: AgentTask = {
+  id: "tools",
+  title: "Tool test",
+  provider: "claude",
+  status: "running",
+  isolation: "local",
+  model: null,
+  cwd: "/project",
+  branch: null,
+  base: null,
+  baseCommit: null,
+  error: null,
+  createdMs: 0,
+  updatedMs: 0,
+  config: [],
+  commands: [],
+  usage: null,
+  queue: [],
+  capabilities: { fork: true, rollback: true, steer: true, images: true },
+};
+const tool = (id: string, name: string, title: string, status: ToolCall["status"] = "completed"): ToolCall => ({
+  type: "tool",
+  id,
+  name,
+  title,
+  kind: "read",
+  status,
+  locations: [],
+  output: `output ${id}`,
+  diffs: [],
+});
+const thought: AgentEntry = { type: "thought", text: "thinking" };
+
+beforeEach(() => {
+  backend.entries = [];
+  useAgents.setState({ tasks: new Map([[task.id, task]]), entries: new Map(), composers: new Map(), focus: null });
+});
+
+function openSession() {
+  return render(<SessionEditor input={{ kind: "agent-session", key: task.id, data: { task: task.id } }} />);
+}
+
+describe("tool call groups", () => {
+  it("starts collapsed, keeps calls and failures accessible, and leaves permissions visible", async () => {
+    backend.entries = [
+      thought,
+      tool("a", "Read", "Read a.ts"),
+      tool("other", "Other", "Other tool"),
+      tool("b", "Read", "Read b.ts", "failed"),
+      { type: "permission", id: 1, title: "Permission needed", options: [], chosen: null },
+      tool("c", "Read", "Read c.ts"),
+    ];
+    openSession();
+    const group = (await screen.findByText("Read", { exact: true })).closest("details")!;
+    expect(group).not.toHaveAttribute("open");
+    expect(within(group).getByText("×2")).toBeVisible();
+    expect(within(group).getByLabelText("Failed")).toBeInTheDocument();
+    expect(within(group).getByText("Read a.ts")).not.toBeVisible();
+    expect(screen.getByRole("alert", { name: "Permission needed" })).toBeVisible();
+    expect(screen.getByText("Other tool").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("Read c.ts").closest("details")).not.toHaveAttribute("open");
+
+    fireEvent.click(group.querySelector("summary")!);
+    expect(within(group).getByText("Read a.ts")).toBeVisible();
+    expect(within(group).getByText("Read b.ts")).toBeVisible();
+    expect(within(group).getByText("output a")).not.toBeVisible();
+    fireEvent.click(within(group).getByText("Read a.ts"));
+    expect(within(group).getByText("output a")).toBeVisible();
+  });
+
+  it("keeps an expanded group and individual output open as calls stream in", async () => {
+    backend.entries = [thought, tool("a", "Read", "Read a.ts", "running")];
+    openSession();
+    const group = (await screen.findByText("Read a.ts")).closest("details")!;
+    expect(group).not.toHaveAttribute("open");
+    fireEvent.click(group.querySelector("summary")!);
+    expect(within(group).getByText("output a")).toBeVisible();
+
+    act(() =>
+      useAgents.setState((s) => ({
+        entries: new Map(s.entries).set(task.id, [
+          thought,
+          tool("a", "Read", "Read a.ts"),
+          tool("b", "Read", "Read b.ts", "running"),
+        ]),
+      })),
+    );
+    expect(screen.getByText("Read", { exact: true }).closest("details")).toBe(group);
+    expect(group).toHaveAttribute("open");
+    fireEvent.click(within(group).getByText("Read a.ts"));
+    expect(within(group).getByText("output a")).toBeVisible();
+    act(() =>
+      useAgents.setState((s) => ({
+        entries: new Map(s.entries).set(task.id, [
+          thought,
+          tool("a", "Read", "Read a.ts"),
+          tool("b", "Read", "Read b.ts"),
+          tool("c", "Read", "Read c.ts", "failed"),
+        ]),
+      })),
+    );
+    expect(group).toHaveAttribute("open");
+    expect(within(group).getByText("×3")).toBeVisible();
+    expect(within(group).getByText("output a")).toBeVisible();
+    expect(within(group).getByLabelText("Failed")).toBeVisible();
+  });
+});

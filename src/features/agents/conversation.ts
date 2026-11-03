@@ -1,4 +1,81 @@
 /** Reading an agent conversation: quoting, file links, turn times and finding text. */
+import type { AgentEntry } from "@/bindings";
+
+export type ToolCall = Extract<AgentEntry, { type: "tool" }>;
+export type ConversationItem =
+  | { type: "entry"; index: number; entry: AgentEntry }
+  | { type: "tools"; index: number; name: string; calls: ToolCall[] };
+
+const LEGACY_TOOL_PREFIXES: Array<[string, string, string]> = [
+  ["read", "Read ", "Read"],
+  ["read", "View ", "View image"],
+  ["edit", "Edit ", "Edit"],
+  ["edit", "Write ", "Write"],
+  ["edit", "Create ", "Create"],
+  ["search", "Find ", "Glob"],
+  ["search", 'grep "', "Grep"],
+  ["search", "List ", "List"],
+  ["search", "Search ", "Search"],
+  ["fetch", "Fetch ", "WebFetch"],
+  ["fetch", 'Search "', "WebSearch"],
+];
+
+/** Some older saved calls have no tool name; infer only the recognizable titles. */
+function toolName(call: ToolCall): string {
+  if (call.name) return call.name;
+  return (
+    LEGACY_TOOL_PREFIXES.find(([kind, prefix]) => kind === call.kind && call.title.startsWith(prefix))?.[2] ??
+    call.title
+  );
+}
+
+/**
+ * Collect calls of the same tool within a run of tool entries. Other entries,
+ * including thoughts, replies and permissions, stay in order and end that run.
+ */
+export function groupToolCalls(entries: AgentEntry[]): ConversationItem[] {
+  const out: ConversationItem[] = [];
+  let groups = new Map<string, Extract<ConversationItem, { type: "tools" }>>();
+  entries.forEach((entry, index) => {
+    if (entry.type !== "tool") {
+      groups = new Map();
+      out.push({ type: "entry", index, entry });
+      return;
+    }
+    const name = toolName(entry);
+    // An unnamed call without a title cannot safely be identified as the same tool.
+    const key = name ? (entry.name ? `name:${name}` : `legacy:${entry.kind}:${name}`) : `id:${entry.id}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { type: "tools", index, name, calls: [] };
+      groups.set(key, group);
+      out.push(group);
+    }
+    group.calls.push(entry);
+  });
+  return out;
+}
+
+const TOOL_LABELS: Record<string, string> = {
+  "codex:commandExecution": "Terminal",
+  "codex:fileChange": "File changes",
+  "codex:webSearch": "Web search",
+  "codex:imageView": "View image",
+  "codex:contextCompaction": "Compact conversation",
+  "codex:sleep": "Wait",
+  "codex:imageGeneration": "Generate an image",
+};
+
+/** A readable label for the provider's stable tool identifier. */
+export function toolGroupLabel(name: string): string {
+  if (TOOL_LABELS[name]) return TOOL_LABELS[name];
+  if (name.startsWith("mcp__")) return name.slice(5).replace("__", ": ");
+  for (const prefix of ["codex:dynamicToolCall:", "codex:collabAgentToolCall:"]) {
+    if (name.startsWith(prefix)) return name.slice(prefix.length);
+  }
+  if (name.startsWith("codex:")) return name.split(":").at(-1) || name;
+  return name;
+}
 
 /** `text` as a Markdown quote for the composer, followed by an empty line to type in. */
 export function quoteText(text: string): string {

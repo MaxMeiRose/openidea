@@ -415,6 +415,23 @@ pub(super) fn tool_call(item: &Value, done: bool, cwd: Option<&str>, output: Opt
         "imageGeneration" => ("Generate an image".to_owned(), "other"),
         _ => return None,
     };
+    // Item types identify Codex's built-in tools. MCP and dynamic calls need the
+    // actual tool (and MCP server) too, or distinct tools would be grouped together.
+    let name = match ty {
+        "mcpToolCall" => item
+            .get("server")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .zip(item.get("tool").and_then(Value::as_str).filter(|s| !s.is_empty()))
+            .map(|(server, tool)| format!("mcp__{server}__{tool}")),
+        "dynamicToolCall" | "collabAgentToolCall" => {
+            item.get("tool").and_then(Value::as_str).filter(|s| !s.is_empty()).map(|tool| format!("codex:{ty}:{tool}"))
+        }
+        _ => Some(format!("codex:{ty}")),
+    };
+    if let Some(name) = name {
+        call.insert("name".into(), json!(name));
+    }
     call.insert("sessionUpdate".into(), json!(if done { "tool_call_update" } else { "tool_call" }));
     call.insert("toolCallId".into(), json!(id));
     call.insert("title".into(), json!(title));

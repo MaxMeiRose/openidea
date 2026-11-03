@@ -376,6 +376,24 @@
   background: var(--bg-hover);
   color: var(--fg);
 }
+.toolChevron {
+  flex: none;
+  color: var(--fg-muted);
+}
+.toolDetails[open] > summary .toolChevron {
+  transform: rotate(90deg);
+}
+.toolCount,
+.toolEmpty {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.toolChildren {
+  margin-left: 18px;
+}
+.toolEmpty {
+  padding: 4px 18px;
+}
 .toolTitle {
   font-family: var(--font-mono);
   font-size: var(--fs-small);

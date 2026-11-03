@@ -265,6 +265,9 @@ pub enum AgentEntry {
     Tool {
         id: String,
         title: String,
+        /// The provider's tool name, when reported. Older conversations may not have it.
+        #[serde(default)]
+        name: Option<String>,
         /// ACP tool kind: `read`, `edit`, `execute`, `search`, `fetch`, `think`…
         kind: String,
         status: AgentToolStatus,

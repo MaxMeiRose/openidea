@@ -30,7 +30,14 @@ import { Composer } from "./Composer";
 import { SubmitButton } from "./SubmitButton";
 import { canSend, emptyDraft, retryParts, usageLabel, workTime } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
-import { findRanges, formatDuration, formatSentAt } from "./conversation";
+import {
+  findRanges,
+  formatDuration,
+  formatSentAt,
+  groupToolCalls,
+  toolGroupLabel,
+  type ToolCall,
+} from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { Markdown } from "./Markdown";
 import {
@@ -418,6 +425,7 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
   // Forks and undo apply to the task's own turns, not a subagent's conversation.
   const turns = useMemo(() => (entries && !subagent ? turnNumbers(entries) : null), [entries, subagent]);
+  const items = useMemo(() => (entries ? groupToolCalls(entries) : null), [entries]);
   return (
     <div className={styles.streamArea}>
       {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
@@ -443,19 +451,23 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
           showContextMenu(e, items);
         }}
       >
-        {entries === null ? (
+        {items === null ? (
           <Spinner />
         ) : (
-          entries.map((entry, i) => (
-            <Entry
-              key={i}
-              task={task}
-              entry={entry}
-              turn={turns?.get(i) ?? null}
-              turnCount={turns?.size ?? 0}
-              onOpenSubagent={onOpenSubagent}
-            />
-          ))
+          items.map((item) =>
+            item.type === "tools" ? (
+              <ToolGroup key={item.index} task={task} name={item.name} calls={item.calls} />
+            ) : (
+              <Entry
+                key={item.index}
+                task={task}
+                entry={item.entry}
+                turn={turns?.get(item.index) ?? null}
+                turnCount={turns?.size ?? 0}
+                onOpenSubagent={onOpenSubagent}
+              />
+            ),
+          )
         )}
         {subagent && subagentWorking(subagent.status) && (
           <div className={styles.working}>
@@ -976,25 +988,64 @@ function ImageStrip({ images, onRemove }: { images: AgentImage[]; onRemove?: (in
   );
 }
 
-function ToolEntry({ task, entry }: { task: AgentTask; entry: Extract<AgentEntry, { type: "tool" }> }) {
+function ToolGroup({ task, name, calls }: { task: AgentTask; name: string; calls: ToolCall[] }) {
+  const first = calls[0]!;
+  const grouped = calls.length > 1;
+  const running = calls.some((call) => call.status === "running" || call.status === "pending");
+  const failed = calls.some((call) => call.status === "failed");
+  return (
+    <details className={styles.toolDetails}>
+      <summary className={styles.tool}>
+        <Icon name="chevron-right" size={12} className={styles.toolChevron} />
+        <Icon name={name === "codex:commandExecution" ? "terminal" : (TOOL_ICONS[first.kind] ?? "run")} size={14} />
+        <span className={styles.toolTitle}>
+          {grouped ? tx(toolGroupLabel(name) || "Tool") : shortTitle(task, first.title || first.kind)}
+        </span>
+        {grouped && <span className={styles.toolCount}>×{calls.length}</span>}
+        {!grouped && <ToolDiffs task={task} entry={first} />}
+        {running && <Spinner size={12} />}
+        {failed && <Icon name="error" size={12} label={tx("Failed")} />}
+      </summary>
+      {grouped ? (
+        <div className={styles.toolChildren}>
+          {calls.map((entry) => (
+            <ToolEntry key={entry.id} task={task} entry={entry} />
+          ))}
+        </div>
+      ) : first.output ? (
+        <pre className={styles.output}>{first.output}</pre>
+      ) : (
+        <div className={styles.toolEmpty}>
+          <T>No output</T>
+        </div>
+      )}
+    </details>
+  );
+}
+
+function ToolDiffs({ task, entry }: { task: AgentTask; entry: ToolCall }) {
+  return entry.diffs.map((d) => (
+    <button
+      key={d.path}
+      type="button"
+      className={styles.toolDiff}
+      title={d.path}
+      onClick={(e) => {
+        e.preventDefault();
+        void openChangeDiff(task, d.path);
+      }}
+    >
+      <span className={styles.added}>+{d.added}</span> <span className={styles.removed}>−{d.removed}</span>
+    </button>
+  ));
+}
+
+function ToolEntry({ task, entry }: { task: AgentTask; entry: ToolCall }) {
   const head = (
     <>
       <Icon name={TOOL_ICONS[entry.kind] ?? "run"} size={14} />
       <span className={styles.toolTitle}>{shortTitle(task, entry.title || entry.kind)}</span>
-      {entry.diffs.map((d) => (
-        <button
-          key={d.path}
-          type="button"
-          className={styles.toolDiff}
-          title={d.path}
-          onClick={(e) => {
-            e.preventDefault();
-            void openChangeDiff(task, d.path);
-          }}
-        >
-          <span className={styles.added}>+{d.added}</span> <span className={styles.removed}>−{d.removed}</span>
-        </button>
-      ))}
+      <ToolDiffs task={task} entry={entry} />
       {(entry.status === "running" || entry.status === "pending") && <Spinner size={12} />}
       {entry.status === "failed" && <Icon name="error" size={12} />}
     </>
