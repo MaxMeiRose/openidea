@@ -30,15 +30,17 @@ function toolName(call: ToolCall): string {
 }
 
 /**
- * Collect calls of the same tool within a run of tool entries. Other entries,
- * including thoughts, replies and permissions, stay in order and end that run.
+ * Collect calls of the same tool in a thought. Other entries remain separate;
+ * a new thought or incoming user/parent message starts a new group.
  */
 export function groupToolCalls(entries: AgentEntry[]): ConversationItem[] {
   const out: ConversationItem[] = [];
   let groups = new Map<string, Extract<ConversationItem, { type: "tools" }>>();
   entries.forEach((entry, index) => {
     if (entry.type !== "tool") {
-      groups = new Map();
+      if (entry.type === "thought" || entry.type === "user" || (entry.type === "message" && entry.incoming)) {
+        groups = new Map();
+      }
       out.push({ type: "entry", index, entry });
       return;
     }
