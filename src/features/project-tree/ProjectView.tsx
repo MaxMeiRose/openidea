@@ -45,6 +45,7 @@ import {
   type TreeRowState,
 } from "@/ui";
 import { badgeKind } from "@/ui/symbolKind";
+import dragStyles from "@/ui/pointerDrag.module.css";
 import { contextMenuItems, menuGroupContext, newMenuItems } from "./contextMenu";
 import { openNewPopup } from "./newPopupModel";
 import { presentationIcon, useJvmPresentation } from "@/platform/filePresentation";
@@ -494,10 +495,23 @@ export function ProjectView() {
     setExpanded(next);
   }, []);
 
+  const pointerSelecting = useRef(false);
+  const cancelDrag = useRef<(() => void) | null>(null);
+  useEffect(() => () => cancelDrag.current?.(), []);
+
   const onSelectionChange = useCallback((next: Set<string>, lead: ProjectNode | null) => {
     setSelection(next, lead?.key ?? null);
     const { options: o } = useProjectTree.getState();
-    if (revealing.current || !o.autoscrollToSource || !lead || lead.dir || lead.placeholder || next.size !== 1) return;
+    if (
+      pointerSelecting.current ||
+      revealing.current ||
+      !o.autoscrollToSource ||
+      !lead ||
+      lead.dir ||
+      lead.placeholder ||
+      next.size !== 1
+    )
+      return;
     if (lead.member) {
       void revealRange(
         lead.path,
@@ -547,8 +561,8 @@ export function ProjectView() {
       if (o.singleClickExpand) toggleExpanded(node);
       return;
     }
-    if (!o.singleClickOpen && !o.previewTab) return;
-    const opts = { preview: o.singleClickOpen ? undefined : true, focus: false };
+    if (!o.singleClickOpen && !o.previewTab && !o.autoscrollToSource) return;
+    const opts = { preview: o.singleClickOpen ? undefined : o.previewTab, focus: false };
     if (node.member) void revealRange(node.path, { start: node.member.selection_range.start }, opts);
     else void openFile(node.path, opts);
   }, []);
@@ -570,6 +584,8 @@ export function ProjectView() {
       useProjectTree.getState().editing
     )
       return;
+    cancelDrag.current?.();
+    pointerSelecting.current = true;
     const before = useProjectTree.getState().selected;
     const lead = useProjectTree.getState().lead;
     const startX = e.clientX,
@@ -583,6 +599,7 @@ export function ProjectView() {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD) return;
         active = true;
         dragged.current = true;
+        document.documentElement.classList.add(dragStyles.dragging!);
         const m = selectModel(useProjectTree.getState());
         const keys = before.has(node.key) ? [...before] : [node.key];
         if (before.has(node.key)) setSelection(before, lead);
@@ -592,6 +609,7 @@ export function ProjectView() {
         const filePaths = nodes.filter((n) => !n.dir).map((n) => n.path);
         if (filePaths.length) files = dragSession({ type: FILES_DRAG, payload: filePaths.join("\n") });
       }
+      ev.preventDefault();
       const target = folderAt(containerRef.current, ev.clientX, ev.clientY);
       const valid = target && !paths.some((p) => target.path === p || isInside(target.path, p));
       setDropTarget(valid ? target.key : null);
@@ -622,8 +640,13 @@ export function ProjectView() {
       }
     };
     const cleanup = () => {
+      pointerSelecting.current = false;
+      cancelDrag.current = null;
+      document.documentElement.classList.remove(dragStyles.dragging!);
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cleanup);
+      window.removeEventListener("blur", cleanup);
       window.removeEventListener("keydown", key, true);
       files?.cancel();
       setDropTarget(null);
@@ -631,7 +654,10 @@ export function ProjectView() {
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cleanup);
+    window.addEventListener("blur", cleanup);
     window.addEventListener("keydown", key, true);
+    cancelDrag.current = cleanup;
   }, []);
 
   // Files dropped from the OS (Tauri drag-drop events carry real paths).
@@ -752,6 +778,11 @@ export function ProjectView() {
       className={styles.view}
       {...OWNS_FILE_DROP}
       onKeyDown={onKeyDown}
+      // WKWebView can otherwise start dragging selected filename text and cancel
+      // our pointer drag before it reaches the prompt/editor target.
+      onDragStartCapture={(e) => {
+        if (!(e.target as HTMLElement).closest("input, textarea")) e.preventDefault();
+      }}
       // The native Edit menu may take ⌘C/⌘X/⌘V before the keymap sees them; it then sends DOM clipboard events.
       onCopy={(e) => onClipboard(e, "project.copy")}
       onCut={(e) => onClipboard(e, "project.cut")}

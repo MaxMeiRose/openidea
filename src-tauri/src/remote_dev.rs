@@ -402,6 +402,10 @@ pub async fn remote_connect(
         _session: session,
     });
     state.remote_dev.0.lock().insert(label, connection);
+    #[cfg(target_os = "macos")]
+    if let Err(error) = crate::macos_window_state::project_opened(&window) {
+        tracing::warn!("cannot restore remote project window: {error}");
+    }
     Ok(RemoteProject {
         ssh_config,
         root,
@@ -438,7 +442,11 @@ pub fn remote_current(window: Window, state: State<'_, AppState>) -> Option<Remo
 #[tauri::command]
 #[specta::specta]
 pub fn remote_disconnect(window: Window, state: State<'_, AppState>) {
+    #[cfg(target_os = "macos")]
+    crate::macos_window_state::project_closing(&window);
     state.remote_dev.disconnect(AppState::owner_window(window.label()));
+    #[cfg(target_os = "macos")]
+    crate::windows::show_welcome_window(&window);
 }
 
 /// Runs a command on the window's remote server; `args` and the result are JSON

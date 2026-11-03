@@ -52,5 +52,13 @@ pub async fn window_group_reorder(window: WebviewWindow, labels: Vec<String>) ->
 #[tauri::command]
 #[specta::specta]
 pub async fn window_group_restore(window: WebviewWindow) -> IdeResult<()> {
-    groups::restore(window.app_handle(), window.label()).await
+    let state = window.state::<WindowsState>();
+    // Project subscriptions and startup can request restoration together. Keep fullscreen
+    // presentation behind the entire restore, including its asynchronous persistence read.
+    let _restore = state.groups_restore.lock().await;
+    groups::restore(window.app_handle(), window.label()).await?;
+    #[cfg(target_os = "macos")]
+    crate::macos_window_state::finish_project_restore(&window.as_ref().window())
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+    Ok(())
 }

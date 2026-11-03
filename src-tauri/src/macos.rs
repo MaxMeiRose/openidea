@@ -1,11 +1,146 @@
-//! macOS window tab preferences, applied to application-drawn project tabs.
+//! Native project tabs keep independent IDE sessions in one fullscreen Space.
 use crate::windows::{Launch, WindowsState};
 use ide_core::{IdeError, IdeResult};
 use ide_workspace::window_groups::{TabbingPreference, should_group_new_project};
 use objc2::{MainThreadMarker, rc::Retained, runtime::ProtocolObject};
-use objc2_app_kit::{NSWindow, NSWindowUserTabbingPreference};
+use objc2_app_kit::{NSWindow, NSWindowOrderingMode, NSWindowUserTabbingPreference};
 use objc2_foundation::{NSNotificationCenter, NSObjectProtocol};
 use tauri::{AppHandle, Manager, WebviewWindow};
+
+fn on_main<T: Send + 'static>(
+    app: &AppHandle,
+    action: impl FnOnce(MainThreadMarker) -> IdeResult<T> + Send + 'static,
+) -> IdeResult<T> {
+    if let Some(mtm) = MainThreadMarker::new() {
+        return action(mtm);
+    }
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    app.run_on_main_thread(move || {
+        let _ = tx.send(action(MainThreadMarker::new().expect("AppKit main thread")));
+    })
+    .map_err(|e| IdeError::internal(e.to_string()))?;
+    rx.recv().map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+thread_local! {
+    static GROUP_MUTATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+struct GroupMutation(bool);
+
+impl GroupMutation {
+    fn new() -> Self {
+        Self(GROUP_MUTATION.with(|current| current.replace(true)))
+    }
+}
+
+impl Drop for GroupMutation {
+    fn drop(&mut self) {
+        GROUP_MUTATION.with(|current| current.set(self.0));
+    }
+}
+
+pub fn group_mutating() -> bool {
+    GROUP_MUTATION.with(std::cell::Cell::get)
+}
+
+/// Read AppKit's order after native tab dragging or detaching.
+pub fn native_group_members(app: &AppHandle, members: &[String], caller: &str) -> IdeResult<Vec<String>> {
+    let windows = members.iter().filter_map(|label| app.get_webview_window(label)).collect::<Vec<_>>();
+    let caller = caller.to_owned();
+    on_main(app, move |mtm| {
+        let natives = windows.iter().map(|w| native_window(w, mtm)).collect::<IdeResult<Vec<_>>>()?;
+        let index =
+            windows.iter().position(|w| w.label() == caller).ok_or_else(|| IdeError::not_found("Window closed"))?;
+        let Some(group) = natives[index].tabGroup() else { return Ok(vec![caller]) };
+        Ok(group
+            .windows()
+            .iter()
+            .filter_map(|native| {
+                natives
+                    .iter()
+                    .position(|candidate| std::ptr::eq::<NSWindow>(native.as_ref(), candidate.as_ref()))
+                    .map(|index| windows[index].label().to_owned())
+            })
+            .collect())
+    })
+}
+
+fn native_window(window: &WebviewWindow, _mtm: MainThreadMarker) -> IdeResult<Retained<NSWindow>> {
+    let pointer = window.ns_window().map_err(|e| IdeError::internal(e.to_string()))?;
+    // Retain only on the AppKit thread, while the owning WebviewWindow is alive.
+    unsafe { Retained::retain(pointer.cast::<NSWindow>()) }.ok_or_else(|| IdeError::not_found("Window closed"))
+}
+
+/// AppKit switches the selected native tab without exiting or re-entering fullscreen.
+/// Never order out the other members: AppKit removes ordered-out windows from their tab group.
+pub fn select_window_group(app: &AppHandle, members: &[String], anchor: &str, target: &str) -> IdeResult<()> {
+    let windows = members
+        .iter()
+        .map(|label| app.get_webview_window(label).ok_or_else(|| IdeError::not_found("Window closed")))
+        .collect::<IdeResult<Vec<_>>>()?;
+    let anchor = anchor.to_owned();
+    let target = target.to_owned();
+    on_main(app, move |mtm| {
+        let _mutation = GroupMutation::new();
+        let natives = windows.iter().map(|w| native_window(w, mtm)).collect::<IdeResult<Vec<_>>>()?;
+        let anchor = windows.iter().position(|w| w.label() == anchor).unwrap_or(0);
+        let selected =
+            windows.iter().position(|w| w.label() == target).ok_or_else(|| IdeError::not_found("Window closed"))?;
+        // `tabGroup` is nil for independent windows. The explicit window-tabbing API creates it;
+        // asking for the property alone does not create a group.
+        if natives[anchor].tabGroup().is_none() {
+            let other = (anchor + 1) % natives.len();
+            natives[anchor].addTabbedWindow_ordered(&natives[other], NSWindowOrderingMode::Above);
+        }
+        let group = natives[anchor].tabGroup().ok_or_else(|| IdeError::internal("Window cannot be tabbed"))?;
+        for native in &natives {
+            if !group.windows().containsObject(native) {
+                group.addWindow(native);
+            }
+        }
+        // AppKit owns the tab order. Re-inserting an existing member can change
+        // `windows` without updating its tab cells, swapping labels and content.
+        // Read the native order back into the model instead of re-inserting tabs.
+        group.setSelectedWindow(Some(&natives[selected]));
+        if natives[selected].isMiniaturized() {
+            natives[selected].deminiaturize(None);
+        }
+        natives[selected].makeKeyAndOrderFront(None);
+        tracing::info!(
+            target = %target,
+            members = natives.len(),
+            visible = natives[selected].isVisible(),
+            fullscreen = natives[selected].styleMask().contains(objc2_app_kit::NSWindowStyleMask::FullScreen),
+            "selected native project tab"
+        );
+        Ok(())
+    })
+}
+
+pub fn detach_window(window: &WebviewWindow) -> IdeResult<()> {
+    let app = window.app_handle().clone();
+    let window = window.clone();
+    on_main(&app, move |mtm| {
+        let _mutation = GroupMutation::new();
+        let native = native_window(&window, mtm)?;
+        if let Some(group) = native.tabGroup()
+            && group.windows().count() > 1
+        {
+            group.removeWindow(&native);
+            if group.windows().count() == 1
+                && group.isTabBarVisible()
+                && let Some(selected) = group.selectedWindow()
+            {
+                selected.toggleTabBar(None);
+            }
+        }
+        if native.tabGroup().is_some_and(|g| g.isTabBarVisible()) {
+            native.toggleTabBar(None);
+        }
+        Ok(())
+    })
+}
 
 fn tabbing_preference(app: &AppHandle) -> IdeResult<TabbingPreference> {
     fn read(mtm: MainThreadMarker) -> TabbingPreference {
@@ -59,31 +194,27 @@ impl Drop for FullscreenObserver {
 }
 
 thread_local! {
-    static FULLSCREEN_TRANSFERS: std::cell::RefCell<std::collections::HashMap<String, FullscreenObserver>> = std::cell::RefCell::default();
+    static FULLSCREEN_EXITS: std::cell::RefCell<std::collections::HashMap<String, FullscreenObserver>> = std::cell::RefCell::default();
 }
 
 pub fn forget_fullscreen(label: &str) {
-    FULLSCREEN_TRANSFERS.with_borrow_mut(|observers| observers.remove(label));
+    FULLSCREEN_EXITS.with_borrow_mut(|observers| observers.remove(label));
 }
 
-/// AppKit cannot enter another window's fullscreen Space until the old one has exited.
-pub fn transfer_fullscreen(from: &WebviewWindow, to: &WebviewWindow) -> tauri::Result<()> {
-    let source = from.label().to_owned();
-    let to = to.clone();
-    from.with_webview(move |webview| unsafe {
+/// Fit the welcome window after AppKit has finished restoring the normal frame.
+pub fn leave_fullscreen_for_welcome(window: &WebviewWindow) -> tauri::Result<()> {
+    let window = window.clone();
+    window.clone().with_webview(move |webview| unsafe {
         let native = &*webview.ns_window().cast::<NSWindow>();
-        forget_fullscreen(&source);
+        forget_fullscreen(window.label());
+        let source = window.label().to_owned();
         let label = source.clone();
         let block = block2::RcBlock::new(move |_| {
             forget_fullscreen(&label);
-            let app = to.app_handle();
-            let selected = app.state::<WindowsState>().groups.lock().group(to.label()).map(|g| g.selected.clone());
-            if let Some(selected) = selected {
-                // Exiting fullscreen can show the old window again; reapply group visibility.
-                let _ = crate::window_groups::select(app, &selected, &selected);
-                if selected == to.label() {
-                    let _ = to.set_fullscreen(true);
-                }
+            if crate::windows::is_welcome_window(window.app_handle(), window.label())
+                && let Err(error) = crate::windows::fit_welcome_window(&window)
+            {
+                tracing::warn!("cannot fit welcome window: {}", error.message);
             }
         });
         let observer = NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
@@ -92,7 +223,9 @@ pub fn transfer_fullscreen(from: &WebviewWindow, to: &WebviewWindow) -> tauri::R
             None,
             &block,
         );
-        FULLSCREEN_TRANSFERS.with_borrow_mut(|observers| observers.insert(source, FullscreenObserver(observer)));
+        FULLSCREEN_EXITS.with_borrow_mut(|observers| {
+            observers.insert(source, FullscreenObserver(observer));
+        });
         native.toggleFullScreen(None);
     })
 }

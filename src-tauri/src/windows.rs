@@ -31,6 +31,8 @@ const SETTINGS_PREFIX: &str = "settings-";
 const CASCADE: f64 = 28.0;
 const SETTINGS_SIZE: (f64, f64) = (980.0, 720.0);
 const SETTINGS_MIN_SIZE: (f64, f64) = (640.0, 420.0);
+#[cfg(target_os = "macos")]
+const WELCOME_SIZE: (f64, f64) = (960.0, 680.0);
 
 /// What a freshly opened window should do once its frontend is up.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -61,6 +63,7 @@ pub struct RemoteLaunch {
 pub struct WindowsState {
     pub groups: Mutex<ide_workspace::window_groups::WindowGroups>,
     pub groups_restored: AtomicBool,
+    pub groups_restore: tokio::sync::Mutex<()>,
     pub groups_persist: tokio::sync::Mutex<()>,
     launches: Mutex<HashMap<String, Launch>>,
     /// Most recently focused window label (menu events go there).
@@ -284,6 +287,15 @@ fn hex_color(hex: &str) -> Option<Color> {
 /// Builds a project window painted in the saved theme's frame colour, so it
 /// doesn't flash the light default before its page (and splash) loads.
 fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<WebviewWindow> {
+    #[cfg(target_os = "macos")]
+    if is_welcome_window(app, &config.label) {
+        (config.width, config.height) = WELCOME_SIZE;
+        config.x = None;
+        config.y = None;
+        config.center = true;
+        config.maximized = false;
+        config.fullscreen = false;
+    }
     let visible = cfg!(target_os = "macos") && config.visible;
     let focused = config.focus;
     if visible {
@@ -323,6 +335,63 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         }
     }
     Ok(window)
+}
+
+#[cfg(target_os = "macos")]
+pub fn is_welcome_window(app: &AppHandle, label: &str) -> bool {
+    if is_settings_window(label) {
+        return false;
+    }
+    let host = app.state::<AppState>();
+    if host.project(label).is_ok() || host.remote_dev.get(label).is_some() {
+        return false;
+    }
+    app.state::<WindowsState>()
+        .pending(label)
+        .is_none_or(|launch| launch.project.is_none() && launch.remote.is_none() && launch.files.is_empty())
+}
+
+#[cfg(target_os = "macos")]
+pub fn fit_project_window(window: &tauri::Window) -> tauri::Result<()> {
+    // First opening a project from the compact welcome view gets an IDE-sized frame.
+    let (width, height) = window
+        .app_handle()
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|config| config.label == MAIN)
+        .map_or((1440.0, 900.0), |config| (config.width, config.height));
+    window.set_size(tauri::LogicalSize::new(width, height))?;
+    window.center()
+}
+
+#[cfg(target_os = "macos")]
+pub fn fit_welcome_window(window: &WebviewWindow) -> IdeResult<()> {
+    let err = |e: tauri::Error| IdeError::internal(e.to_string());
+    window.unmaximize().map_err(err)?;
+    let (mut width, mut height) = WELCOME_SIZE;
+    if let Some(monitor) = window.current_monitor().map_err(err)? {
+        let size = monitor.work_area().size.to_logical::<f64>(monitor.scale_factor());
+        width = width.min(size.width);
+        height = height.min(size.height);
+        window.set_min_size(Some(tauri::LogicalSize::new(800.0_f64.min(width), 500.0_f64.min(height)))).map_err(err)?;
+    }
+    window.set_size(tauri::LogicalSize::new(width, height)).map_err(err)?;
+    window.center().map_err(err)
+}
+
+#[cfg(target_os = "macos")]
+pub fn show_welcome_window(window: &tauri::Window) {
+    let Some(window) = window.app_handle().get_webview_window(window.label()) else { return };
+    let result = if window.is_fullscreen().unwrap_or(false) {
+        crate::macos::leave_fullscreen_for_welcome(&window).map_err(|e| IdeError::internal(e.to_string()))
+    } else {
+        fit_welcome_window(&window)
+    };
+    if let Err(error) = result {
+        tracing::warn!("cannot show welcome window: {}", error.message);
+    }
 }
 
 /// Sets the saved IDE zoom before the page loads; applied later by the frontend,
@@ -404,12 +473,30 @@ fn create_window_for(
         config.center = false;
     }
     app.state::<WindowsState>().set_launch(&label, launch);
-    let window = build_project_window(app, config)?;
+    #[cfg(target_os = "macos")]
+    if tab_target.is_some() || _restoring {
+        // Joining/restoring a fullscreen group must not first show a separate desktop window.
+        config.visible = false;
+        crate::macos_window_state::group_launch(app, &label);
+    }
+    let window = build_project_window(app, config);
+    #[cfg(target_os = "macos")]
+    if window.is_err() {
+        crate::macos_window_state::group_launched(app, &label);
+    }
+    let window = window?;
     #[cfg(target_os = "macos")]
     if let Some(target) = tab_target {
         crate::window_groups::join(app, target.label(), window.label())?;
+        crate::macos_window_state::group_launched(app, &label);
         return Ok(window);
     }
+    #[cfg(target_os = "macos")]
+    if _restoring {
+        return Ok(window);
+    }
+    #[cfg(target_os = "macos")]
+    crate::macos_window_state::group_launched(app, &label);
     focus(&window);
     Ok(window)
 }

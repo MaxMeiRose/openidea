@@ -1,14 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import type { Settings } from "@/platform/ipc";
 import { useNativeTitlebar } from "./nativeTitlebar";
 
-const { setHeight } = vi.hoisted(() => ({ setHeight: vi.fn().mockResolvedValue({ status: "ok" }) }));
+const { setHeight, desktop, listen, unlisten } = vi.hoisted(() => {
+  const desktop = { enabled: false, onInset: null as ((event: { payload: number }) => void) | null };
+  const unlisten = vi.fn();
+  return {
+    desktop,
+    unlisten,
+    setHeight: vi.fn().mockResolvedValue({ status: "ok" }),
+    listen: vi.fn(async (_event: string, handler: (event: { payload: number }) => void) => {
+      desktop.onInset = handler;
+      return unlisten;
+    }),
+  };
+});
+vi.mock("@tauri-apps/api/event", () => ({ listen }));
 vi.mock("@/platform/ipc", async (original) => {
   const ipc = await original<typeof import("@/platform/ipc")>();
-  return { ...ipc, commands: { ...ipc.commands, windowSetTitlebarHeight: setHeight } };
+  return { ...ipc, isTauri: () => desktop.enabled, commands: { ...ipc.commands, windowSetTitlebarHeight: setHeight } };
 });
 
 const platform = usePlatform.getState();
@@ -17,6 +30,10 @@ let resize: () => void;
 const disconnect = vi.fn();
 
 beforeEach(() => {
+  desktop.enabled = false;
+  desktop.onInset = null;
+  listen.mockClear();
+  unlisten.mockClear();
   setHeight.mockClear();
   disconnect.mockClear();
   usePlatform.setState({ overlayTitleBar: true });
@@ -33,6 +50,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  desktop.enabled = false;
   usePlatform.setState(platform);
   useProject.setState(project);
   vi.unstubAllGlobals();
@@ -100,5 +118,32 @@ describe("native title bar alignment", () => {
     const { bar } = titlebar(40);
     renderHook(() => useNativeTitlebar(bar));
     expect(setHeight).not.toHaveBeenCalled();
+  });
+
+  it("keeps the web toolbar below native project tabs at the current IDE zoom", async () => {
+    desktop.enabled = true;
+    zoom(200);
+    const { bar } = titlebar(40);
+    const { unmount } = renderHook(() => useNativeTitlebar(bar));
+    await waitFor(() => expect(listen).toHaveBeenCalledWith("openidea://native-top-inset", expect.any(Function)));
+    act(() => desktop.onInset?.({ payload: 36 }));
+    expect(document.documentElement.style.getPropertyValue("--native-top-inset")).toBe("18px");
+    unmount();
+    expect(unlisten).toHaveBeenCalledOnce();
+    expect(document.documentElement.style.getPropertyValue("--native-top-inset")).toBe("");
+  });
+
+  it("updates native chrome spacing when fullscreen changes without resizing the toolbar", async () => {
+    desktop.enabled = true;
+    zoom(100);
+    const { bar } = titlebar(40);
+    renderHook(() => useNativeTitlebar(bar));
+    await waitFor(() => expect(listen).toHaveBeenCalledOnce());
+    act(() => desktop.onInset?.({ payload: 68 }));
+    expect(document.documentElement.style.getPropertyValue("--native-top-inset")).toBe("68px");
+    act(() => desktop.onInset?.({ payload: 36 }));
+    expect(document.documentElement.style.getPropertyValue("--native-top-inset")).toBe("36px");
+    act(() => desktop.onInset?.({ payload: 0 }));
+    expect(document.documentElement.style.getPropertyValue("--native-top-inset")).toBe("0px");
   });
 });

@@ -26,11 +26,13 @@ The specialized Maven/Gradle tool-window model still describes the workspace dir
 
 ## Window group
 
-Open two project windows, then use **Window → Merge All Project Windows**. The project tabs occupy their own row below the main toolbar. Click a tab or use **Next/Previous Project Tab** to switch; drag tabs to reorder them. The default shortcuts are ⌥⌘PageDown/PageUp on macOS and Ctrl+Alt+PageDown/PageUp on Windows/Linux.
+Open two project windows, then use **Window → Merge All Project Windows**. macOS uses the system project tabs above the toolbar; Windows/Linux place project tabs in their own row below the main toolbar. Click a tab or use **Next/Previous Project Tab** to switch; drag tabs to reorder them. The default shortcuts are ⌥⌘PageDown/PageUp on macOS and Ctrl+Alt+PageDown/PageUp on Windows/Linux.
 
 Use the tab's close button to close that project, or **Move Tab to New Window** to detach the current tab. Closing uses the existing unsaved-changes guard. Quit visits project windows in sequence so a hidden project's prompt is visible. Groups restore when **Reopen last project** is enabled.
 
-The grouping model lives in `ide-workspace`, independently of project ownership. The desktop adapter keeps each member's WebView and backend services alive, presents the selected window at the group's position/size, and hides its peers. This is an application-drawn tab strip, not the macOS native tab strip. Its persistence is application-local in `window-groups.json`. Language servers, terminals, editor buffers and settings remain independent between group members.
+The grouping model lives in `ide-workspace`, independently of project ownership. The desktop adapter keeps each member's WebView and backend services alive. On macOS, the windows share an AppKit tab group and use its native project tabs: selecting a project stays in the same fullscreen Space without exiting and entering fullscreen. The web toolbar respects AppKit's unobscured content area beneath the native tabs. On Windows/Linux, the application-drawn tab strip presents the selected window at the group's position/size and hides its peers. Membership persists in the application-local `window-groups.json`. Language servers, terminals, editor buffers and settings remain independent between group members.
+
+On macOS the welcome/project chooser opens as a centred 960 × 680 window. Closing a project returns to that normal-sized chooser. Its frame is separate from remembered project and Settings frames, so a fullscreen project does not make the chooser fullscreen at the next launch.
 
 ## Validation
 

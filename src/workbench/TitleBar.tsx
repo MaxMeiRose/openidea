@@ -27,6 +27,7 @@ import { keymapItems, themeItems, VIEW_MODE_ITEMS } from "./quickSwitch";
 import { currentThemeId, useThemeOverride } from "./theme";
 import styles from "./TitleBar.module.css";
 import { useNativeTitlebar } from "./nativeTitlebar";
+import { useWindowGroup } from "@/platform/windowGroups";
 
 export function orderTitleItems(items: Iterable<TitleItemContribution>) {
   const all = [...items];
@@ -275,12 +276,13 @@ export function TitleBar({
   title?: string;
 }) {
   const overlay = usePlatform((s) => s.overlayTitleBar);
+  const nativeTabs = useWindowGroup((s) => s.tabs.length > 1);
   const frameless = usePlatform((s) => s.framelessTitleBar);
   const { map, shown, menu } = useToolbar();
   const [menuExpanded, setMenuExpanded] = useState(false);
   const [bar, setBar] = useState<HTMLElement | null>(null);
   useNativeTitlebar(bar);
-  const className = clsx(styles.bar, overlay && styles.overlay, frameless && styles.frameless);
+  const className = clsx(styles.bar, overlay && !nativeTabs && styles.overlay, frameless && styles.frameless);
   // Distraction Free Mode: the window frame only. Where the title bar carries the
   // main menu (Windows, Linux) it stays, or nothing would lead back out of the mode.
   if (bare)

@@ -1,7 +1,8 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { executeAction } from "@/platform/actions";
 import { useWindowGroup } from "@/platform/windowGroups";
+import { usePlatform } from "@/platform/platformInfo";
 import { WindowGroupTabs } from "./WindowGroupTabs";
 
 vi.mock("@/platform/actions", async (importOriginal) => ({
@@ -9,7 +10,10 @@ vi.mock("@/platform/actions", async (importOriginal) => ({
   executeAction: vi.fn(async () => {}),
 }));
 
+const platform = usePlatform.getState();
+
 beforeEach(() => {
+  usePlatform.setState({ overlayTitleBar: false });
   vi.mocked(executeAction).mockClear();
   useWindowGroup.setState({
     tabs: [
@@ -18,6 +22,8 @@ beforeEach(() => {
     ],
   });
 });
+
+afterEach(() => usePlatform.setState(platform));
 
 it("switches and closes the intended project with mouse and keyboard", () => {
   render(<WindowGroupTabs />);
@@ -34,6 +40,12 @@ it("switches and closes the intended project with mouse and keyboard", () => {
 
 it("removes the tab row when the group dissolves", () => {
   useWindowGroup.setState({ tabs: [] });
+  render(<WindowGroupTabs />);
+  expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+});
+
+it("uses the system project tabs on macOS without drawing a second tab row", () => {
+  usePlatform.setState({ overlayTitleBar: true });
   render(<WindowGroupTabs />);
   expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
 });

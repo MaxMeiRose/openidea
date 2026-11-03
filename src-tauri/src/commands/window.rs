@@ -9,7 +9,7 @@ use specta::Type;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State, WebviewWindow};
+use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 /// Opens `path` in a new window (`new_window`) or tells the caller to open it
 /// itself (`current`). A project already open in some window is focused instead.
@@ -171,9 +171,19 @@ pub fn window_close_context(app: AppHandle, windows: State<'_, WindowsState>) ->
 /// Quits: closes every window, each of which runs its own unsaved-changes check.
 #[tauri::command]
 #[specta::specta]
-pub fn app_quit(app: AppHandle, windows: State<'_, WindowsState>) {
+pub async fn app_quit(app: AppHandle) {
+    let windows = app.state::<WindowsState>();
     if windows.quitting() {
         return;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(error) = crate::window_groups::persist(&app).await {
+            tracing::warn!("cannot save project tabs before quitting: {}", error.message);
+        }
+        if windows.quitting() {
+            return;
+        }
     }
     windows.set_quitting(true);
     windows::continue_quit(&app, None);

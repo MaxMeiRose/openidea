@@ -210,6 +210,43 @@ describe("ProjectView", () => {
     act(() => setViewOption("singleClickExpand", false));
   });
 
+  it("waits for a click before previewing a file that could be dragged", async () => {
+    const { row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    act(() => setViewOption("autoscrollToSource", true));
+    const content = row("README.md").querySelector("[data-project-path]")!;
+    // jsdom has no PointerEvent constructor; MouseEvent preserves its pointer coordinates.
+    fireEvent(content, new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 20, clientY: 20 }));
+    fireEvent.mouseDown(content);
+    expect(openFile).not.toHaveBeenCalled();
+    fireEvent(window, new MouseEvent("pointerup", { bubbles: true, button: 0, clientX: 20, clientY: 20 }));
+    fireEvent.click(content, { detail: 1 });
+    expect(openFile).toHaveBeenCalledWith("/w/acme/README.md", { preview: false, focus: false });
+  });
+
+  it("does not preview dragged files and restores selection after cancellation", async () => {
+    const { row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    act(() => setViewOption("autoscrollToSource", true));
+    const content = row("README.md").querySelector("[data-project-path]")!;
+    expect(fireEvent.dragStart(content, { cancelable: true })).toBe(false);
+    const originalHitTest = document.elementFromPoint;
+    document.elementFromPoint = () => document.body;
+    try {
+      fireEvent(content, new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 20, clientY: 20 }));
+      fireEvent.mouseDown(content);
+      fireEvent(window, new MouseEvent("pointermove", { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
+      expect(document.documentElement.className).toMatch(/dragging/);
+      expect(openFile).not.toHaveBeenCalled();
+      fireEvent(window, new MouseEvent("pointercancel", { bubbles: true }));
+      expect(document.documentElement.className).not.toMatch(/dragging/);
+      fireEvent.click(content, { detail: 1 });
+      expect(openFile).not.toHaveBeenCalled();
+    } finally {
+      document.elementFromPoint = originalHitTest;
+    }
+  });
+
   it("toggles folders once for each rapid double-click pair", async () => {
     const { row, rows } = setup();
     await waitFor(() => expect(rows()).toContain("README.md"));

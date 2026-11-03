@@ -12,7 +12,7 @@ import { invokeLocal } from "@/platform/tauriCore";
 import { useTx } from "@/platform/i18n";
 import { basename } from "@/platform/project";
 import { notifications, OWNS_FILE_DROP } from "@/workbench/contributions";
-import { Icon, IconButton, Popup, fileIconName } from "@/ui";
+import { FILES_DRAG, Icon, IconButton, Popup, fileIconName, registerDropTarget } from "@/ui";
 import {
   IMAGE_EXTENSIONS,
   MAX_IMAGE_BYTES,
@@ -73,6 +73,7 @@ export function Composer(props: ComposerProps) {
   const text = draft?.text ?? "";
   const images = draft?.images ?? [];
   const [preview, setPreview] = useState<AgentImage | null>(null);
+  const [dropOver, setDropOver] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
@@ -212,44 +213,66 @@ export function Composer(props: ComposerProps) {
     }
   };
 
-  // Files dropped from the OS onto the box: images are attached, other files referenced.
+  // Both Project view drags and OS drops belong to the prompt, including when the
+  // session is nested inside the editor's own file-drop target.
   useEffect(() => {
-    if (!isTauri()) return;
+    const box = boxRef.current;
+    if (!box) return;
+    const addPaths = (paths: readonly string[]) => {
+      const refs: FileRef[] = [];
+      for (const path of paths) {
+        if (IMAGE_EXTENSIONS.test(path)) {
+          void invokeLocal<string>("fs_read_image", { path }).then((url) => {
+            const image = imageFromDataUrl(url, basename(path));
+            if (image) addImages([image]);
+          });
+        } else {
+          refs.push({ path, rel: path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path });
+        }
+      }
+      if (refs.length) {
+        const current = composerDraft(id);
+        const mentions = refs.map((r) => mentionOf(r.rel)).join(" ");
+        const glue = current.text && !/\s$/.test(current.text) ? " " : "";
+        updateComposer(id, { text: `${current.text}${glue}${mentions} `, files: [...current.files, ...refs] });
+      }
+      requestAnimationFrame(() => {
+        const input = ref.current;
+        input?.focus();
+        input?.setSelectionRange(input.value.length, input.value.length);
+      });
+    };
+    const unregister = registerDropTarget(box, {
+      accepts: (type) => type === FILES_DRAG,
+      over: () => setDropOver(true),
+      leave: () => setDropOver(false),
+      drop: (data) => {
+        setDropOver(false);
+        addPaths(data.payload.split("\n").filter(Boolean));
+      },
+    });
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    void import("@tauri-apps/api/webview").then(({ getCurrentWebview }) =>
-      getCurrentWebview()
-        .onDragDropEvent((event) => {
-          const p = event.payload;
-          if (p.type !== "drop" || !p.paths.length) return;
-          const box = boxRef.current?.getBoundingClientRect();
-          const { x, y } = nativeDropPoint(p.position);
-          if (!box || x < box.left || x > box.right || y < box.top || y > box.bottom) return;
-          const refs: FileRef[] = [];
-          for (const path of p.paths) {
-            if (IMAGE_EXTENSIONS.test(path)) {
-              void invokeLocal<string>("fs_read_image", { path }).then((url) => {
-                const image = imageFromDataUrl(url, basename(path));
-                if (image) addImages([image]);
-              });
-            } else {
-              refs.push({ path, rel: path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path });
-            }
-          }
-          if (refs.length) {
-            const current = composerDraft(id);
-            const mentions = refs.map((r) => mentionOf(r.rel)).join(" ");
-            const glue = current.text && !/\s$/.test(current.text) ? " " : "";
-            updateComposer(id, { text: `${current.text}${glue}${mentions} `, files: [...current.files, ...refs] });
-          }
-        })
-        .then((u) => {
-          if (disposed) u();
-          else unlisten = u;
-        }),
-    );
+    if (isTauri())
+      void import("@tauri-apps/api/webview").then(({ getCurrentWebview }) =>
+        getCurrentWebview()
+          .onDragDropEvent((event) => {
+            const p = event.payload;
+            if (p.type === "leave") return setDropOver(false);
+            const bounds = box.getBoundingClientRect();
+            const { x, y } = nativeDropPoint(p.position);
+            const inside = x >= bounds.left && x < bounds.right && y >= bounds.top && y < bounds.bottom;
+            setDropOver(p.type !== "drop" && inside);
+            if (p.type === "drop" && inside && p.paths.length) addPaths(p.paths);
+          })
+          .then((u) => {
+            if (disposed) u();
+            else unlisten = u;
+          }),
+      );
     return () => {
       disposed = true;
+      unregister();
       unlisten?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- re-subscribe only when the target changes
@@ -312,7 +335,7 @@ export function Composer(props: ComposerProps) {
   return (
     <div
       ref={boxRef}
-      className={clsx(styles.composer, props.className)}
+      className={clsx(styles.composer, dropOver && styles.dropOver, props.className)}
       {...OWNS_FILE_DROP}
       onClick={() => ref.current?.focus()}
     >

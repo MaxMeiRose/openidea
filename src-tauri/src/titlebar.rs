@@ -10,6 +10,9 @@ use objc2_core_foundation::{
     CFIndex, CFOptionFlags, CFRetained, CFRunLoop, CFRunLoopActivity, CFRunLoopObserver, kCFRunLoopCommonModes,
 };
 use objc2_foundation::NSPoint;
+use tauri::{Emitter, Manager};
+
+const NATIVE_TOP_INSET: &str = "openidea://native-top-inset";
 
 /// AppKit lays out the title bar in a run loop observer and puts the buttons back at their
 /// defaults on resize, title changes and fullscreen exit. Core Animation commits at 2000000, so
@@ -20,6 +23,7 @@ struct Titlebar {
     height: Rc<Cell<f64>>,
     spacing: f64,
     observer: CFRetained<CFRunLoopObserver>,
+    inset: Rc<Cell<f64>>,
 }
 
 impl Drop for Titlebar {
@@ -34,6 +38,7 @@ thread_local! {
 
 pub fn set_height(window: &tauri::WebviewWindow, height: f64) -> tauri::Result<()> {
     let label = window.label().to_owned();
+    let app = window.app_handle().clone();
     // with_webview runs on the AppKit thread; the observer is also delivered there.
     window.with_webview(move |webview| unsafe {
         let native = &*webview.ns_window().cast::<NSWindow>();
@@ -45,13 +50,19 @@ pub fn set_height(window: &tauri::WebviewWindow, height: f64) -> tauri::Result<(
             if let Some(bar) = bars.get(&label) {
                 bar.height.set(height);
                 center_buttons(native, height, bar.spacing);
+                publish_inset(&app, &label, native, &bar.inset, true);
                 return;
             }
             let shared = Rc::new(Cell::new(height));
             let current = shared.clone();
+            let inset = Rc::new(Cell::new(-1.0));
+            let current_inset = inset.clone();
+            let current_app = app.clone();
+            let current_label = label.clone();
             let pointer = native as *const NSWindow;
             let block = RcBlock::new(move |_: *mut CFRunLoopObserver, _: CFRunLoopActivity| {
-                center_buttons(&*pointer, current.get(), spacing)
+                center_buttons(&*pointer, current.get(), spacing);
+                publish_inset(&current_app, &current_label, &*pointer, &current_inset, false);
             });
             let activities = CFRunLoopActivity::BeforeWaiting.0 as CFOptionFlags;
             let Some(observer) = CFRunLoopObserver::with_handler(None, activities, true, BEFORE_COMMIT, Some(&block))
@@ -60,9 +71,41 @@ pub fn set_height(window: &tauri::WebviewWindow, height: f64) -> tauri::Result<(
             };
             run_loop.add_observer(Some(&observer), kCFRunLoopCommonModes);
             center_buttons(native, height, spacing);
-            bars.insert(label, Titlebar { height: shared, spacing, observer });
+            publish_inset(&app, &label, native, &inset, true);
+            bars.insert(label, Titlebar { height: shared, spacing, observer, inset });
         });
     })
+}
+
+fn publish_inset(app: &tauri::AppHandle, label: &str, window: &NSWindow, previous: &Cell<f64>, force: bool) {
+    // Native AppKit tabs occupy chrome above the web toolbar. contentLayoutRect is the
+    // public, KVO-compliant unobscured area, including changes during fullscreen transitions.
+    let inset = if window.tabGroup().is_some_and(|group| group.isTabBarVisible()) {
+        window.contentView().map_or(0.0, |view| {
+            let bounds = view.bounds();
+            let layout = window.contentLayoutRect();
+            (bounds.origin.y + bounds.size.height - layout.origin.y - layout.size.height).max(0.0)
+        })
+    } else {
+        0.0
+    };
+    if force || (previous.get() - inset).abs() > 0.01 {
+        previous.set(inset);
+        // `with_webview` still holds Wry's dispatcher window-id lock. Emitting
+        // JavaScript synchronously here would try to acquire that same lock.
+        // A run-loop block keeps delivery ordered and waits for the callback to return.
+        let app = app.clone();
+        let label = label.to_owned();
+        let block = RcBlock::new(move || {
+            let _ = app.emit_to(&label, NATIVE_TOP_INSET, inset);
+        });
+        if let Some(run_loop) = CFRunLoop::main() {
+            unsafe {
+                run_loop.perform_block(kCFRunLoopCommonModes.map(|mode| mode.as_ref()), Some(&block));
+            }
+            run_loop.wake_up();
+        }
+    }
 }
 
 pub fn forget(window: &tauri::Window) {
@@ -73,8 +116,10 @@ pub fn forget(window: &tauri::Window) {
 }
 
 unsafe fn center_buttons(window: &NSWindow, height: f64, spacing: f64) {
-    // Fullscreen uses AppKit's own revealable title bar.
-    if window.styleMask().contains(NSWindowStyleMask::FullScreen) {
+    // Fullscreen and native project tabs use AppKit's own window chrome.
+    if window.styleMask().contains(NSWindowStyleMask::FullScreen)
+        || window.tabGroup().is_some_and(|group| group.isTabBarVisible())
+    {
         return;
     }
     let Some(close) = window.standardWindowButton(NSWindowButton::CloseButton) else { return };

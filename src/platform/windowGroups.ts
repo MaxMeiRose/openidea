@@ -25,6 +25,7 @@ export async function selectWindowTab(label: string) {
 }
 
 export async function cycleWindowTab(forward: boolean) {
+  await refreshWindowGroup();
   const tabs = useWindowGroup.getState().tabs;
   if (tabs.length < 2) return;
   const index = tabs.findIndex((tab) => tab.current);

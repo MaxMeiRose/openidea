@@ -57,6 +57,10 @@ pub async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInf
         .await
         .map_err(|e| IdeError::internal(e.to_string()))??;
     let info = project_info(&project);
+    #[cfg(target_os = "macos")]
+    if let Err(error) = crate::macos_window_state::project_opened(&window) {
+        tracing::warn!("cannot restore project window: {error}");
+    }
     let _ = window.set_title(&info.name);
     window.state::<AppState>().sink.emit(ide_core::IdeEvent::WindowGroupsChanged);
     let grouped = window.state::<crate::windows::WindowsState>().groups.lock().group(window.label()).is_some();
@@ -81,6 +85,10 @@ pub async fn light_edit_open(window: Window, path: PathBuf) -> IdeResult<Setting
     let project = tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().open_light(&label, &path))
         .await
         .map_err(|e| IdeError::internal(e.to_string()))??;
+    #[cfg(target_os = "macos")]
+    if let Err(error) = crate::macos_window_state::project_opened(&window) {
+        tracing::warn!("cannot restore LightEdit window: {error}");
+    }
     Ok(project.settings.effective())
 }
 
@@ -107,9 +115,13 @@ pub fn project_rename(window: Window, state: State<'_, AppState>, name: String) 
 #[tauri::command]
 #[specta::specta]
 pub fn close_project(window: Window, state: State<'_, AppState>) {
+    #[cfg(target_os = "macos")]
+    crate::macos_window_state::project_closing(&window);
     crate::windows::close_settings_window(window.app_handle(), window.label());
     let _ = crate::window_groups::detach(window.app_handle(), window.label());
     state.close_project(window.label());
+    #[cfg(target_os = "macos")]
+    crate::windows::show_welcome_window(&window);
     let app = window.app_handle().clone();
     tauri::async_runtime::spawn(async move {
         let _ = crate::window_groups::persist(&app).await;

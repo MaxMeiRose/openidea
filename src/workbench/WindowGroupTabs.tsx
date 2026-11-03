@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import { reorderedTabs, useWindowGroup } from "@/platform/windowGroups";
+import { usePlatform } from "@/platform/platformInfo";
 import { Icon, IconButton, showContextMenu } from "@/ui";
 import { notifications } from "./contributions";
 import styles from "./WindowGroupTabs.module.css";
@@ -15,7 +16,8 @@ export function WindowGroupTabs() {
   const drag = useRef<{ label: string; x: number; moved: boolean } | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const tx = useTx();
-  if (tabs.length < 2) return null;
+  const native = usePlatform((state) => state.overlayTitleBar);
+  if (tabs.length < 2 || native) return null;
   return (
     <div className={styles.bar} data-window-group>
       <div className={styles.tabs} role="tablist" aria-label={tx("Project windows")}>

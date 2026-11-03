@@ -1,4 +1,4 @@
-//! Desktop adapter for application-drawn project tabs. Each member retains its WebView and services.
+//! Native macOS/application-drawn Windows/Linux project tabs retain each member's WebView and services.
 use crate::{
     state::AppState,
     windows::{self, WindowsState},
@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use tauri::{AppHandle, Manager, WebviewWindow};
+#[cfg(not(target_os = "macos"))]
+use tauri::WebviewWindow;
+use tauri::{AppHandle, Manager};
 
 #[derive(Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -20,6 +22,8 @@ pub struct WindowTab {
 }
 
 pub fn current(app: &AppHandle, caller: &str) -> Vec<WindowTab> {
+    #[cfg(target_os = "macos")]
+    sync_native_group(app, caller);
     let state = app.state::<WindowsState>();
     let Some(group) = state.groups.lock().group(caller).cloned() else { return Vec::new() };
     let host = app.state::<AppState>();
@@ -47,17 +51,13 @@ fn changed(app: &AppHandle) {
     app.state::<AppState>().sink.emit(IdeEvent::WindowGroupsChanged);
 }
 
+#[cfg(not(target_os = "macos"))]
 fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
     let err = |e: tauri::Error| IdeError::internal(e.to_string());
     let fullscreen = from.is_fullscreen().map_err(err)?;
     if fullscreen {
-        #[cfg(target_os = "macos")]
-        crate::macos::transfer_fullscreen(from, to).map_err(err)?;
-        #[cfg(not(target_os = "macos"))]
-        {
-            from.set_fullscreen(false).map_err(err)?;
-            to.set_fullscreen(true).map_err(err)?;
-        }
+        from.set_fullscreen(false).map_err(err)?;
+        to.set_fullscreen(true).map_err(err)?;
         return Ok(());
     }
     to.set_fullscreen(false).map_err(err)?;
@@ -75,20 +75,26 @@ fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
     Ok(())
 }
 
-pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
-    let to = app.get_webview_window(target).ok_or_else(|| IdeError::not_found("Window closed"))?;
-    let state = app.state::<WindowsState>();
-    let previous = state.groups.lock().select(caller, target)?;
-    let result = (|| {
-        if previous.selected != target
-            && let Some(from) = app.get_webview_window(&previous.selected)
+fn present(app: &AppHandle, group: &ide_workspace::window_groups::WindowGroup, target: &str) -> IdeResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::select_window_group(app, &group.members, &group.selected, target)?;
+        let window = app.get_webview_window(target).ok_or_else(|| IdeError::not_found("Window closed"))?;
+        window.show().map_err(|e| IdeError::internal(e.to_string()))?;
+        window.set_focus().map_err(|e| IdeError::internal(e.to_string()))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let to = app.get_webview_window(target).ok_or_else(|| IdeError::not_found("Window closed"))?;
+        if group.selected != target
+            && let Some(from) = app.get_webview_window(&group.selected)
         {
             copy_frame(&from, &to)?;
         }
         to.unminimize().map_err(|e| IdeError::internal(e.to_string()))?;
         to.show().map_err(|e| IdeError::internal(e.to_string()))?;
         to.set_focus().map_err(|e| IdeError::internal(e.to_string()))?;
-        for member in &previous.members {
+        for member in &group.members {
             if member != target
                 && let Some(window) = app.get_webview_window(member)
             {
@@ -96,19 +102,16 @@ pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
             }
         }
         Ok(())
-    })();
+    }
+}
+
+pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
+    let state = app.state::<WindowsState>();
+    let previous = state.groups.lock().select(caller, target)?;
+    let result = present(app, &previous, target);
     if result.is_err() {
         let _ = state.groups.lock().select(caller, &previous.selected);
-        for member in &previous.members {
-            if let Some(window) = app.get_webview_window(member) {
-                if member == &previous.selected {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                } else {
-                    let _ = window.hide();
-                }
-            }
-        }
+        let _ = present(app, &previous, &previous.selected);
     }
     changed(app);
     result
@@ -129,7 +132,8 @@ pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
     if members.len() < 2 || !members.iter().any(|label| label == caller) {
         return Err(IdeError::invalid("Open at least two project windows to create a window group"));
     }
-    // Native fullscreen puts each window in a separate Space; leave it before grouping.
+    // AppKit merges into the caller's native tab group and preserves its fullscreen Space.
+    #[cfg(not(target_os = "macos"))]
     for label in &members {
         if let Some(window) = app.get_webview_window(label) {
             window.set_fullscreen(false).map_err(|e| IdeError::internal(e.to_string()))?;
@@ -141,6 +145,12 @@ pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
 
 pub fn detach(app: &AppHandle, caller: &str) -> IdeResult<()> {
     let state = app.state::<WindowsState>();
+    #[cfg(target_os = "macos")]
+    let grouped = state.groups.lock().group(caller).is_some();
+    #[cfg(target_os = "macos")]
+    if grouped && let Some(window) = app.get_webview_window(caller) {
+        crate::macos::detach_window(&window)?;
+    }
     let next = state.groups.lock().detach(caller);
     if let Some(next) = next {
         if let Some(window) = app.get_webview_window(&next) {
@@ -155,6 +165,47 @@ pub fn detach(app: &AppHandle, caller: &str) -> IdeResult<()> {
     }
     changed(app);
     Ok(())
+}
+
+/// AppKit can select a native tab through its own keyboard/menu actions.
+#[cfg(target_os = "macos")]
+pub fn focused(app: &AppHandle, caller: &str) {
+    if crate::macos::group_mutating() {
+        return;
+    }
+    let reordered = sync_native_group(app, caller);
+    let state = app.state::<WindowsState>();
+    let mut groups = state.groups.lock();
+    let selected = groups.group(caller).is_some_and(|group| group.selected != caller);
+    if selected {
+        let _ = groups.select(caller, caller);
+    }
+    drop(groups);
+    if reordered || selected {
+        changed(app);
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = persist(&app).await;
+        });
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn sync_native_group(app: &AppHandle, caller: &str) -> bool {
+    if crate::macos::group_mutating() {
+        return false;
+    }
+    let state = app.state::<WindowsState>();
+    let Some(group) = state.groups.lock().group(caller).cloned() else { return false };
+    let Ok(members) = crate::macos::native_group_members(app, &group.members, caller) else { return false };
+    let mut groups = state.groups.lock();
+    if members.len() == 1 && members[0] == caller {
+        return groups.detach(caller).is_some();
+    }
+    if members.len() == group.members.len() && members != group.members {
+        return groups.reorder(caller, members).is_ok();
+    }
+    false
 }
 
 pub fn destroyed(app: &AppHandle, caller: &str) {
@@ -183,6 +234,13 @@ pub async fn persist(app: &AppHandle) -> IdeResult<()> {
     let _write = state.groups_persist.lock().await;
     if state.quitting() {
         return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let groups = state.groups.lock().groups().to_vec();
+        for group in groups {
+            sync_native_group(app, &group.selected);
+        }
     }
     let groups = state.groups.lock().groups().to_vec();
     let host = app.state::<AppState>();

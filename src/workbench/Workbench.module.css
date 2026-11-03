@@ -1,5 +1,7 @@
 .workbench {
   height: 100%;
+  box-sizing: border-box;
+  padding-top: var(--native-top-inset, 0px);
   display: flex;
   flex-direction: column;
   min-width: 0;

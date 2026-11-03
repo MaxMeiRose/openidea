@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { call, commands } from "@/platform/ipc";
+import { call, commands, isTauri } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import { clampZoom } from "@/platform/zoom";
@@ -25,9 +25,32 @@ export function useNativeTitlebar(bar: HTMLElement | null) {
     update();
     const observer = new ResizeObserver(update);
     observer.observe(bar);
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    if (isTauri()) {
+      void import("@tauri-apps/api/event")
+        .then(async ({ listen }) => {
+          const off = await listen<number>("openidea://native-top-inset", ({ payload }) => {
+            if (!disposed && Number.isFinite(payload) && payload >= 0)
+              document.documentElement.style.setProperty("--native-top-inset", `${(payload * 100) / zoom}px`);
+          });
+          if (disposed) off();
+          else {
+            unlisten = off;
+            // Request the current inset after subscribing, even if its first native event
+            // preceded this title bar mounting (opening/restoring a project group).
+            lastHeight.current = null;
+            update();
+          }
+        })
+        .catch((e) => console.warn("cannot observe native window chrome", e));
+    }
     return () => {
+      disposed = true;
+      unlisten?.();
       observer.disconnect();
       bar.style.removeProperty("--titlebar-zoom");
+      document.documentElement.style.removeProperty("--native-top-inset");
     };
   }, [bar, overlay, zoom]);
 }

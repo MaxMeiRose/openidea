@@ -3,7 +3,7 @@
 use crate::windows::WindowsState;
 use ide_core::IdeResult;
 use ide_workspace::caches::{self, InvalidateCachesOptions};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 
 /// Schedules the invalidation for the next start (`None` cancels a pending one).
 #[tauri::command]
@@ -22,7 +22,7 @@ pub fn caches_schedule_invalidation(app: AppHandle, options: Option<InvalidateCa
 /// Quits through every window's unsaved-changes check, then starts again.
 #[tauri::command]
 #[specta::specta]
-pub fn app_restart(app: AppHandle, windows: State<'_, WindowsState>) {
-    windows.set_restart();
-    super::window::app_quit(app, windows);
+pub async fn app_restart(app: AppHandle) {
+    app.state::<WindowsState>().set_restart();
+    super::window::app_quit(app).await;
 }
