@@ -125,4 +125,22 @@ describe("tool call groups", () => {
     expect(within(group).getByText("output a")).toBeVisible();
     expect(within(group).getByLabelText("Failed")).toBeVisible();
   });
+
+  it("starts a replacement call collapsed after the conversation is rolled back", async () => {
+    backend.entries = [thought, tool("a", "Read", "Read old.ts")];
+    openSession();
+    const oldGroup = (await screen.findByText("Read old.ts")).closest("details")!;
+    fireEvent.click(oldGroup.querySelector("summary")!);
+    expect(oldGroup).toHaveAttribute("open");
+
+    act(() =>
+      useAgents.setState((s) => ({
+        entries: new Map(s.entries).set(task.id, [thought, tool("new", "Read", "Read new.ts")]),
+      })),
+    );
+    const newGroup = screen.getByText("Read new.ts").closest("details")!;
+    expect(newGroup).not.toBe(oldGroup);
+    expect(newGroup).not.toHaveAttribute("open");
+    expect(within(newGroup).getByText("output new")).not.toBeVisible();
+  });
 });
