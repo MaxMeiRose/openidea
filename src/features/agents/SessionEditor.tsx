@@ -456,7 +456,7 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
         ) : (
           items.map((item) =>
             item.type === "tools" ? (
-              <ToolGroup key={item.index} task={task} name={item.name} calls={item.calls} />
+              <ToolGroup key={`${item.index}:${item.calls[0]!.id}`} task={task} name={item.name} calls={item.calls} />
             ) : (
               <Entry
                 key={item.index}
