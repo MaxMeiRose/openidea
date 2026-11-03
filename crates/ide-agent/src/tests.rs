@@ -3,6 +3,26 @@
 use super::*;
 use tokio::io::duplex;
 
+#[test]
+fn map_prompt_files_to_worktree_keeps_untracked_and_other_projects() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("project");
+    let worktree = tmp.path().join("worktree");
+    let other = tmp.path().join("other.go");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(worktree.join("src")).unwrap();
+    std::fs::write(worktree.join("src/tracked.go"), "package main").unwrap();
+    let mut prompt = AgentPrompt {
+        text: "review".into(),
+        files: vec![root.join("src/tracked.go").into(), root.join("src/untracked.go").into(), other.clone().into()],
+        images: Vec::new(),
+    };
+    map_prompt_files_to_worktree(&mut prompt, &root, &worktree);
+    assert_eq!(prompt.files[0].0, worktree.join("src/tracked.go"));
+    assert_eq!(prompt.files[1].0, root.join("src/untracked.go"));
+    assert_eq!(prompt.files[2].0, other);
+}
+
 /// Says "Hi", edits a file, asks to run a command and reports what it was allowed.
 #[derive(Default)]
 struct FakeAgent {

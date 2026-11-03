@@ -48,3 +48,20 @@ test("Git ignore submenu offers shared and local destinations for files and fold
     await page.keyboard.press("Escape");
   }
 });
+
+test("Git appears on the repository project, not its non-Git parent", async ({ workbench: page }) => {
+  await page.evaluate(async () => {
+    const module = "/src/features/vcs/store.ts";
+    const { useVcs } = await import(module);
+    useVcs.setState({ roots: ["/dev/acme-api/src"], repo: "/dev/acme-api/src" });
+  });
+  await page.getByRole("treeitem", { name: /acme-api/ }).click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "Git", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("treeitem", { name: "src", exact: true }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Git", exact: true }).hover();
+  const pull = page.getByRole("menuitem", { name: "Pull…", exact: true });
+  await expect(pull).toBeVisible();
+  await expect(pull).not.toHaveAttribute("aria-haspopup");
+});

@@ -34,6 +34,7 @@ import { openideaHighlightStyle } from "./highlight";
 import { openideaTheme } from "./theme";
 import { caretRowHighlight } from "./caretRow";
 import { changeLane, overviewLane } from "./lanes";
+import { minimap } from "./minimap";
 import { foldingExtension } from "./folding";
 import { syntaxHighlightField } from "./syntaxHighlight";
 import { indentGuides } from "./indentGuides";
@@ -224,6 +225,7 @@ export function heavyExtension(docLength: number, settings?: EditorSettings): Ex
   return [
     prefs.codeEditing.highlightBraces ? bracketMatching({ renderMatch }) : [],
     prefs.appearance.indentGuides ? indentGuides : [],
+    prefs.appearance.showMinimap ? minimap : [],
     prefs.rainbowBrackets ? rainbowBrackets() : [],
     prefs.codeEditing.highlightSelection ? highlightSelectionMatches({ minSelectionLength: 2, maxMatches: 500 }) : [],
   ];

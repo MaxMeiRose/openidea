@@ -10,7 +10,7 @@ import { ask } from "@/workbench/messages";
 import { openDialog } from "./dialogs";
 import { formatTime } from "./model";
 import { allRepos, lastRemoteFailure, runRemote, saveAll } from "./ops";
-import { currentRepo, refreshNow, repoName, useVcs } from "./store";
+import { currentRepo, focusRepo, refreshNow, repoName, useVcs } from "./store";
 import styles from "./common.module.css";
 
 /** Update Project…: the options dialog, or (Confirmation › Show options before Update off) the default method right away. */
@@ -96,6 +96,8 @@ export function outgoingQuery(upstream: string | null): { branch: string; range:
 }
 
 export interface PushTarget {
+  /** Open a push dialog for this repository only. */
+  repo?: string;
   /** Local branch to push (default: the current one). */
   branch?: string;
   /** Push only up to this commit of the branch (Push All up to Here). */
@@ -103,9 +105,12 @@ export interface PushTarget {
 }
 
 export async function showPushDialog(target: PushTarget = {}) {
+  if (target.repo && target.repo !== currentRepo()) await focusRepo(target.repo);
+  if (target.repo && target.repo !== currentRepo()) return;
   await refreshNow();
+  if (target.repo && target.repo !== currentRepo()) return;
   // Several repositories: IDEA's dialog lists each one with outgoing commits.
-  const multi = useVcs.getState().roots.length > 1 && !target.branch && !target.revision;
+  const multi = useVcs.getState().roots.length > 1 && !target.repo && !target.branch && !target.revision;
   openDialog((close) => (multi ? <MultiPushDialog onClose={close} /> : <PushDialog target={target} onClose={close} />));
 }
 
@@ -306,7 +311,7 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
 }
 
 function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClose: () => void }) {
-  const [repo] = useState(currentRepo);
+  const [repo] = useState(() => pushTarget.repo ?? currentRepo());
   const [branch] = useState(() => useVcs.getState().branch);
   const [branches] = useState(() => useVcs.getState().branches);
   const [commits, setCommits] = useState<Commit[] | null>(null);
@@ -457,6 +462,7 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
         { label: "Cancel", role: "cancel" },
       ]}
     >
+      {pushTarget.repo && repo && <div className={styles.hint} title={repo}>{tx`Repository: ${repoName(repo)}`}</div>}
       <div className={styles.section}>
         {!head
           ? tx("HEAD is detached; check out a branch to push.")

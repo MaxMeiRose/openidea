@@ -52,6 +52,7 @@ import styles from "./RunServices.module.css";
 
 export const RUN_PROVIDER = "runConfigurations";
 const TYPE_PREFIX = "run:type:";
+const GROUP_PREFIX = "run:group:";
 const CONFIG_PREFIX = "run:config:";
 const STORAGE_KEY = "openidea.services.runTypes:";
 const RAN_KEY = "openidea.services.ran:";
@@ -209,6 +210,13 @@ export function runServiceItems(
       const s = latest.get(c.id);
       return !!s && liveServiceSession(s);
     }).length;
+    const groups = [true, false].map((active): ServiceTreeItem => ({
+      key: `${GROUP_PREFIX}${active ? "running" : "not-started"}:${kind}`,
+      label: tx(active ? "Running" : "Not Started"),
+      icon: active ? "run" : "settings",
+      expanded: true,
+      children: children.filter((child) => active === !child.dim),
+    }));
     return [
       {
         key: TYPE_PREFIX + kind,
@@ -216,7 +224,7 @@ export function runServiceItems(
         icon: configIcon({ kind, isTest: false }),
         detail: running ? tx`${running} running` : undefined,
         expanded: true,
-        children,
+        children: groups,
       },
     ];
   });
@@ -258,6 +266,21 @@ function resolve(item: ServiceTreeItem): Resolved {
   if (item.key.startsWith(TYPE_PREFIX)) {
     const kind = item.key.slice(TYPE_PREFIX.length);
     return { kind, config: null, session: undefined, sessions: executions.filter((s) => s.config.kind === kind) };
+  }
+  if (item.key.startsWith(GROUP_PREFIX)) {
+    const group = item.key.slice(GROUP_PREFIX.length);
+    const active = group.startsWith("running:");
+    const kind = group.slice(active ? "running:".length : "not-started:".length);
+    const current = currentServiceSessions(executions);
+    return {
+      kind,
+      config: null,
+      session: undefined,
+      sessions: executions.filter((s) => {
+        const selected = current.get(s.config.id);
+        return s.config.kind === kind && !!selected && liveServiceSession(selected) === active;
+      }),
+    };
   }
   const id = item.key.slice(CONFIG_PREFIX.length);
   const session = currentServiceSession(id, executions);
@@ -332,7 +355,7 @@ function menu(item: ServiceTreeItem): MenuItem[] {
     run: a.run,
   }));
   const r = resolve(item);
-  if (!r.config && r.kind && currentTypes().includes(r.kind)) {
+  if (item.key.startsWith(TYPE_PREFIX) && r.kind && currentTypes().includes(r.kind)) {
     const kind = r.kind;
     items.push({ kind: "separator" }, { label: "Remove from Services", icon: "close", run: () => removeType(kind) });
   }
@@ -368,16 +391,18 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
   const t = useT();
   const txTemplate = useTxTemplate();
   const r = resolve(item);
-  if (!r.config)
+  if (!r.config) {
+    const count = item.key.startsWith(TYPE_PREFIX)
+      ? (item.children?.reduce((total, group) => total + (group.children?.length ?? 0), 0) ?? 0)
+      : (item.children?.length ?? 0);
     return (
-      <EmptyState title={kindLabel(r.kind ?? "")}>
+      <EmptyState title={item.key.startsWith(GROUP_PREFIX) ? item.label : kindLabel(r.kind ?? "")}>
         <div>
-          {item.children?.length
-            ? t("run.services.configurationCount", { count: item.children.length })
-            : txTemplate("No configurations of this type")}
+          {count ? t("run.services.configurationCount", { count }) : txTemplate("No configurations of this type")}
         </div>
       </EmptyState>
     );
+  }
   // The configuration ran: its console, as in the Run tool window.
   if (r.session?.run) {
     const execution = r.session;
@@ -474,7 +499,12 @@ export const runServiceProvider: ServiceProviderContribution = {
         return false;
       const from = resolve(source),
         to = resolve(target);
-      return !!from.config && !!to.config && from.kind === to.kind;
+      return (
+        !!from.config &&
+        !!to.config &&
+        from.kind === to.kind &&
+        !!(from.session && liveServiceSession(from.session)) === !!(to.session && liveServiceSession(to.session))
+      );
     },
     move: (source, target, position) => {
       if (!runServiceProvider.reorder!.canMove(source, target)) return;
@@ -491,7 +521,8 @@ export const runServiceProvider: ServiceProviderContribution = {
         order,
         useDebugRunSessions.getState().serviceSessions,
       ).find((g) => g.key === TYPE_PREFIX + kind);
-      const ids = group?.children?.map((c) => c.key.slice(CONFIG_PREFIX.length)) ?? [];
+      const ids =
+        group?.children?.flatMap((g) => g.children?.map((c) => c.key.slice(CONFIG_PREFIX.length)) ?? []) ?? [];
       const from = source.key.slice(CONFIG_PREFIX.length),
         to = target.key.slice(CONFIG_PREFIX.length);
       if (!ids.includes(from) || !ids.includes(to)) return;

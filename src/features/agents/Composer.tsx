@@ -12,7 +12,7 @@ import { invokeLocal } from "@/platform/tauriCore";
 import { useTx } from "@/platform/i18n";
 import { basename } from "@/platform/project";
 import { notifications, OWNS_FILE_DROP } from "@/workbench/contributions";
-import { Icon, IconButton, Popup, fileIconName } from "@/ui";
+import { FILES_DRAG, Icon, IconButton, Popup, fileIconName, registerDropTarget } from "@/ui";
 import {
   IMAGE_EXTENSIONS,
   MAX_IMAGE_BYTES,
@@ -21,9 +21,11 @@ import {
   isPathQuery,
   resolveTyped,
   completionAt,
+  fileRefForPath,
   imageFromDataUrl,
   matchCommands,
   mentionOf,
+  pathInRoot,
   modeOption,
   nextValue,
   recall,
@@ -33,6 +35,7 @@ import {
 import { composerDraft, updateComposer, useAgents } from "./store";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useCompletionAnchor } from "./useCompletionAnchor";
+import { sendPaths, sendSelection } from "./references";
 import styles from "./Composer.module.css";
 import { isImeKey } from "@/platform/ime";
 
@@ -79,6 +82,7 @@ export function Composer(props: ComposerProps) {
   const [completion, setCompletion] = useState<Completion | null>(null);
   const [files, setFiles] = useState<Item[]>([]);
   const [active, setActive] = useState(0);
+  const [fileOver, setFileOver] = useState(false);
   const recalled = useRef<{ index: number; stash: string }>({ index: -1, stash: "" });
 
   useEffect(() => {
@@ -129,15 +133,19 @@ export function Composer(props: ComposerProps) {
           .catch(() => alive && setFiles([]));
         return;
       }
-      call(commands.findFiles(query, MAX_ITEMS))
+      call(commands.findFiles(query, MAX_ITEMS * 8))
         .then((found) => {
           if (!alive) return;
           setFiles(
-            found.map((f) => ({
-              kind: "file",
-              rel: f.relPath,
-              path: root === projectRoot ? f.path : `${root}/${f.relPath}`,
-            })),
+            found
+              .map((f, index) => ({
+                ref: fileRefForPath(f.path, projectRoot, root),
+                inside: !!pathInRoot(projectRoot, f.path),
+                index,
+              }))
+              .sort((a, b) => Number(b.inside) - Number(a.inside) || a.index - b.index)
+              .slice(0, MAX_ITEMS)
+              .map(({ ref }) => ({ kind: "file", ...ref })),
           );
         })
         .catch(() => alive && setFiles([]));
@@ -211,6 +219,21 @@ export function Composer(props: ComposerProps) {
       reader.readAsDataURL(file);
     }
   };
+
+  // Project-view drags use the IDE's pointer protocol, not native OS file drops.
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    return registerDropTarget(box, {
+      accepts: (type) => type === FILES_DRAG,
+      over: () => setFileOver(true),
+      leave: () => setFileOver(false),
+      drop: ({ payload }) => {
+        setFileOver(false);
+        sendPaths(payload.split("\n"), id);
+      },
+    });
+  }, [id]);
 
   // Files dropped from the OS onto the box: images are attached, other files referenced.
   useEffect(() => {
@@ -312,7 +335,7 @@ export function Composer(props: ComposerProps) {
   return (
     <div
       ref={boxRef}
-      className={clsx(styles.composer, props.className)}
+      className={clsx(styles.composer, fileOver && styles.fileOver, props.className)}
       {...OWNS_FILE_DROP}
       onClick={() => ref.current?.focus()}
     >
@@ -405,6 +428,15 @@ export function Composer(props: ComposerProps) {
       <div className={styles.bar} onClick={(e) => e.stopPropagation()}>
         <div className={styles.toolbar}>{props.toolbar}</div>
         <div className={styles.actions}>
+          <IconButton
+            icon="file-code"
+            title="Reference Current File or Selection"
+            size="small"
+            onClick={() => {
+              if (!sendSelection(id))
+                notifications().notify({ level: "info", title: tx("Open a code file to reference it") });
+            }}
+          />
           <IconButton
             icon="file"
             title="Reference a File (@)"

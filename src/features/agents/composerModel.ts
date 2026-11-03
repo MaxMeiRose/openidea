@@ -17,6 +17,19 @@ export interface FileRef {
   rel: string;
 }
 
+/** A path inside a root, without treating a similarly named sibling as a child. */
+export function pathInRoot(root: string, path: string): string | null {
+  const prefix = root.endsWith("/") ? root : `${root}/`;
+  return path.startsWith(prefix) ? path.slice(prefix.length) || null : null;
+}
+
+/** Resolve an indexed or selected file into the checkout used by the conversation. */
+export function fileRefForPath(path: string, projectRoot: string, cwd: string): FileRef {
+  const rel = pathInRoot(projectRoot, path);
+  if (!rel) return { path, rel: path };
+  return { path: cwd === projectRoot ? path : `${cwd.replace(/\/$/, "")}/${rel}`, rel };
+}
+
 export interface ComposerDraft {
   text: string;
   files: FileRef[];

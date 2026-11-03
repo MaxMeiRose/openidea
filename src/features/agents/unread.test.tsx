@@ -1,26 +1,37 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { AgentEntry, AgentEvent, AgentTask } from "@/bindings";
+import { EditorState } from "@codemirror/state";
+import type { EditorView } from "@codemirror/view";
+import { _setActiveEditor } from "@/editor/api";
+import { useProject } from "@/platform/project";
 import { dropOnEditor, useContributions, type EditorInput, type OpenEditorTab } from "@/workbench/contributions";
 import { AgentsView } from "./AgentsView";
 import { AgentsStatus } from "./AgentsStatus";
 import { activate } from "./index";
 import * as actions from "@/platform/actions";
+import { registerActions } from "@/platform/actions";
 import { TASK_DRAG } from "./model";
+import { taskActions } from "./taskActions";
+import { sendPaths, sendSelection } from "./references";
+import { toPrompt } from "./composerModel";
 import {
   connect,
+  closeDockedTab,
   disconnect,
   dockTask,
   markVisible,
   openHome,
   openTask,
   setSessionLocation,
+  startTask,
   undockTask,
   useAgents,
 } from "./store";
 
 const backend = vi.hoisted(() => ({
   active: null as EditorInput | null,
+  listener: null as ((input: EditorInput | null) => void) | null,
   tabs: [] as OpenEditorTab[],
   channel: null as { onmessage: (event: AgentEvent) => void } | null,
   tasks: [] as AgentTask[],
@@ -28,6 +39,7 @@ const backend = vi.hoisted(() => ({
   openInput: vi.fn(),
   closeInput: vi.fn(),
   showToolWindow: vi.fn(),
+  create: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", async (original) => ({
@@ -36,6 +48,7 @@ vi.mock("@tauri-apps/api/core", async (original) => ({
     onmessage = () => {};
   },
 }));
+vi.mock("./SessionEditor", () => ({ SessionEditor: () => null }));
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
   isTauri: () => true,
@@ -46,6 +59,7 @@ vi.mock("@/platform/ipc", async (original) => ({
     },
     agentProviders: async () => ({ status: "ok", data: [] }),
     agentChanges: async () => ({ status: "ok", data: [] }),
+    agentCreate: (...args: unknown[]) => backend.create(...args),
   },
 }));
 vi.mock("@/workbench/contributions", async (original) => ({
@@ -55,6 +69,15 @@ vi.mock("@/workbench/contributions", async (original) => ({
     closeInput: backend.closeInput,
     activeInput: () => backend.active,
     openTabs: () => backend.tabs,
+  }),
+  maybeEditorService: () => ({
+    activeInput: () => backend.active,
+    onActiveInputChange: (listener: (input: EditorInput | null) => void) => {
+      backend.listener = listener;
+      return () => {
+        backend.listener = null;
+      };
+    },
   }),
   toolWindowService: () => ({ show: backend.showToolWindow }),
   notifications: () => ({ notify: backend.notify }),
@@ -99,7 +122,10 @@ beforeEach(async () => {
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   disconnect();
   backend.active = null;
+  backend.listener = null;
   backend.tabs = [];
+  backend.closeInput.mockReset().mockResolvedValue(true);
+  backend.create.mockResolvedValue({ status: "ok", data: task("new", "starting") });
   useAgents.setState({ sessionLocation: "editor" });
   localStorage.clear();
   backend.tasks = [task("one"), task("two", "ready")];
@@ -108,6 +134,8 @@ beforeEach(async () => {
 afterEach(() => {
   visible.splice(0).forEach((hide) => hide());
   disconnect();
+  _setActiveEditor(null);
+  useProject.setState({ project: null });
   vi.restoreAllMocks();
 });
 
@@ -249,6 +277,116 @@ describe("agent unread indicators", () => {
 });
 
 describe("docking a conversation in the tool window", () => {
+  it("keeps the selected conversation while other restored editor tabs are closing", async () => {
+    const a = { kind: "agent-session", key: "agent:one", data: { task: "one" } };
+    const b = { kind: "agent-session", key: "agent:two", data: { task: "two" } };
+    backend.active = a;
+    backend.tabs = [a, b].map((input) => ({ input, title: input.key, icon: "toolwindow-agents", lastActive: 0 }));
+    const pending: Array<() => void> = [];
+    backend.closeInput.mockImplementation(() => new Promise<boolean>((resolve) => pending.push(() => resolve(true))));
+    useAgents.setState({ sessionLocation: "editor", docked: null, dockedTabs: [], homeOpen: false });
+    render(<AgentsView />);
+    act(() => setSessionLocation("toolWindow"));
+    expect(useAgents.getState().docked).toBe("one");
+    act(() => backend.listener?.(b));
+    expect(useAgents.getState().docked).toBe("one");
+    await act(async () => pending.forEach((resolve) => resolve()));
+  });
+
+  it("opens a history item in the sidebar even when an older editor preference is active", () => {
+    const dispose = registerActions(taskActions);
+    try {
+      useAgents.setState({ sessionLocation: "editor", docked: null, dockedTabs: [], homeOpen: false });
+      render(<AgentsView />);
+      fireEvent.mouseDown(screen.getByText("two"), { button: 0 });
+      expect(useAgents.getState().sessionLocation).toBe("toolWindow");
+      expect(useAgents.getState().docked).toBe("two");
+      expect(backend.openInput).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("adds the active selection and other workspace files to the visible conversation", () => {
+    useProject.setState({
+      project: {
+        root: "/state",
+        name: "Workspace",
+        trusted: true,
+        isGit: false,
+        workspace: { version: 1, name: "Workspace", projects: ["/projects/a", "/projects/b"] },
+      } as NonNullable<ReturnType<typeof useProject.getState>["project"]>,
+    });
+    const one = { ...task("one"), projectRoot: "/projects/a", cwd: "/worktrees/a", isolation: "worktree" as const };
+    useAgents.setState({
+      tasks: new Map([
+        ["one", one],
+        ["two", task("two")],
+      ]),
+      sessionLocation: "toolWindow",
+      docked: "one",
+      dockedTabs: ["one", "two"],
+      homeOpen: false,
+      lastComposer: "two",
+      composers: new Map(),
+    });
+    _setActiveEditor({
+      ctx: { doc: 1, path: "/projects/a/src/main.go", language: "go", uiMode: null, readOnly: false },
+      view: { state: EditorState.create({ doc: "one\ntwo\nthree", selection: { anchor: 4, head: 8 } }) } as EditorView,
+    });
+    act(() => {
+      expect(sendSelection()).toBe(true);
+      expect(sendPaths(["/projects/b/src/other.go"])).toBe(true);
+    });
+    expect(toPrompt(useAgents.getState().composers.get("one")!)).toMatchObject({
+      text: "@src/main.go:2 @/projects/b/src/other.go",
+      files: ["/worktrees/a/src/main.go", "/projects/b/src/other.go"],
+    });
+    expect(useAgents.getState().composers.has("two")).toBe(false);
+    expect(backend.openInput).not.toHaveBeenCalled();
+  });
+
+  it("keeps several conversations in side-panel tabs and closes only the selected view", () => {
+    act(() => setSessionLocation("toolWindow"));
+    act(() => openTask("one"));
+    act(() => openTask("two"));
+    expect(useAgents.getState().dockedTabs).toEqual(["one", "two"]);
+    expect(useAgents.getState().docked).toBe("two");
+    expect(backend.openInput).not.toHaveBeenCalled();
+    act(() => closeDockedTab("two"));
+    expect(useAgents.getState().dockedTabs).toEqual(["one"]);
+    expect(useAgents.getState().docked).toBe("one");
+    expect(useAgents.getState().tasks.has("two")).toBe(true);
+  });
+
+  it("opens a newly created task beside existing conversations without creating an editor tab", async () => {
+    act(() => setSessionLocation("toolWindow"));
+    act(() => openTask("one"));
+    act(() => openHome("Review the code"));
+    await act(async () => startTask("local"));
+    expect(useAgents.getState().dockedTabs).toEqual(["one", "new"]);
+    expect(useAgents.getState().docked).toBe("new");
+    expect(backend.openInput).not.toHaveBeenCalled();
+  });
+
+  it("moves restored agent editor tabs into the panel when that location was saved", async () => {
+    disconnect();
+    useAgents.setState({ sessionLocation: "toolWindow" });
+    backend.active = { kind: "agent-session", key: "agent:two", data: { task: "two" } };
+    backend.tabs = ["one", "two"].map((id) => ({
+      input: { kind: "agent-session", key: `agent:${id}`, data: { task: id } },
+      title: id,
+      icon: "toolwindow-agents",
+      lastActive: 0,
+    }));
+    await act(async () => connect());
+    expect(useAgents.getState().dockedTabs).toEqual(["one", "two"]);
+    expect(useAgents.getState().docked).toBe("two");
+    expect(backend.closeInput).toHaveBeenCalledWith("agent:one");
+    expect(backend.closeInput).toHaveBeenCalledWith("agent:two");
+    expect(backend.openInput).not.toHaveBeenCalled();
+  });
+
   it("shows the task in the tool window, closing its editor tab, and undocks back to one", async () => {
     act(() => dockTask("one"));
     expect(useAgents.getState().docked).toBe("one");
@@ -268,7 +406,7 @@ describe("docking a conversation in the tool window", () => {
     expect(useAgents.getState().docked).toBeNull();
   });
 
-  it("drops a dragged task into the editor: undocking when docked, opening a tab otherwise", () => {
+  it("does not move a side-panel conversation into the editor on an accidental drop", () => {
     const dispose = activate();
     const execute = vi.spyOn(actions, "executeAction");
     act(() => dropOnEditor({ type: TASK_DRAG, payload: "two" }));
@@ -280,13 +418,11 @@ describe("docking a conversation in the tool window", () => {
     );
     backend.openInput.mockClear();
     act(() => dockTask("one"));
+    execute.mockClear();
     act(() => dropOnEditor({ type: TASK_DRAG, payload: "one" }));
-    expect(execute).toHaveBeenCalledWith("agents.openTaskInEditor", "one");
-    expect(useAgents.getState().docked).toBeNull();
-    expect(backend.openInput).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "agent-session", key: "agent:one" }),
-      { focus: true },
-    );
+    expect(execute).not.toHaveBeenCalledWith("agents.openTaskInEditor", "one");
+    expect(useAgents.getState().docked).toBe("one");
+    expect(backend.openInput).not.toHaveBeenCalled();
     dispose();
   });
 

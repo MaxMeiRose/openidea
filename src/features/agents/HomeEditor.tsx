@@ -141,7 +141,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
               options={members.map((path) => ({ value: path, label: basename(path), detail: path }))}
               onChange={(path) => {
                 setSelected(path);
-                updateDraft({ base: null });
+                updateDraft({ projectRoot: path, base: null });
               }}
             />
           ) : (

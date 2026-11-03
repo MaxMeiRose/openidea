@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { resolveMenuItems, type MenuItem } from "@/ui";
 import { registerMenuGroup } from "@/workbench/contributions";
+import * as vcsStore from "@/features/vcs/store";
 import { contextMenuItems, revealLabel } from "./contextMenu";
 import type { ProjectNode } from "./model";
 import { useProjectTree } from "./store";
@@ -48,12 +49,17 @@ const OTHER_ACTIONS = [
   "vcs.compareWithBranch",
   "vcs.rollback",
   "vcs.push",
+  "vcs.pull",
+  "vcs.fetch",
+  "vcs.showLog",
+  "vcs.newBranch",
 ];
 
 let disposers: Array<() => void> = [];
 
 beforeEach(() => {
   useProjectTree.setState({ root: ROOT });
+  vcsStore.useVcs.setState({ available: true, root: ROOT, roots: [ROOT], repo: ROOT });
   useProject.setState({
     project: { name: "p", root: ROOT, trusted: true, isGit: true, settings: {} } as never,
     settings: {} as never,
@@ -71,8 +77,10 @@ beforeEach(() => {
 
 afterEach(() => {
   disposers.forEach((d) => d());
+  vi.restoreAllMocks();
   useProject.setState({ project: null, settings: null });
   useProjectTree.setState({ root: null });
+  vcsStore.useVcs.setState({ available: false, root: null, roots: [], repo: null });
 });
 
 describe("project view context menu", () => {
@@ -150,17 +158,13 @@ describe("project view context menu", () => {
     }
   });
 
-  it("offers Show History for files, directories, multi-selection and the project root", () => {
+  it("offers Show History for files, directories and the project root", () => {
     const dispose = registerActions([{ id: "vcs.showHistory", title: "Show History", run: () => undefined }]);
     try {
-      for (const nodes of [
-        [node("/p/a.py")],
-        [node("/p/src", true)],
-        [node("/p/a.py"), node("/p/src", true)],
-        [node("/p", true, true)],
-      ]) {
+      for (const nodes of [[node("/p/a.py")], [node("/p/src", true)], [node("/p", true, true)]]) {
         expect(sub(contextMenuItems(nodes), "Git")).toContain("Show History");
       }
+      expect(sub(contextMenuItems([node("/p/a.py"), node("/p/src", true)]), "Git")).not.toContain("Show History");
     } finally {
       dispose();
     }
@@ -199,6 +203,7 @@ describe("project view context menu", () => {
   });
 
   it("offers Compare With… in a non-git project too", () => {
+    vcsStore.useVcs.setState({ available: false, roots: [], repo: null });
     useProject.setState({
       project: { name: "p", root: ROOT, trusted: true, isGit: false, settings: {} } as never,
       settings: {} as never,
@@ -220,6 +225,82 @@ describe("project view context menu", () => {
     expect(l).not.toContain("Git");
     expect(l).not.toContain("Local History");
     expect(l).not.toContain("Find in Files…");
+  });
+
+  it("offers Git only within actual repositories, not their workspace parent folders", () => {
+    useProject.setState({
+      project: {
+        root: "/workspace-state",
+        name: "workspace",
+        trusted: true,
+        isGit: false,
+        settings: {},
+        workspace: { version: 1, name: "workspace", projects: ["/a", "/b"] },
+      } as never,
+    });
+    vcsStore.useVcs.setState({ roots: ["/a/one", "/a/two", "/b/other"], repo: "/b/other" });
+
+    for (const n of [node("/a/one", true), node("/a/two", true), node("/b/other/src/a.ts")]) {
+      expect(sub(contextMenuItems([n]), "Git")).toContain("Pull…");
+    }
+    expect(labels(contextMenuItems([node("/a", true, true)]))).not.toContain("Git");
+    expect(labels(contextMenuItems([node("/b", true, true)]))).not.toContain("Git");
+    expect(labels(contextMenuItems([node("/b/unversioned.txt")]))).not.toContain("Git");
+    expect(labels(contextMenuItems([node("/outside/a")]))).not.toContain("Git");
+    const git = resolveMenuItems(contextMenuItems([node("/a/one", true), node("/a/two", true)])).find(
+      (i) => i.label === "Git",
+    )!;
+    expect(sub(git.submenu!, "Pull…")).toEqual(["one", "two"]);
+    expect(labels(git.submenu!)).toContain("Show Git Log");
+  });
+
+  it("runs a repository action only for the project-tree selection", async () => {
+    useProject.setState({
+      project: {
+        root: "/workspace-state",
+        name: "workspace",
+        trusted: true,
+        isGit: true,
+        settings: {},
+        workspace: { version: 1, name: "workspace", projects: ["/a", "/b"] },
+      } as never,
+    });
+    vcsStore.useVcs.setState({ roots: ["/a/one", "/a/two", "/b/other"], repo: "/b/other" });
+    const focus = vi.spyOn(vcsStore, "focusRepo").mockImplementation(async (repo) => {
+      vcsStore.useVcs.setState({ repo });
+    });
+    const run = vi.fn();
+    const off = registerActions([{ id: "vcs.pull", title: "Pull…", run }]);
+    try {
+      const git = resolveMenuItems(contextMenuItems([node("/a/one", true), node("/a/two", true)])).find(
+        (i) => i.label === "Git",
+      )!;
+      const pull = resolveMenuItems(git.submenu!).find((i) => i.label === "Pull…")!;
+      const choice = resolveMenuItems(pull.submenu!).find((i) => i.label === "two")!;
+      expect(focus).not.toHaveBeenCalled();
+      choice.run!();
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+      expect(focus).toHaveBeenCalledExactlyOnceWith("/a/two");
+      expect(run.mock.calls[0]![0].arg).toEqual({ repo: "/a/two" });
+    } finally {
+      off();
+    }
+  });
+
+  it("does not run the operation if its repository disappears while loading", async () => {
+    vcsStore.useVcs.setState({ roots: ["/p", "/p/nested"], repo: "/p" });
+    vi.spyOn(vcsStore, "focusRepo").mockResolvedValue(undefined);
+    const run = vi.fn();
+    const off = registerActions([{ id: "vcs.pull", title: "Pull…", run }]);
+    try {
+      const git = resolveMenuItems(contextMenuItems([node("/p/nested", true)])).find((i) => i.label === "Git")!;
+      const pull = resolveMenuItems(git.submenu!).find((i) => i.label === "Pull…")!;
+      pull.run!();
+      await Promise.resolve();
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      off();
+    }
   });
 });
 

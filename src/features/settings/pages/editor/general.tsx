@@ -222,7 +222,16 @@ const APPEARANCE = editorPage({
   id: "editor.general.appearance",
   title: "Appearance",
   order: 1,
-  keywords: ["caret", "line numbers", "whitespace", "indent guides", "distraction free", "zen"],
+  keywords: [
+    "caret",
+    "line numbers",
+    "whitespace",
+    "indent guides",
+    "distraction free",
+    "zen",
+    "minimap",
+    "codeglance",
+  ],
   sections: [
     {
       items: [
@@ -253,6 +262,7 @@ const APPEARANCE = editorPage({
           label: "Show hard wrap and visual guides (configured in Code Style options)",
         },
         { t: "check", key: `${P}.appearance.lineNumbers`, label: "Show line numbers" },
+        { t: "check", key: `${P}.appearance.showMinimap`, label: "Show code minimap" },
         { t: "check", key: `${P}.appearance.methodSeparators`, label: "Show method separators" },
         {
           t: "check",

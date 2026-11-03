@@ -7,6 +7,7 @@ const agentCommands = vi.fn();
 const agentCreate = vi.fn();
 const vcsBranches = vi.fn();
 const vcsBranchInfo = vi.fn();
+const findFiles = vi.fn();
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -19,6 +20,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       agentCreate: (request: unknown) => agentCreate(request),
       vcsBranchInfo: (root: string | null) => vcsBranchInfo(root),
       vcsBranches: (root: string | null) => vcsBranches(root),
+      findFiles: (query: string, limit: number) => findFiles(query, limit),
     },
   };
 });
@@ -31,8 +33,8 @@ import { useProject } from "@/platform/project";
 import type { ProjectInfo } from "@/bindings";
 import { defaultTaskProject } from "./project";
 import { HomeEditor } from "./HomeEditor";
-import { HOME, updateComposer, useAgents } from "./store";
-import { emptyDraft } from "./composerModel";
+import { HOME, composerDraft, updateComposer, useAgents } from "./store";
+import { emptyDraft, toPrompt } from "./composerModel";
 
 const command = (name: string, description: string): AgentCommand => ({ name, description, hint: null });
 const claude: AgentProvider = {
@@ -56,6 +58,7 @@ beforeEach(() => {
       Promise.resolve({ status: "ok", data: { head: root === "/project-b" ? "b-main" : "a-main" } }),
     );
   agentCommands.mockReset();
+  findFiles.mockReset().mockResolvedValue({ status: "ok", data: [] });
   agentCreate.mockReset().mockResolvedValue({ status: "error", error: { kind: "invalid", message: "stop here" } });
   useAgents.setState({
     providers: [claude],
@@ -156,6 +159,26 @@ describe("workspace task project", () => {
     expect(defaultTaskProject(project, null, "/project-b")).toBe("/project-b");
     expect(defaultTaskProject(project, "/project-b-other/file", "/removed")).toBe("/project-a");
     expect(defaultTaskProject({ ...project, workspace: null }, "/project-b/file", "/project-b")).toBe("/workspace");
+  });
+
+  it("references indexed files with the selected member's real relative path", async () => {
+    useProject.setState({ project });
+    useAgents.setState({ draft: { ...useAgents.getState().draft, projectRoot: "/project-a" } });
+    findFiles.mockResolvedValue({
+      status: "ok",
+      data: [
+        { path: "/project-b/src/main.go", relPath: "project-b/src/main.go" },
+        { path: "/project-a/src/main.go", relPath: "project-a/src/main.go" },
+      ],
+    });
+    agentCommands.mockResolvedValue({ status: "ok", data: [] });
+    render(<HomeEditor />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "@main" } });
+    const list = await screen.findByRole("listbox", { name: "Files" });
+    const options = within(list).getAllByRole("option");
+    expect(options[0]).toHaveTextContent("src/main.go");
+    fireEvent.mouseDown(options[0]!);
+    expect(toPrompt(composerDraft(HOME))).toMatchObject({ text: "@src/main.go", files: ["/project-a/src/main.go"] });
   });
   it.each(["local", "worktree"] as const)("sends the selected project with %s isolation", async (isolation) => {
     vi.mocked(isTauri).mockReturnValue(false);

@@ -3,7 +3,9 @@ import type { RunConfig } from "@/platform/ipc";
 import { DEFAULT_TYPES, readRan, readTypes, runServiceItems, sessionDetail, sessionStatus } from "./services";
 import { startedPort } from "./serverPort";
 import type { RunSession } from "./store";
-import type { DebugServiceSession } from "@/workbench/contributions";
+import type { DebugServiceSession, ServiceTreeItem } from "@/workbench/contributions";
+
+const entries = (group: ServiceTreeItem | undefined) => group?.children?.flatMap((g) => g.children ?? []) ?? [];
 
 const config = (id: string, kind: string): RunConfig => ({
   id,
@@ -57,14 +59,14 @@ describe("run configurations in Services", () => {
         show: () => {},
       };
       const build = (status: DebugServiceSession["status"]) => runServiceItems([c], [], [], [], {}, [{ ...d, status }]);
-      expect(build("running")[0]?.children?.[0]).toMatchObject({
+      expect(entries(build("running")[0])[0]).toMatchObject({
         key: "run:config:debug-app",
         detail: "Debugging",
         icon: "debug",
         dim: false,
       });
-      expect(build("paused")[0]?.children?.[0]?.detail).toBe("Suspended");
-      expect(build("terminated")[0]?.children?.[0]).toMatchObject({ detail: "Finished", dim: true });
+      expect(entries(build("paused")[0])[0]?.detail).toBe("Suspended");
+      expect(entries(build("terminated")[0])[0]).toMatchObject({ detail: "Finished", dim: true });
     },
   );
 
@@ -83,13 +85,13 @@ describe("run configurations in Services", () => {
     };
     const direct = runServiceItems([c], [r], DEFAULT_TYPES, [], {}, [d]);
     expect(direct[0]?.detail).toBe("1 running");
-    expect(direct[0]?.children?.[0]?.detail).toBe("Debugging");
+    expect(entries(direct[0])[0]?.detail).toBe("Debugging");
     const attached = runServiceItems([c], [{ ...r, status: "running" }], DEFAULT_TYPES, [], {}, [
       { ...d, processId: 7 },
     ]);
     expect(attached[0]?.detail).toBe("1 running");
-    expect(attached[0]?.children).toHaveLength(1);
-    expect(attached[0]?.children?.[0]?.detail).toBe(":8080");
+    expect(entries(attached[0])).toHaveLength(1);
+    expect(entries(attached[0])[0]?.detail).toBe(":8080");
   });
 
   it("applies display order to detected and saved configurations of every language", () => {
@@ -106,7 +108,7 @@ describe("run configurations in Services", () => {
       npm: ["node-b", "node-a"],
       python: ["py-b", "py-a"],
     });
-    expect(items.map((g) => g.children!.map((c) => c.label))).toEqual([
+    expect(items.map((g) => entries(g).map((c) => c.label))).toEqual([
       ["java-b", "java-a"],
       ["node-b", "node-a"],
       ["py-b", "py-a"],
@@ -120,13 +122,13 @@ describe("run configurations in Services", () => {
     const fresh = config("workspace:two:new", kind);
     const configs = [first, second, fresh];
     const items = runServiceItems(configs, [], [kind], [], { [kind]: [second.id, first.id] });
-    expect(items[0]!.children!.map((c) => c.key)).toEqual([second, first, fresh].map((c) => `run:config:${c.id}`));
+    expect(entries(items[0]).map((c) => c.key)).toEqual([second, first, fresh].map((c) => `run:config:${c.id}`));
     expect(configs).toEqual([first, second, fresh]);
   });
 
   it("orders remembered configurations when their type was not explicitly added", () => {
     const items = runServiceItems([build, test], [], [], ["build", "test"], { cargo: ["test", "build"] });
-    expect(items[0]!.children!.map((c) => c.key)).toEqual(["run:config:test", "run:config:build"]);
+    expect(entries(items[0]).map((c) => c.key)).toEqual(["run:config:test", "run:config:build"]);
   });
 
   it("keeps stable service identity and session details after refresh and rename", () => {
@@ -138,9 +140,9 @@ describe("run configurations in Services", () => {
       [],
       { cargo: ["test", "build"] },
     );
-    expect(items[0]!.children!.map((c) => [c.key, c.label, c.detail])).toEqual([
-      ["run:config:test", "test", undefined],
+    expect(entries(items[0]).map((c) => [c.key, c.label, c.detail])).toEqual([
       ["run:config:build", "Renamed build", ":8080"],
+      ["run:config:test", "test", undefined],
     ]);
   });
 
@@ -156,15 +158,15 @@ describe("run configurations in Services", () => {
       ["run:type:npm", "npm", "1 running"],
       ["run:type:python", "Python", undefined],
     ]);
-    expect(items[0]!.children!.map((c) => [c.key, c.detail, c.dim])).toEqual([
+    expect(entries(items[0]).map((c) => [c.key, c.detail, c.dim])).toEqual([
       ["run:config:build", undefined, true],
       ["run:config:test", undefined, true],
     ]);
     // The newest session of a configuration decides its state.
-    expect(items[1]!.children!.map((c) => [c.label, c.detail, c.dim, c.icon])).toEqual([
+    expect(entries(items[1]).map((c) => [c.label, c.detail, c.dim, c.icon])).toEqual([
       ["dev", "Running", false, "run"],
     ]);
-    expect(items[2]!.children!.map((c) => [c.key, c.detail])).toEqual([["run:config:context:file", "Failed (exit 2)"]]);
+    expect(entries(items[2]).map((c) => [c.key, c.detail])).toEqual([["run:config:context:file", "Failed (exit 2)"]]);
   });
 
   it("has no groups without added types or sessions", () => {
@@ -183,7 +185,7 @@ describe("run configurations in Services", () => {
     expect(runServiceItems([build], [], DEFAULT_TYPES)).toEqual([]);
     const items = runServiceItems([build, app], [], DEFAULT_TYPES);
     expect(items.map((i) => [i.key, i.label, i.expanded])).toEqual([["run:type:spring-boot", "Spring Boot", true]]);
-    expect(items[0]!.children!.map((c) => [c.label, c.detail, c.dim])).toEqual([["spring:app", undefined, true]]);
+    expect(entries(items[0]).map((c) => [c.label, c.detail, c.dim])).toEqual([["spring:app", undefined, true]]);
   });
 
   it("shows the HTTP port of a running application instead of its state", () => {
@@ -192,7 +194,33 @@ describe("run configurations in Services", () => {
     expect(sessionDetail(running)).toBe(":8080");
     expect(sessionDetail(session("s1", app, "running", 1))).toBe("Running");
     expect(sessionDetail(session("s1", app, "finished", 1, { httpPort: 8080, stopped: true }))).toBe("Stopped");
-    expect(runServiceItems([app], [running], DEFAULT_TYPES)[0]!.children![0]!.detail).toBe(":8080");
+    expect(entries(runServiceItems([app], [running], DEFAULT_TYPES)[0])[0]!.detail).toBe(":8080");
+  });
+
+  it("automatically groups starting, running and paused services separately from stopped configurations", () => {
+    const configs = [config("go-a", "go"), config("go-b", "go"), config("go-c", "go")];
+    const d: DebugServiceSession = {
+      id: 1,
+      config: configs[1]!,
+      status: "paused",
+      processId: null,
+      startedAt: 2,
+      stop: async () => {},
+      rerun: null,
+      show: () => {},
+    };
+    const build = (status: RunSession["status"]) =>
+      runServiceItems(configs, [session("run", configs[0]!, status, 1)], ["go"], [], { go: ["go-c", "go-b", "go-a"] }, [
+        d,
+      ])[0]!;
+    const active = build("starting");
+    expect(active.children?.map((g) => [g.label, g.children?.map((c) => c.label)])).toEqual([
+      ["Running", ["go-b", "go-a"]],
+      ["Not Started", ["go-c"]],
+    ]);
+    const stopped = build("finished");
+    expect(stopped.children?.map((g) => g.children?.map((c) => c.label))).toEqual([["go-b"], ["go-c", "go-a"]]);
+    expect(entries(stopped).map((c) => c.key)).toContain("run:config:go-a");
   });
 });
 
@@ -227,8 +255,8 @@ describe("configurations that ran", () => {
       ["run:type:npm", "npm"],
       ["run:type:python", "Python"],
     ]);
-    expect(items[0]!.children!.map((c) => [c.label, c.dim])).toEqual([["dev", true]]);
-    expect(items[1]!.children!.map((c) => c.key)).toEqual(["run:config:context:file"]);
+    expect(entries(items[0]).map((c) => [c.label, c.dim])).toEqual([["dev", true]]);
+    expect(entries(items[1]).map((c) => c.key)).toEqual(["run:config:context:file"]);
   });
 
   it("ignores ran ids whose configuration is gone and merges sessions", () => {
@@ -237,7 +265,7 @@ describe("configurations that ran", () => {
     const running = session("s1", dev, "running", 1);
     const items = runServiceItems([dev], [running], [], ["dev"]);
     expect(items).toHaveLength(1);
-    expect(items[0]!.children!.map((c) => [c.label, c.detail])).toEqual([["dev", "Running"]]);
+    expect(entries(items[0]).map((c) => [c.label, c.detail])).toEqual([["dev", "Running"]]);
   });
 });
 

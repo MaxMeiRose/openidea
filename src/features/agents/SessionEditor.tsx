@@ -1210,7 +1210,7 @@ function SessionComposer({
         id={task.id}
         placeholder={busy ? "Queue a message for when the agent is done (⌘↵ sends it now)" : "Reply to the agent"}
         root={task.cwd}
-        projectRoot={project?.root ?? task.cwd}
+        projectRoot={task.projectRoot ?? project?.root ?? task.cwd}
         commands={agentCommands}
         history={history}
         config={task.config}

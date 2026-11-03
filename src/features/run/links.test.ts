@@ -68,6 +68,14 @@ describe("findOutputLinks", () => {
     expect(files("src/App.tsx(14,3): error TS2322")[0]).toMatchObject({ path: "src/App.tsx", line: 14, col: 3 });
   });
 
+  it("finds links on both sides of a long-line scan boundary without duplicates", () => {
+    const line = "x".repeat(3988) + " /workspace/main.go:123 " + "x".repeat(1200) + " /workspace/other.go:456";
+    expect(files(line).map((f) => [f.path, f.line])).toEqual([
+      ["/workspace/main.go", 123],
+      ["/workspace/other.go", 456],
+    ]);
+  });
+
   it("URLs, trimming trailing punctuation", () => {
     const links = findOutputLinks("Listening on http://localhost:8080/api. (see https://x.dev/a_(b))");
     expect(links.filter((l) => l.kind === "url").map((l) => (l.kind === "url" ? l.url : ""))).toEqual([

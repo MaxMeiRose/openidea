@@ -58,7 +58,7 @@ beforeEach(() => {
     roots: {},
     selectedKey: null,
     selectedKeys: new Set(),
-    expanded: new Set(["run:type:spring-boot"]),
+    expanded: new Set(["run:type:spring-boot", "run:group:running:spring-boot", "run:group:not-started:spring-boot"]),
   });
   dispose = registerServiceProvider(runServiceProvider);
 });
@@ -155,4 +155,19 @@ it("group Stop stops all roots but terminates a shared Maven process only once",
   await vi.waitFor(() => expect(second.stop).toHaveBeenCalledOnce());
   expect(first.stop).toHaveBeenCalledExactlyOnceWith({ stopProcess: false });
   expect(second.stop).toHaveBeenCalledExactlyOnceWith();
+});
+
+it("moves a selected service between status groups without losing its console or selection", () => {
+  adoptSession(1, { runConfig: config });
+  appendConsole(1, "stdout", "gateway log\n");
+  const d = summary(1);
+  useDebugRunSessions.setState({ serviceSessions: [d] });
+  render(<ServicesTreeView />);
+  select();
+  expect(useServicesTree.getState().selectedKey).toBe("run:config:gateway");
+  expect(useServicesTree.getState().roots.runConfigurations?.[0]?.children?.[0]?.children?.[0]?.label).toBe("Gateway");
+  act(() => useDebugRunSessions.setState({ serviceSessions: [{ ...d, status: "terminated" }] }));
+  expect(useServicesTree.getState().selectedKey).toBe("run:config:gateway");
+  expect(screen.getByRole("log")).toHaveTextContent("gateway log");
+  expect(useServicesTree.getState().roots.runConfigurations?.[0]?.children?.[1]?.children?.[0]?.label).toBe("Gateway");
 });

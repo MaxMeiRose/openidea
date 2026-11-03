@@ -1,0 +1,54 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index 3f0c98aba65c44b0ff033dd299649985cfc7951c..7b03a4d6a2154824310979cc7775df6e69c31201 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -99,6 +99,9 @@ const OverlayView = view.ViewPlugin.fromClass(class {
+     constructor(view) {
+         this.view = view;
+         this._isDragging = false;
++        this.onMouseDown = this.onMouseDown.bind(this);
++        this.onMouseUp = this.onMouseUp.bind(this);
++        this.onMouseMove = this.onMouseMove.bind(this);
+         if (view.state.facet(Config).enabled) {
+             this.create(view);
+         }
+@@ -108,9 +111,9 @@ const OverlayView = view.ViewPlugin.fromClass(class {
+         this.dom = crelt__default["default"]("div", { class: "cm-minimap-overlay" });
+         this.container.appendChild(this.dom);
+         // Attach event listeners for overlay
+-        this.container.addEventListener("mousedown", this.onMouseDown.bind(this));
+-        window.addEventListener("mouseup", this.onMouseUp.bind(this));
+-        window.addEventListener("mousemove", this.onMouseMove.bind(this));
++        this.container.addEventListener("mousedown", this.onMouseDown);
++        window.addEventListener("mouseup", this.onMouseUp);
++        window.addEventListener("mousemove", this.onMouseMove);
+         // Attach the overlay elements to the minimap
+         const inner = view.dom.querySelector(".cm-minimap-inner");
+         if (inner) {
+diff --git a/dist/index.js b/dist/index.js
+index c7c9a0406e1cfa2277ab6324fe47f70dd577e7c1..9810e5a1715059ba732a374f7b74ad325cdfed4e 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -91,6 +91,9 @@ const OverlayView = /*@__PURE__*/ViewPlugin.fromClass(class {
+     constructor(view) {
+         this.view = view;
+         this._isDragging = false;
++        this.onMouseDown = this.onMouseDown.bind(this);
++        this.onMouseUp = this.onMouseUp.bind(this);
++        this.onMouseMove = this.onMouseMove.bind(this);
+         if (view.state.facet(Config).enabled) {
+             this.create(view);
+         }
+@@ -100,9 +103,9 @@ const OverlayView = /*@__PURE__*/ViewPlugin.fromClass(class {
+         this.dom = crelt("div", { class: "cm-minimap-overlay" });
+         this.container.appendChild(this.dom);
+         // Attach event listeners for overlay
+-        this.container.addEventListener("mousedown", this.onMouseDown.bind(this));
+-        window.addEventListener("mouseup", this.onMouseUp.bind(this));
+-        window.addEventListener("mousemove", this.onMouseMove.bind(this));
++        this.container.addEventListener("mousedown", this.onMouseDown);
++        window.addEventListener("mouseup", this.onMouseUp);
++        window.addEventListener("mousemove", this.onMouseMove);
+         // Attach the overlay elements to the minimap
+         const inner = view.dom.querySelector(".cm-minimap-inner");
+         if (inner) {

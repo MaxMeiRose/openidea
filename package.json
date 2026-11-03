@@ -54,6 +54,7 @@
     "@lezer/common": "^1.5.3",
     "@lezer/highlight": "^1.2.5",
     "@lezer/lr": "^1.4.11",
+    "@replit/codemirror-minimap": "0.5.2",
     "@replit/codemirror-vim": "6.4.0",
     "@tanstack/react-virtual": "^3.14.21",
     "@tauri-apps/api": "^2",

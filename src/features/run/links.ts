@@ -124,7 +124,23 @@ function trimUrl(url: string): string {
 
 /** Finds non-overlapping links in `text`; earlier (more specific) patterns win. */
 export function findOutputLinks(text: string): OutputLink[] {
-  if (text.length > 4000) return [];
+  // Bound each regex scan while retaining links anywhere in a long log line.
+  // The overlap keeps ordinary paths intact when they cross a window boundary.
+  if (text.length > 4000) {
+    const links: OutputLink[] = [];
+    for (let offset = 0; offset < text.length; offset += 2000) {
+      const window = text.slice(offset, offset + 4000);
+      const last = offset + window.length === text.length;
+      for (const link of findOutputLinks(window)) {
+        if (offset && link.start === 0 && /[\w/.~-]/.test(text[offset - 1]!)) continue;
+        if (!last && link.start >= 2000) continue;
+        if (!last && link.end === window.length && /[\w/.~:%+-]/.test(text[offset + window.length]!)) continue;
+        links.push({ ...link, start: link.start + offset, end: link.end + offset });
+      }
+      if (last) break;
+    }
+    return links;
+  }
   const links: OutputLink[] = [];
   const free = (s: number, e: number) => !links.some((l) => s < l.end && e > l.start);
   for (const m of text.matchAll(URL_RE)) {

@@ -16,7 +16,16 @@ import { useProject } from "@/platform/project";
 import { defaultTaskProject } from "./project";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { editorService, notifications, toolWindowService } from "@/workbench/contributions";
-import { bypassDefaults, canSend, emptyDraft, toPrompt, type ComposerDraft, type FileRef } from "./composerModel";
+import {
+  bypassDefaults,
+  canSend,
+  emptyDraft,
+  fileRefForPath,
+  mentionOf,
+  toPrompt,
+  type ComposerDraft,
+  type FileRef,
+} from "./composerModel";
 import { withQuote } from "./conversation";
 import {
   HOME_KEY,
@@ -69,6 +78,8 @@ interface AgentsState {
   focus: { key: string; seq: number } | null;
   /** Task shown inside the Agents tool window instead of an editor tab. */
   docked: string | null;
+  /** Open conversation tabs in the tool window; HOME is the unfinished new-task draft. */
+  dockedTabs: string[];
   sessionLocation: SessionLocation;
   lastTask: string | null;
   homeOpen: boolean;
@@ -78,6 +89,30 @@ const DRAFT_KEY = "openidea.agents.draft.v2";
 const HISTORY_KEY = "openidea.agents.history.v1";
 const HISTORY_SIZE = 50;
 const SESSION_LOCATION_KEY = "openidea.agents.sessionLocation.v1";
+const relocatingAgentTabs = new Set<string>();
+
+/** Editor activation caused by closing a migrating tab is not a new user selection. */
+export function isRelocatingAgentTab(key: string): boolean {
+  return relocatingAgentTabs.has(key);
+}
+
+function closeAgentTabs(keys: readonly string[]) {
+  const fresh = [...new Set(keys)].filter((key) => !relocatingAgentTabs.has(key));
+  for (const key of fresh) relocatingAgentTabs.add(key);
+  for (const key of fresh) {
+    try {
+      const close = editorService().closeInput?.(key);
+      if (close)
+        void close.then(
+          () => relocatingAgentTabs.delete(key),
+          () => relocatingAgentTabs.delete(key),
+        );
+      else relocatingAgentTabs.delete(key);
+    } catch {
+      relocatingAgentTabs.delete(key);
+    }
+  }
+}
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -112,7 +147,9 @@ export const useAgents = create<AgentsState>(() => ({
   history: load<string[]>(HISTORY_KEY, []),
   focus: null,
   docked: null,
-  sessionLocation: load<unknown>(SESSION_LOCATION_KEY, null) === "toolWindow" ? "toolWindow" : "editor",
+  dockedTabs: [],
+  // Agent conversations belong in their own tool window, even if an older session saved editor mode.
+  sessionLocation: "toolWindow",
   lastTask: null,
   homeOpen: false,
   scrollPositions: new Map(),
@@ -200,9 +237,22 @@ export async function connect(): Promise<void> {
     changes: new Map(),
     providers,
   });
-  // Restored tabs of tasks deleted meanwhile close, like editors of deleted files.
   const editors = editorService();
-  for (const t of editors.openTabs?.() ?? []) {
+  const tabs = editors.openTabs?.() ?? [];
+  const active = editors.activeInput?.();
+  // A saved tool-window preference also applies to tabs restored at startup.
+  if (
+    useAgents.getState().sessionLocation === "toolWindow" &&
+    tabs.some((t) => t.input.kind === SESSION_KIND || t.input.kind === HOME_KIND)
+  ) {
+    saveSessionLocation("toolWindow");
+    const id = active?.kind === SESSION_KIND ? (active.data as { task?: string } | undefined)?.task : null;
+    if (id && useAgents.getState().tasks.has(id)) showDockedTask(id);
+    else if (active?.kind === HOME_KIND) openHome();
+    return;
+  }
+  // Restored tabs of tasks deleted meanwhile close, like editors of deleted files.
+  for (const t of tabs) {
     const task = (t.input.data as { task?: string } | undefined)?.task;
     if (t.input.kind === SESSION_KIND && task && !useAgents.getState().tasks.has(task))
       await editors.closeInput?.(t.input.key);
@@ -211,6 +261,7 @@ export async function connect(): Promise<void> {
 
 export function disconnect() {
   generation++;
+  relocatingAgentTabs.clear();
   useAgents.setState({
     loaded: false,
     error: null,
@@ -219,6 +270,7 @@ export function disconnect() {
     entries: new Map(),
     changes: new Map(),
     docked: null,
+    dockedTabs: [],
     lastTask: null,
     homeOpen: false,
     scrollPositions: new Map(),
@@ -247,7 +299,8 @@ function onEvent(e: AgentEvent) {
       composers.delete(e.id);
       const unread = new Set(s.unread);
       unread.delete(e.id);
-      useAgents.setState({ tasks, composers, unread, ...(s.docked === e.id ? { docked: null } : {}) });
+      closeDockedTab(e.id);
+      useAgents.setState({ tasks, composers, unread });
       void editorService().closeInput?.(sessionKey(e.id));
       break;
     }
@@ -379,19 +432,50 @@ function openTaskInEditor(task: string) {
 }
 
 function showDockedTask(task: string) {
-  useAgents.setState({ docked: task, lastTask: task, homeOpen: false });
+  useAgents.setState((s) => ({
+    docked: task,
+    dockedTabs: s.dockedTabs.includes(task) ? s.dockedTabs : [...s.dockedTabs, task],
+    lastTask: task,
+    homeOpen: false,
+  }));
   toolWindowService().show(TOOL_WINDOW, true);
-  void editorService().closeInput?.(sessionKey(task));
+  closeAgentTabs([sessionKey(task)]);
 }
 
 function saveSessionLocation(location: SessionLocation) {
-  useAgents.setState({ sessionLocation: location });
+  const tabs = location === "toolWindow" ? (editorService().openTabs?.() ?? []) : [];
+  const imported = tabs.flatMap(({ input }) => {
+    if (input.kind === HOME_KIND) return [HOME];
+    const id = input.kind === SESSION_KIND ? (input.data as { task?: string } | undefined)?.task : null;
+    return id && useAgents.getState().tasks.has(id) ? [id] : [];
+  });
+  useAgents.setState((s) => ({ sessionLocation: location, dockedTabs: [...new Set([...s.dockedTabs, ...imported])] }));
   save(SESSION_LOCATION_KEY, location);
   if (location === "toolWindow") {
-    for (const { input } of editorService().openTabs?.() ?? []) {
-      if (input.kind === SESSION_KIND || input.kind === HOME_KIND) void editorService().closeInput?.(input.key);
-    }
+    closeAgentTabs(
+      tabs.filter(({ input }) => input.kind === SESSION_KIND || input.kind === HOME_KIND).map(({ input }) => input.key),
+    );
   }
+}
+
+/** Close only the side-panel tab; the conversation and any running agent remain available in history. */
+export function closeDockedTab(id: string) {
+  useAgents.setState((s) => {
+    const index = s.dockedTabs.indexOf(id);
+    const tabs = s.dockedTabs.filter((tab) => tab !== id);
+    const active = s.homeOpen ? HOME : s.docked;
+    if (active !== id) return { dockedTabs: tabs };
+    const next = tabs[Math.min(Math.max(index, 0), tabs.length - 1)] ?? null;
+    return { dockedTabs: tabs, docked: next === HOME ? null : next, homeOpen: next === HOME };
+  });
+}
+
+/** Select an already open side-panel tab without resetting its draft. */
+export function selectDockedTab(id: string) {
+  if (id === HOME) {
+    useAgents.setState({ docked: null, homeOpen: true });
+    toolWindowService().show(TOOL_WINDOW, true);
+  } else if (useAgents.getState().tasks.has(id)) openTask(id);
 }
 
 /** Conversation placement is an Agents-wide preference, shared by every task. */
@@ -446,9 +530,14 @@ export function openHome(prompt?: string) {
   }
   if (prompt !== undefined) updateComposer(HOME, { text: prompt });
   if (useAgents.getState().sessionLocation === "toolWindow") {
-    useAgents.setState({ docked: null, homeOpen: true });
+    saveSessionLocation("toolWindow");
+    useAgents.setState((s) => ({
+      docked: null,
+      homeOpen: true,
+      dockedTabs: s.dockedTabs.includes(HOME) ? s.dockedTabs : [...s.dockedTabs, HOME],
+    }));
     toolWindowService().show(TOOL_WINDOW, true);
-    void editorService().closeInput?.(HOME_KEY);
+    closeAgentTabs([HOME_KEY]);
     return;
   }
   void editorService().openInput({ kind: HOME_KIND, key: HOME_KEY, data: {} }, { focus: true });
@@ -481,7 +570,10 @@ export async function startTask(
   updateDraft({ projectRoot });
   remember(composer.text.trim());
   updateComposer(HOME, emptyDraft());
-  if ((await editorService().closeInput?.(HOME_KEY)) !== false) openTask(task.id);
+  if (useAgents.getState().sessionLocation === "toolWindow") {
+    useAgents.setState((s) => ({ dockedTabs: s.dockedTabs.filter((id) => id !== HOME) }));
+    openTask(task.id);
+  } else if ((await editorService().closeInput?.(HOME_KEY)) !== false) openTask(task.id);
 }
 
 function remember(text: string) {
@@ -584,20 +676,28 @@ export const setTaskConfig = (task: string, option: string, value: string) =>
  * Adds `@file` references (with an optional line range) to the composer typed in last and
  * shows it: IDEA-style "send this to the chat".
  */
-export function addReferences(refs: Array<{ path: string; rel: string; mention: string }>) {
+export function addReferences(refs: Array<{ path: string; lines?: { from: number; to: number } }>, target?: string) {
   const s = useAgents.getState();
-  const key = s.lastComposer !== HOME && s.tasks.has(s.lastComposer) ? s.lastComposer : HOME;
+  const visible = s.sessionLocation === "toolWindow" ? (s.homeOpen ? HOME : s.docked) : null;
+  const requested = target ?? visible ?? s.lastComposer;
+  const key = requested !== HOME && s.tasks.has(requested) ? requested : HOME;
   const task = key === HOME ? null : s.tasks.get(key)!;
+  if (!task && !s.homeOpen) openHome();
+  const project = useProject.getState().project;
+  const projectRoot =
+    task?.projectRoot ?? (task ? project?.root : (useAgents.getState().draft.projectRoot ?? project?.root));
+  const root = task?.cwd ?? projectRoot;
   const current = composerDraft(key);
-  // A worktree task sees the same files under its own directory.
-  const root = task?.isolation === "worktree" ? task.cwd : null;
-  const files: FileRef[] = refs.map((r) => ({ path: root ? `${root}/${r.rel}` : r.path, rel: r.rel }));
-  const mentions = refs.map((r) => r.mention).join(" ");
+  const files = refs.map((r) =>
+    projectRoot && root ? fileRefForPath(r.path, projectRoot, root) : { path: r.path, rel: r.path },
+  );
+  const mentions = refs.map((r, i) => mentionOf(files[i]!.rel, r.lines)).join(" ");
   const text =
     current.text && !/\s$/.test(current.text) ? `${current.text} ${mentions} ` : `${current.text}${mentions} `;
   updateComposer(key, { text, files: [...current.files, ...files] });
   if (task) openTask(task.id);
-  else openHome();
+  else if (!useAgents.getState().homeOpen && useAgents.getState().sessionLocation === "toolWindow") openHome();
+  focusComposer(key);
 }
 
 /** Stops the task's turn, or with `subagent` only that subagent's work. */

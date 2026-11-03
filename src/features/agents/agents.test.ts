@@ -5,6 +5,7 @@ import {
   atEdgeLine,
   canSend,
   completionAt,
+  fileRefForPath,
   isPathQuery,
   resolveTyped,
   imageFromDataUrl,
@@ -110,6 +111,18 @@ describe("agent composer", () => {
     expect(prompt).toEqual({ text: "look at @src/a.rs:3-5 and @b.rs", files: ["/w/src/a.rs", "/w/b.rs"], images: [] });
     expect(mentionOf("a.rs", { from: 3, to: 3 })).toBe("@a.rs:3");
     expect(canSend({ text: " ", files: [], images: [] })).toBe(false);
+  });
+
+  it("resolves workspace references against their own project and worktree", () => {
+    expect(fileRefForPath("/projects/a/src/main.go", "/projects/a", "/worktrees/a")).toEqual({
+      path: "/worktrees/a/src/main.go",
+      rel: "src/main.go",
+    });
+    expect(fileRefForPath("/projects/b/src/main.go", "/projects/a", "/worktrees/a")).toEqual({
+      path: "/projects/b/src/main.go",
+      rel: "/projects/b/src/main.go",
+    });
+    expect(fileRefForPath("/projects/ab/main.go", "/projects/a", "/worktrees/a").path).toBe("/projects/ab/main.go");
   });
 
   it("recalls history from the edge lines only", () => {

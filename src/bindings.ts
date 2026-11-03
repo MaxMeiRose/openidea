@@ -2767,6 +2767,8 @@ export type EditorAppearanceSettings = {
 	/**  Smooth caret movement curve: `snappy` | `gliding`. */
 	caretMovementStyle?: string,
 	lineNumbers?: boolean,
+	/**  Show a CodeGlance-style minimap at the right of text editors. */
+	showMinimap?: boolean,
 	methodSeparators?: boolean,
 	/**  Sub-options of `editor.showWhitespace`. */
 	whitespaceLeading?: boolean,

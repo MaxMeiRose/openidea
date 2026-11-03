@@ -16,6 +16,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 import {
   emptyFilters,
   initLogBranchFilter,
+  openLogTab,
   rememberedLogBranches,
   resolveLogBranches,
   setLogBranches,
@@ -45,6 +46,12 @@ function project(root: string, repo = root, branches: readonly Branch[] = [b("ma
 }
 
 beforeEach(() => localStorage.clear());
+
+it("opens a nested repository root's history in that repository", () => {
+  useVcs.setState({ root: "/p", roots: ["/p", "/p/nested"], repo: "/p" });
+  const id = openLogTab("history", "/p/nested");
+  expect(useGitLog.getState().logTabs.find((tab) => tab.id === id)?.repo).toBe("/p/nested");
+});
 
 describe("resolveLogBranches", () => {
   it("defaults to HEAD (the current branch) when nothing was remembered", () => {

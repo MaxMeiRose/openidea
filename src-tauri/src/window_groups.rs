@@ -70,11 +70,94 @@ fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
     Ok(())
 }
 
+/// Switch ordinary macOS windows in a single AppKit operation. Tauri queues frame
+/// changes asynchronously, so showing a window immediately after `set_size` can
+/// expose it at its old size before WebKit has laid out the new frame.
+#[cfg(target_os = "macos")]
+fn select_macos(app: &AppHandle, previous: &ide_workspace::window_groups::WindowGroup, target: &str) -> IdeResult<()> {
+    use objc2_app_kit::{NSWindow, NSWindowAnimationBehavior};
+
+    let to = app.get_webview_window(target).ok_or_else(|| IdeError::not_found("Window closed"))?;
+    let from = (previous.selected != target).then(|| app.get_webview_window(&previous.selected)).flatten();
+    let others: Vec<_> = previous
+        .members
+        .iter()
+        .filter(|label| label.as_str() != target)
+        .filter_map(|label| app.get_webview_window(label))
+        .collect();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    app.run_on_main_thread(move || {
+        let result = (|| -> IdeResult<()> {
+            let err = |e: tauri::Error| IdeError::internal(e.to_string());
+            // The handles remain valid for this main-thread operation: the Tauri
+            // window objects are held above and no native pointer escapes it.
+            let to_ptr = to.ns_window().map_err(err)?;
+            let from_ptr = from.as_ref().map(|window| window.ns_window()).transpose().map_err(err)?;
+            let other_ptrs =
+                others.iter().map(|window| window.ns_window()).collect::<tauri::Result<Vec<_>>>().map_err(err)?;
+            unsafe {
+                let to = &*to_ptr.cast::<NSWindow>();
+                let others: Vec<_> = other_ptrs.iter().map(|ptr| &*ptr.cast::<NSWindow>()).collect();
+                let animations: Vec<_> = std::iter::once(to)
+                    .chain(others.iter().copied())
+                    .map(|window| {
+                        let behavior = window.animationBehavior();
+                        window.setAnimationBehavior(NSWindowAnimationBehavior::None);
+                        (window, behavior)
+                    })
+                    .collect();
+
+                if let Some(from_ptr) = from_ptr {
+                    let from = &*from_ptr.cast::<NSWindow>();
+                    // Preserve AppKit's saved unzoomed frame. Merely copying a
+                    // zoomed frame makes `isZoomed` true without recording the
+                    // frame to restore when the user later unzooms this window.
+                    if from.isZoomed() != to.isZoomed() {
+                        to.zoom(None);
+                    }
+                    let frame = from.frame();
+                    if to.frame() != frame {
+                        // AppKit's non-animated frame setter runs before the
+                        // destination is ordered in, rather than on a later turn.
+                        to.setFrame_display(frame, false);
+                    }
+                }
+                if to.isMiniaturized() {
+                    to.deminiaturize(None);
+                }
+                if !to.isVisible() || !to.isKeyWindow() {
+                    to.makeKeyAndOrderFront(None);
+                }
+                for window in others {
+                    if window.isVisible() {
+                        window.orderOut(None);
+                    }
+                }
+                for (window, behavior) in animations {
+                    window.setAnimationBehavior(behavior);
+                }
+            }
+            Ok(())
+        })();
+        let _ = sender.send(result);
+    })
+    .map_err(|e| IdeError::internal(e.to_string()))?;
+    receiver.recv().map_err(|e| IdeError::internal(e.to_string()))?
+}
+
 pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
     let to = app.get_webview_window(target).ok_or_else(|| IdeError::not_found("Window closed"))?;
     let state = app.state::<WindowsState>();
     let previous = state.groups.lock().select(caller, target)?;
     let result = (|| {
+        // Native fullscreen moves windows between Spaces; preserve the existing
+        // fullscreen handling rather than changing its semantics here.
+        #[cfg(target_os = "macos")]
+        if !to.is_fullscreen().map_err(|e| IdeError::internal(e.to_string()))?
+            && app.get_webview_window(&previous.selected).is_none_or(|window| !window.is_fullscreen().unwrap_or(true))
+        {
+            return select_macos(app, &previous, target);
+        }
         if previous.selected != target
             && let Some(from) = app.get_webview_window(&previous.selected)
         {
