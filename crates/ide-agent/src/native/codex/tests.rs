@@ -91,6 +91,7 @@ fn commands_are_titled_by_what_they_do() {
     )
     .unwrap();
     assert_eq!((call["title"].as_str(), call["kind"].as_str()), (Some("Read a.rs"), Some("read")));
+    assert_eq!(call["name"], "codex:commandExecution");
     assert_eq!(call["locations"], json!([{"path": "/p/a.rs"}]));
     let call = tool_call(
         &cmd(json!([{"type": "search", "command": "rg x src", "query": "x", "path": "/p/src"}])),
@@ -160,6 +161,9 @@ fn other_items() {
         "arguments": {"n": 1}, "result": {"content": [{"type": "text", "text": "partial"}]}, "error": {"message": "boom"}});
     let call = tool_call(&mcp, true, None, None).unwrap();
     assert_eq!(call["title"], "gh: issue");
+    assert_eq!(call["name"], "mcp__gh__issue");
+    let other_mcp = json!({"id": "m2", "type": "mcpToolCall", "server": "gh", "tool": "pull"});
+    assert_eq!(tool_call(&other_mcp, true, None, None).unwrap()["name"], "mcp__gh__pull");
     assert_eq!(call["content"][1]["content"]["text"], "boom");
     assert_eq!(call["rawInput"], json!({"n": 1}));
     for skipped in ["agentMessage", "reasoning", "userMessage", "subAgentActivity"] {

@@ -63,6 +63,7 @@ impl Timeline {
                 let entry = AgentEntry::Tool {
                     id: id.clone(),
                     title: str_field(update, "title"),
+                    name: update.get("name").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned),
                     kind: update.get("kind").and_then(Value::as_str).unwrap_or("other").to_owned(),
                     status: tool_status(update.get("status")).unwrap_or(AgentToolStatus::Pending),
                     locations: locations(update.get("locations")),
@@ -127,12 +128,16 @@ impl Timeline {
     }
 
     fn merge_tool(&mut self, index: usize, update: &Value) {
-        let AgentEntry::Tool { title, kind, status, locations: locs, output, diffs, .. } = &mut self.entries[index]
+        let AgentEntry::Tool { title, name, kind, status, locations: locs, output, diffs, .. } =
+            &mut self.entries[index]
         else {
             return;
         };
         if let Some(t) = update.get("title").and_then(Value::as_str) {
             *title = t.to_owned();
+        }
+        if let Some(n) = update.get("name").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            *name = Some(n.to_owned());
         }
         if let Some(k) = update.get("kind").and_then(Value::as_str) {
             *kind = k.to_owned();
@@ -423,6 +428,26 @@ mod tests {
         assert_eq!(locations, &vec![IpcPath("/p/a.rs".into())]);
         // Unknown calls are ignored.
         assert!(t.apply(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "zz"})).changed.is_empty());
+    }
+
+    #[test]
+    fn tool_names_survive_updates_and_old_saved_entries() {
+        let mut t = Timeline::default();
+        t.apply(&json!({"sessionUpdate": "tool_call", "toolCallId": "c", "title": "Read a", "name": "Read"}));
+        t.apply(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "c", "status": "in_progress"}));
+        assert!(matches!(&t.entries[0], AgentEntry::Tool { name: Some(name), .. } if name == "Read"));
+        t.apply(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "c", "name": "ReadFile"}));
+        let saved = serde_json::to_value(&t.entries[0]).unwrap();
+        assert_eq!(saved["name"], "ReadFile");
+        let mut old = saved.as_object().unwrap().clone();
+        old.remove("name");
+        assert!(matches!(
+            serde_json::from_value::<AgentEntry>(old.into()).unwrap(),
+            AgentEntry::Tool { name: None, .. }
+        ));
+        assert!(
+            matches!(serde_json::from_value::<AgentEntry>(saved).unwrap(), AgentEntry::Tool { name: Some(name), .. } if name == "ReadFile")
+        );
     }
 
     #[test]

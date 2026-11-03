@@ -1,5 +1,82 @@
 import { describe, expect, it } from "vitest";
-import { findAll, findRanges, formatDuration, pathLink, quoteText, withQuote } from "./conversation";
+import {
+  findAll,
+  findRanges,
+  formatDuration,
+  groupToolCalls,
+  pathLink,
+  quoteText,
+  toolGroupLabel,
+  withQuote,
+  type ToolCall,
+} from "./conversation";
+
+const tool = (id: string, name: string | null, kind = "read", title = id): ToolCall => ({
+  type: "tool",
+  id,
+  name,
+  kind,
+  title,
+  status: "completed",
+  locations: [],
+  output: null,
+  diffs: [],
+});
+
+describe("grouping tool calls", () => {
+  it("groups the same tool between thoughts while keeping other entries and permissions visible", () => {
+    const items = groupToolCalls([
+      { type: "thought", text: "first" },
+      tool("a", "Read"),
+      tool("b", "OtherRead"),
+      tool("c", "Read"),
+      { type: "permission", id: 1, title: "Approve", options: [], chosen: null },
+      tool("d", "Read"),
+      { type: "thought", text: "second" },
+      tool("e", "Read"),
+      { type: "agent", text: "answer" },
+      tool("f", "Read"),
+    ]);
+    expect(
+      items.map((item) => (item.type === "entry" ? item.entry.type : [item.name, item.calls.map((call) => call.id)])),
+    ).toEqual([
+      "thought",
+      ["Read", ["a", "c"]],
+      ["OtherRead", ["b"]],
+      "permission",
+      ["Read", ["d"]],
+      "thought",
+      ["Read", ["e"]],
+      "agent",
+      ["Read", ["f"]],
+    ]);
+  });
+
+  it("uses names instead of broad kinds and supports older calls without names", () => {
+    const items = groupToolCalls([
+      tool("a", null, "read", "Read a.ts"),
+      tool("b", null, "read", "Read b.ts"),
+      tool("c", "Grep", "search", "grep one"),
+      tool("d", "Glob", "search", "Find *.ts"),
+      tool("e", "mcp__first__run", "other", "first: run"),
+      tool("f", "mcp__second__run", "other", "second: run"),
+      tool("g", null, "other", ""),
+      tool("h", null, "other", ""),
+    ]);
+    expect(items.map((item) => (item.type === "tools" ? item.calls.map((call) => call.id) : []))).toEqual([
+      ["a", "b"],
+      ["c"],
+      ["d"],
+      ["e"],
+      ["f"],
+      ["g"],
+      ["h"],
+    ]);
+    expect(toolGroupLabel("codex:commandExecution")).toBe("Terminal");
+    expect(toolGroupLabel("mcp__first__run")).toBe("first: run");
+    expect(toolGroupLabel("codex:dynamicToolCall:docs:search")).toBe("docs:search");
+  });
+});
 
 describe("quoting", () => {
   it("quotes each line and leaves a line to type on", () => {

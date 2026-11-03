@@ -1184,6 +1184,8 @@ sentMs?: number | null;
 doneMs?: number | null; 
 /**  Sent into a running turn rather than starting one. */
 steered?: boolean } | { type: "agent"; text: string } | { type: "thought"; text: string } | { type: "tool"; id: string; title: string; 
+/**  The provider's tool name, when reported. Older conversations may not have it. */
+name?: string | null; 
 /**  ACP tool kind: `read`, `edit`, `execute`, `search`, `fetch`, `think`… */
 kind: string; status: AgentToolStatus; locations: IpcPath[]; 
 /**  Text the tool reported (command output…), truncated. */

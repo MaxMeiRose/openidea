@@ -52,7 +52,7 @@ pub(super) fn call_fields(name: &str, input: &Value, cwd: &Path) -> Value {
         "Skill" => (s("skill").map_or_else(|| "Load skill".into(), |k| format!("Load skill: {k}")), "other"),
         _ => (mcp_title(name), "other"),
     };
-    let mut out = json!({ "title": title, "kind": kind, "rawInput": input });
+    let mut out = json!({ "name": name, "title": title, "kind": kind, "rawInput": input });
     if let Some(p) = path
         && matches!(kind, "read" | "edit" | "search")
     {
@@ -225,6 +225,9 @@ mod tests {
         assert_eq!(read["locations"], json!([{"path": "/x/b.rs", "line": 10}]));
         let bash = call_fields("Bash", &json!({"command": "ls\npwd", "description": "List"}), cwd);
         assert_eq!((bash["title"].as_str(), bash["kind"].as_str()), (Some("ls …"), Some("execute")));
+        assert_eq!(bash["name"], "Bash");
+        assert_eq!(call_fields("Grep", &json!({}), cwd)["name"], "Grep");
+        assert_eq!(call_fields("Glob", &json!({}), cwd)["name"], "Glob");
         assert_eq!(call_fields("Grep", &json!({"pattern": "fn", "path": "/w/src"}), cwd)["title"], "grep \"fn\" src");
         assert_eq!(call_fields("mcp__docs__read", &json!({}), cwd)["title"], "docs: read");
         assert_eq!(call_fields("WebSearch", &json!({"query": "q"}), cwd)["kind"], "fetch");
