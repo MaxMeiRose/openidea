@@ -5,6 +5,7 @@ import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import { FILES_DRAG, dragSession, registerDropTarget } from "@/ui";
 import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
+import * as tauriCore from "@/platform/tauriCore";
 import { Composer } from "./Composer";
 import { composerDraft, updateComposer, useAgents } from "./store";
 
@@ -32,6 +33,7 @@ beforeEach(() => {
 
 afterEach(() => {
   document.elementFromPoint = originalHitTest;
+  vi.restoreAllMocks();
 });
 
 function setup(root = "/project", projectRoot = "/project") {
@@ -110,6 +112,36 @@ describe("Composer file drops", () => {
       { path: "/worktrees/project/src/main.ts", rel: "src/main.ts" },
       { path: "/other/notes.md", rel: "/other/notes.md" },
     ]);
+  });
+
+  it("keeps project-tree images as file references and ignores virtual documents", () => {
+    const { input } = setup();
+    const drag = dragSession({ type: FILES_DRAG, payload: "/project/design.png\njdt://contents/Example.class" });
+    act(() => {
+      drag.move(20, 20);
+      expect(drag.drop(20, 20)).toBe(true);
+    });
+    expect(input).toHaveValue("@design.png ");
+    expect(composerDraft("drop-test").files).toEqual([{ path: "/project/design.png", rel: "design.png" }]);
+    expect(composerDraft("drop-test").images).toEqual([]);
+  });
+
+  it("continues attaching images dropped from the operating system", async () => {
+    const readImage = vi.spyOn(tauriCore, "invokeLocal").mockResolvedValue("data:image/png;base64,cG5n");
+    const { box, input } = setup();
+    vi.spyOn(box, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 200, 100));
+    await waitFor(() => expect(native.listen).toHaveBeenCalled());
+    act(() =>
+      onNativeDrop({
+        payload: { type: "drop", paths: ["/project/design.png"], position: new PhysicalPosition(30, 20) },
+      }),
+    );
+    await waitFor(() =>
+      expect(composerDraft("drop-test").images).toEqual([{ mimeType: "image/png", data: "cG5n", name: "design.png" }]),
+    );
+    expect(readImage).toHaveBeenCalledWith("fs_read_image", { path: "/project/design.png" });
+    expect(input).toHaveValue("");
+    expect(composerDraft("drop-test").files).toEqual([]);
   });
 
   it("still accepts native file drops only within the prompt", async () => {

@@ -40,7 +40,7 @@ async function seedAndDock(page: Page) {
   await page.locator("span[title='Repro task']").first().waitFor();
 }
 
-test("drags the docked conversation back onto the editor", async ({ page }) => {
+test("keeps the current conversation docked when dragged onto an editor", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("tree", { name: "Project" }).waitFor();
   // An editor pane, so the session tab has a content drop target to land on.
@@ -56,15 +56,14 @@ test("drags the docked conversation back onto the editor", async ({ page }) => {
   await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, { steps: 10 });
   await page.mouse.up();
 
-  await expect(page.getByRole("tab", { name: "Repro task" })).toBeVisible();
-  await expect(page.getByRole("tree", { name: "Agent tasks" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Editor" }).getByRole("tab", { name: "Repro task" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Agents" }).getByRole("tab", { name: "Repro task" })).toBeVisible();
 });
 
-test("drags the docked conversation back onto the empty editor", async ({ page }) => {
+test("keeps the current conversation docked when dragged onto an empty editor", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("tree", { name: "Project" }).waitFor();
-  // Docking closes the session tab; with no other tabs the editor is empty and
-  // must still take the drop (regression: the empty state had no drop target).
+  // An accidental drop on an empty editor must also leave the active chat docked.
   await seedAndDock(page);
   await expect(page.locator("[data-editor-area] [role='tabpanel']")).toHaveCount(0);
 
@@ -76,7 +75,8 @@ test("drags the docked conversation back onto the empty editor", async ({ page }
   await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, { steps: 10 });
   await page.mouse.up();
 
-  await expect(page.getByRole("tab", { name: "Repro task" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Editor" }).getByRole("tab", { name: "Repro task" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Agents" }).getByRole("tab", { name: "Repro task" })).toBeVisible();
 });
 
 test("docks a session tab dropped on the tool window", async ({ page }) => {
@@ -100,11 +100,13 @@ test("docks a session tab dropped on the tool window", async ({ page }) => {
       docked: null,
     });
     toolWindowService().show(TOOL_WINDOW, true);
-    store.openTask(task.id);
+    store.openTaskInEditorLocation(task.id);
   }, TASK);
-  await page.getByRole("tab", { name: "Repro task" }).waitFor();
+  const editor = page.getByRole("region", { name: "Editor" });
+  const agents = page.getByRole("region", { name: "Agents" });
+  await editor.getByRole("tab", { name: "Repro task" }).waitFor();
 
-  const tab = page.getByRole("tab", { name: "Repro task" });
+  const tab = editor.getByRole("tab", { name: "Repro task" });
   const to = await page.getByRole("tree", { name: "Agent tasks" }).boundingBox();
   const from = await tab.boundingBox();
   await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
@@ -113,7 +115,42 @@ test("docks a session tab dropped on the tool window", async ({ page }) => {
   await page.mouse.up();
 
   // Docked: the tab closes and the tool window gives itself to the conversation.
-  await expect(page.getByRole("tab", { name: "Repro task" })).toHaveCount(0);
+  await expect(editor.getByRole("tab", { name: "Repro task" })).toHaveCount(0);
   await expect(page.getByRole("tree", { name: "Agent tasks" })).toHaveCount(0);
-  await expect(page.locator("span[title='Repro task']").first()).toBeVisible();
+  await expect(agents.getByRole("tab", { name: "Repro task" })).toBeVisible();
+});
+
+test("keeps multiple conversations as separate side-panel tabs", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("tree", { name: "Project" }).waitFor();
+  await page.evaluate(async (task) => {
+    const storePath = "/src/features/agents/store.ts";
+    const store = await import(storePath);
+    const second = { ...task, id: "t2", title: "Second task" };
+    store.useAgents.setState({
+      loaded: true,
+      error: null,
+      providers: [],
+      tasks: new Map([
+        [task.id, task],
+        [second.id, second],
+      ]),
+      unread: new Set(),
+      docked: null,
+      dockedTabs: [],
+      homeOpen: false,
+    });
+    store.dockTask(task.id);
+  }, TASK);
+  const agents = page.getByRole("region", { name: "Agents" });
+  await agents.getByRole("button", { name: "Agent sessions" }).click();
+  await page
+    .getByRole("tree", { name: "Agent tasks" })
+    .getByRole("treeitem", { name: /Second task/ })
+    .click();
+  const tabs = agents.getByRole("tablist", { name: "Open Agent Sessions" });
+  await expect(tabs.getByRole("tab", { name: "Repro task" })).toBeVisible();
+  await expect(tabs.getByRole("tab", { name: "Second task" })).toHaveAttribute("aria-selected", "true");
+  await tabs.getByRole("tab", { name: "Repro task" }).click();
+  await expect(tabs.getByRole("tab", { name: "Repro task" })).toHaveAttribute("aria-selected", "true");
 });

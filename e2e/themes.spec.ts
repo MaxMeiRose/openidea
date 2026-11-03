@@ -91,7 +91,8 @@ for (const palette of palettes) {
     await page.keyboard.press("Escape");
     await expect(editor).toHaveCSS("background-color", palette.bg);
     await expect(editor).toHaveCSS("color", palette.fg);
-    await expect(editor.locator(".cm-gutters")).toHaveCSS("background-color", palette.bg);
+    await expect(editor.locator(".cm-gutters-before")).toHaveCSS("background-color", palette.bg);
+    await expect(editor.getByLabel("Code minimap")).toHaveCSS("background-color", palette.bg);
     await expect
       .poll(() =>
         page.evaluate(async () => {

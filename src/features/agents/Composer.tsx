@@ -11,6 +11,7 @@ import { nativeDropPoint } from "@/platform/nativeDrop";
 import { invokeLocal } from "@/platform/tauriCore";
 import { useTx } from "@/platform/i18n";
 import { basename } from "@/platform/project";
+import { isVirtualUri } from "@/platform/virtualDocs";
 import { notifications, OWNS_FILE_DROP } from "@/workbench/contributions";
 import { FILES_DRAG, Icon, IconButton, Popup, fileIconName, registerDropTarget } from "@/ui";
 import {
@@ -225,10 +226,11 @@ export function Composer(props: ComposerProps) {
   useEffect(() => {
     const box = boxRef.current;
     if (!box) return;
-    const addPaths = (paths: readonly string[]) => {
+    const addPaths = (paths: readonly string[], attachImages: boolean) => {
       const refs: FileRef[] = [];
       for (const path of paths) {
-        if (IMAGE_EXTENSIONS.test(path)) {
+        if (!path || isVirtualUri(path)) continue;
+        if (attachImages && IMAGE_EXTENSIONS.test(path)) {
           void invokeLocal<string>("fs_read_image", { path }).then((url) => {
             const image = imageFromDataUrl(url, basename(path));
             if (image) addImages([image]);
@@ -255,7 +257,7 @@ export function Composer(props: ComposerProps) {
       leave: () => setDropOver(false),
       drop: (data) => {
         setDropOver(false);
-        addPaths(data.payload.split("\n").filter(Boolean));
+        addPaths(data.payload.split("\n"), false);
       },
     });
     let unlisten: (() => void) | undefined;
@@ -270,7 +272,7 @@ export function Composer(props: ComposerProps) {
             const { x, y } = nativeDropPoint(p.position);
             const inside = x >= bounds.left && x < bounds.right && y >= bounds.top && y < bounds.bottom;
             setDropOver(p.type !== "drop" && inside);
-            if (p.type === "drop" && inside && p.paths.length) addPaths(p.paths);
+            if (p.type === "drop" && inside && p.paths.length) addPaths(p.paths, true);
           })
           .then((u) => {
             if (disposed) u();
