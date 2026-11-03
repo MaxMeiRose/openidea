@@ -70,20 +70,24 @@ describe("tool call groups", () => {
       tool("b", "Read", "Read b.ts", "failed"),
       { type: "permission", id: 1, title: "Permission needed", options: [], chosen: null },
       tool("c", "Read", "Read c.ts"),
+      thought,
+      tool("d", "Read", "Read d.ts"),
     ];
     openSession();
     const group = (await screen.findByText("Read", { exact: true })).closest("details")!;
     expect(group).not.toHaveAttribute("open");
-    expect(within(group).getByText("×2")).toBeVisible();
+    expect(within(group).getByText("×3")).toBeVisible();
     expect(within(group).getByLabelText("Failed")).toBeInTheDocument();
     expect(within(group).getByText("Read a.ts")).not.toBeVisible();
     expect(screen.getByRole("alert", { name: "Permission needed" })).toBeVisible();
     expect(screen.getByText("Other tool").closest("details")).not.toHaveAttribute("open");
-    expect(screen.getByText("Read c.ts").closest("details")).not.toHaveAttribute("open");
+    expect(within(group).getByText("Read c.ts")).not.toBeVisible();
+    expect(screen.getByText("Read d.ts").closest("details")).not.toHaveAttribute("open");
 
     fireEvent.click(group.querySelector("summary")!);
     expect(within(group).getByText("Read a.ts")).toBeVisible();
     expect(within(group).getByText("Read b.ts")).toBeVisible();
+    expect(within(group).getByText("Read c.ts")).toBeVisible();
     expect(within(group).getByText("output a")).not.toBeVisible();
     fireEvent.click(within(group).getByText("Read a.ts"));
     expect(within(group).getByText("output a")).toBeVisible();

@@ -32,23 +32,28 @@ describe("grouping tool calls", () => {
       tool("c", "Read"),
       { type: "permission", id: 1, title: "Approve", options: [], chosen: null },
       tool("d", "Read"),
+      { type: "plan", items: [] },
+      tool("g", "Read"),
       { type: "thought", text: "second" },
       tool("e", "Read"),
-      { type: "agent", text: "answer" },
+      { type: "agent", text: "progress" },
       tool("f", "Read"),
+      { type: "user", text: "next", attachments: [] },
+      tool("h", "Read"),
     ]);
     expect(
       items.map((item) => (item.type === "entry" ? item.entry.type : [item.name, item.calls.map((call) => call.id)])),
     ).toEqual([
       "thought",
-      ["Read", ["a", "c"]],
+      ["Read", ["a", "c", "d", "g"]],
       ["OtherRead", ["b"]],
       "permission",
-      ["Read", ["d"]],
+      "plan",
       "thought",
-      ["Read", ["e"]],
+      ["Read", ["e", "f"]],
       "agent",
-      ["Read", ["f"]],
+      "user",
+      ["Read", ["h"]],
     ]);
   });
 
