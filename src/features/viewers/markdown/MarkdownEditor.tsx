@@ -6,6 +6,7 @@
 import {
   useDeferredValue,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -16,10 +17,11 @@ import {
   type ReactNode,
 } from "react";
 import clsx from "clsx";
+import type { GroupImperativeHandle } from "react-resizable-panels";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { maybeEditorService } from "@/workbench/contributions";
 import { highlightInto } from "@/editor/lsp/markdown";
-import { FloatingToolbar, selectableText } from "@/ui";
+import { FloatingToolbar, selectableText, SplitGroup, SplitHandle, SplitPanel } from "@/ui";
 import { useLiveMarkdown } from "./live";
 import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn, subscribeTheme, themeKey } from "./mermaid";
 import { modeOf, useMarkdownModes } from "./modes";
@@ -61,10 +63,43 @@ export function MarkdownEditor({
 }) {
   const mode = useMarkdownModes((s) => modeOf(s, path));
   const ref = useRef<HTMLDivElement>(null);
+  const group = useRef<GroupImperativeHandle>(null);
+  const editorSize = useRef(50);
+  const id = useId();
+  const editorId = `${id}-editor`;
+  const previewId = `${id}-preview`;
+
+  // Keep both panels (and the editor) mounted when switching layouts. Only user
+  // resizes replace the split ratio, so single-panel modes do not overwrite it.
+  useLayoutEffect(() => {
+    const size = mode === "editor" ? 100 : mode === "preview" ? 0 : editorSize.current;
+    group.current?.setLayout({ [editorId]: size, [previewId]: 100 - size });
+  }, [mode, editorId, previewId]);
+
   return (
     <div ref={ref} className={clsx(styles.split, styles[`mode-${mode}`])}>
-      <div className={styles.editor}>{children}</div>
-      {mode !== "editor" && <MarkdownPreview path={path} sync={mode === "split"} />}
+      <SplitGroup
+        className={styles.panels}
+        groupRef={group}
+        orientation="horizontal"
+        disabled={mode !== "split"}
+        onLayoutChanged={(layout, { isUserInteraction }) => {
+          if (mode === "split" && isUserInteraction) editorSize.current = layout[editorId]!;
+        }}
+      >
+        <SplitPanel
+          id={editorId}
+          className={styles.editor}
+          minSize={mode === "split" ? 120 : 0}
+          maxSize={mode === "preview" ? 0 : "100%"}
+        >
+          {children}
+        </SplitPanel>
+        <SplitHandle className={styles.divider} aria-label={tx("Resize Markdown editor and preview")} />
+        <SplitPanel id={previewId} minSize={mode === "split" ? 120 : 0} maxSize={mode === "editor" ? 0 : "100%"}>
+          {mode !== "editor" && <MarkdownPreview path={path} sync={mode === "split"} />}
+        </SplitPanel>
+      </SplitGroup>
       {!actionsInTabs && (
         <FloatingToolbar targetRef={ref}>
           <MarkdownLayoutActions path={path} tabId={tabId} />

@@ -6,7 +6,6 @@
   position: relative;
 }
 .editor {
-  flex: 1 1 50%;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -14,8 +13,15 @@
 .mode-preview .editor {
   display: none;
 }
-.mode-split .editor {
-  border-right: 1px solid var(--border-editor-tabs, var(--border));
+.panels {
+  flex: 1;
+}
+.divider {
+  background: var(--border-editor-tabs, var(--border));
+}
+.mode-editor .divider,
+.mode-preview .divider {
+  display: none;
 }
 
 .layoutActions {
@@ -28,8 +34,9 @@
 }
 
 .preview {
-  flex: 1 1 50%;
+  flex: 1;
   min-width: 0;
+  min-height: 0;
   position: relative;
   overflow: auto;
   padding: 16px 28px 40vh;
