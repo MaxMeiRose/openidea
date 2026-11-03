@@ -21,8 +21,15 @@ const LEGACY_TOOL_PREFIXES: Array<[string, string, string]> = [
 ];
 
 /** Some older saved calls have no tool name; infer only the recognizable titles. */
-function toolName(call: ToolCall): string {
+function toolName(call: ToolCall, provider?: string): string {
   if (call.name) return call.name;
+  // Older native Codex transcripts did not store the tool name. Its command
+  // descriptions still identify reads, searches and terminal executions.
+  if (provider === "codex") {
+    if (call.kind === "execute") return "codex:commandExecution";
+    if (call.kind === "read" && call.title.startsWith("Read ")) return "codex:commandExecution";
+    if (call.kind === "search" && /^(?:Search|List)(?:\s|$)/.test(call.title)) return "codex:commandExecution";
+  }
   return (
     LEGACY_TOOL_PREFIXES.find(([kind, prefix]) => kind === call.kind && call.title.startsWith(prefix))?.[2] ??
     call.title
@@ -33,7 +40,7 @@ function toolName(call: ToolCall): string {
  * Collect calls of the same tool in a thought. Other entries remain separate;
  * a new thought or incoming user/parent message starts a new group.
  */
-export function groupToolCalls(entries: AgentEntry[]): ConversationItem[] {
+export function groupToolCalls(entries: AgentEntry[], provider?: string): ConversationItem[] {
   const out: ConversationItem[] = [];
   let groups = new Map<string, Extract<ConversationItem, { type: "tools" }>>();
   entries.forEach((entry, index) => {
@@ -44,9 +51,14 @@ export function groupToolCalls(entries: AgentEntry[]): ConversationItem[] {
       out.push({ type: "entry", index, entry });
       return;
     }
-    const name = toolName(entry);
+    const name = toolName(entry, provider);
+    const identified = !!entry.name || name === "codex:commandExecution";
     // An unnamed call without a title cannot safely be identified as the same tool.
-    const key = name ? (entry.name ? `name:${name}` : `legacy:${entry.kind}:${name}`) : `id:${entry.id}`;
+    const key = name
+      ? identified
+        ? `name:${name}${name === "codex:commandExecution" ? `:${entry.kind}` : ""}`
+        : `legacy:${entry.kind}:${name}`
+      : `id:${entry.id}`;
     let group = groups.get(key);
     if (!group) {
       group = { type: "tools", index, name, calls: [] };
@@ -69,7 +81,11 @@ const TOOL_LABELS: Record<string, string> = {
 };
 
 /** A readable label for the provider's stable tool identifier. */
-export function toolGroupLabel(name: string): string {
+export function toolGroupLabel(name: string, kind?: string): string {
+  if (name === "codex:commandExecution") {
+    if (kind === "read") return "Read";
+    if (kind === "search") return "Search";
+  }
   if (TOOL_LABELS[name]) return TOOL_LABELS[name];
   if (name.startsWith("mcp__")) return name.slice(5).replace("__", ": ");
   for (const prefix of ["codex:dynamicToolCall:", "codex:collabAgentToolCall:"]) {

@@ -81,6 +81,48 @@ describe("grouping tool calls", () => {
     expect(toolGroupLabel("mcp__first__run")).toBe("first: run");
     expect(toolGroupLabel("codex:dynamicToolCall:docs:search")).toBe("docs:search");
   });
+
+  it("groups Codex reads, searches and terminal commands separately within a thought", () => {
+    const name = "codex:commandExecution";
+    const items = groupToolCalls([
+      { type: "thought", text: "Inspect" },
+      tool("c1", name, "execute"),
+      tool("c2", name, "execute"),
+      tool("s1", name, "search"),
+      tool("r1", name, "read"),
+      tool("r2", name, "read"),
+      tool("s2", name, "search"),
+      tool("r3", name, "read"),
+    ]);
+    expect(items.flatMap((item) => (item.type === "tools" ? [item.calls.map((call) => call.id)] : []))).toEqual([
+      ["c1", "c2"],
+      ["s1", "s2"],
+      ["r1", "r2", "r3"],
+    ]);
+    expect(toolGroupLabel(name, "read")).toBe("Read");
+    expect(toolGroupLabel(name, "search")).toBe("Search");
+    expect(toolGroupLabel(name, "execute")).toBe("Terminal");
+  });
+
+  it("recognizes those same groups in older Codex conversations without tool names", () => {
+    const items = groupToolCalls(
+      [
+        { type: "thought", text: "Inspect" },
+        tool("c1", null, "execute", "cat one"),
+        tool("c2", null, "execute", "cat two"),
+        tool("r1", null, "read", "Read one.go"),
+        tool("r2", null, "read", "Read two.go"),
+        tool("s1", null, "search", "Search abc"),
+        tool("s2", null, "search", "Search xyz"),
+      ],
+      "codex",
+    );
+    expect(items.flatMap((item) => (item.type === "tools" ? [item.calls.map((call) => call.id)] : []))).toEqual([
+      ["c1", "c2"],
+      ["r1", "r2"],
+      ["s1", "s2"],
+    ]);
+  });
 });
 
 describe("quoting", () => {

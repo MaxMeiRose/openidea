@@ -62,6 +62,26 @@ function openSession() {
 }
 
 describe("tool call groups", () => {
+  it("groups Codex reads, searches and terminal commands into separate collapsed rows", async () => {
+    const name = "codex:commandExecution";
+    backend.entries = [
+      thought,
+      { ...tool("c1", name, "first command"), kind: "execute" },
+      { ...tool("r1", name, "Read first.go"), kind: "read" },
+      { ...tool("s1", name, "Search first"), kind: "search" },
+      { ...tool("c2", name, "second command"), name: null, kind: "execute" },
+      { ...tool("r2", name, "Read second.go"), name: null, kind: "read" },
+      { ...tool("s2", name, "Search second"), name: null, kind: "search" },
+    ];
+    useAgents.setState({ tasks: new Map([[task.id, { ...task, provider: "codex" }]]) });
+    openSession();
+    for (const label of ["Terminal", "Read", "Search"]) {
+      const group = (await screen.findByText(label, { exact: true })).closest("details")!;
+      expect(group).not.toHaveAttribute("open");
+      expect(within(group).getByText("×2")).toBeVisible();
+    }
+  });
+
   it("starts collapsed, keeps calls and failures accessible, and leaves permissions visible", async () => {
     backend.entries = [
       thought,

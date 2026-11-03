@@ -425,7 +425,7 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
   // Forks and undo apply to the task's own turns, not a subagent's conversation.
   const turns = useMemo(() => (entries && !subagent ? turnNumbers(entries) : null), [entries, subagent]);
-  const items = useMemo(() => (entries ? groupToolCalls(entries) : null), [entries]);
+  const items = useMemo(() => (entries ? groupToolCalls(entries, task.provider) : null), [entries, task.provider]);
   return (
     <div className={styles.streamArea}>
       {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
@@ -997,9 +997,9 @@ function ToolGroup({ task, name, calls }: { task: AgentTask; name: string; calls
     <details className={styles.toolDetails}>
       <summary className={styles.tool}>
         <Icon name="chevron-right" size={12} className={styles.toolChevron} />
-        <Icon name={name === "codex:commandExecution" ? "terminal" : (TOOL_ICONS[first.kind] ?? "run")} size={14} />
+        <Icon name={TOOL_ICONS[first.kind] ?? "run"} size={14} />
         <span className={styles.toolTitle}>
-          {grouped ? tx(toolGroupLabel(name) || "Tool") : shortTitle(task, first.title || first.kind)}
+          {grouped ? tx(toolGroupLabel(name, first.kind) || "Tool") : shortTitle(task, first.title || first.kind)}
         </span>
         {grouped && <span className={styles.toolCount}>×{calls.length}</span>}
         {!grouped && <ToolDiffs task={task} entry={first} />}
