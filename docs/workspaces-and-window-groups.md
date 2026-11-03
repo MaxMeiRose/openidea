@@ -34,6 +34,8 @@ The grouping model lives in `ide-workspace`, independently of project ownership.
 
 On macOS the welcome/project chooser opens as a centred 960 × 680 window. Closing a project returns to that normal-sized chooser. Its frame is separate from remembered project and Settings frames, so a fullscreen project does not make the chooser fullscreen at the next launch.
 
+New and restored native tabs inherit their group's frame throughout project loading. Normal-window geometry is restored only for standalone windows; completing a project launch must preserve the frame of a tab that is joining or already belongs to a group.
+
 ## Validation
 
 Automated coverage includes workspace manifest validation and persistence, missing members, independent language-server initialization roots, cross-root search/repositories/run directories, document preservation after unlinking, window-group membership/order, dialog failures and tab keyboard controls.

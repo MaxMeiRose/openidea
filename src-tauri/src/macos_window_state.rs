@@ -57,6 +57,13 @@ fn key(window: &Window) -> Option<&str> {
     }
 }
 
+/// Native tabs take their frame from AppKit's containing window. A launch can
+/// finish loading either before or after it has joined the native group.
+fn group_owns_frame(window: &Window) -> bool {
+    window.state::<WindowFrames>().grouped_launches.lock().contains(window.label())
+        || window.state::<windows::WindowsState>().groups.lock().group(window.label()).is_some()
+}
+
 fn remember(window: &Window) -> tauri::Result<()> {
     let state = window.state::<WindowFrames>();
     if state.restoring.lock().contains(window.label()) {
@@ -102,6 +109,9 @@ fn remember(window: &Window) -> tauri::Result<()> {
 }
 
 fn restore(window: &Window) -> tauri::Result<()> {
+    if group_owns_frame(window) {
+        return Ok(());
+    }
     let Some(key) = key(window) else { return Ok(()) };
     let state = window.state::<WindowFrames>();
     let frame = state.frames.lock().get(key).cloned();
@@ -202,6 +212,13 @@ fn save(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 pub fn project_opened(window: &Window) -> tauri::Result<()> {
     let state = window.state::<WindowFrames>();
     if !state.projects.lock().insert(window.label().to_owned()) {
+        return Ok(());
+    }
+    if group_owns_frame(window) {
+        // Resizing/centring a newly joined fullscreen tab leaves its content at
+        // the normal IDE size inside the fullscreen Space, surrounded by black.
+        state.pending_modes.lock().remove(window.label());
+        tracing::debug!(window = window.label(), "native tab group owns project frame");
         return Ok(());
     }
     state.restoring.lock().insert(window.label().to_owned());
