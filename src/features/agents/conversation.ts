@@ -20,44 +20,119 @@ export interface PathLink {
   col?: number;
 }
 
-const PATH = /^(?:\.\/)?([\w.@-]+(?:\/[\w.@-]+)*\.[A-Za-z][A-Za-z0-9]*)(?::(\d+)(?::(\d+))?|#L(\d+))?$/;
-
-/** Explicit Markdown links can also name files with spaces or non-ASCII names. */
-export function fileHref(href: string, cwd: string): PathLink | null {
-  if (!href || href.startsWith("#") || href.startsWith("//") || /^[a-z][a-z\d+.-]*:/i.test(href)) return null;
-  let decoded: string;
+/** Local file URLs can name files but must not name a remote host. */
+export function localFileUriPath(href: string): string | null {
   try {
-    decoded = decodeURIComponent(href);
+    const url = new URL(href);
+    if (url.protocol !== "file:" || (url.hostname && url.hostname !== "localhost") || url.search) return null;
+    const path = /^\/[a-z]:\//i.test(url.pathname) ? url.pathname.slice(1) : url.pathname;
+    return path + url.hash;
   } catch {
     return null;
   }
-  const match = /^(.*?)(?::(\d+)(?::(\d+))?|#L(\d+))?$/.exec(decoded);
-  if (!match?.[1] || [...decoded].some((char) => char.charCodeAt(0) < 32)) return null;
-  const path = match[1].startsWith("/") ? match[1] : `${cwd.replace(/\/$/, "")}/${match[1]}`;
-  const link: PathLink = { path };
+}
+
+/** Normalize a local path against the agent's working directory. */
+function absolutePath(value: string, cwd: string): string {
+  const windows = /^[a-z]:[\\/]/i.test(value) || /^[a-z]:[\\/]/i.test(cwd);
+  const path = windows ? value.replace(/\\/g, "/") : value;
+  const base = windows ? cwd.replace(/\\/g, "/") : cwd;
+  const joined = path.startsWith("/") || /^[a-z]:\//i.test(path) ? path : base.replace(/\/+$/, "") + "/" + path;
+  const prefix = joined.startsWith("/") ? "/" : (/^[a-z]:\//i.exec(joined)?.[0] ?? "");
+  const parts: string[] = [];
+  for (const part of joined.slice(prefix.length).split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (parts.length && parts.at(-1) !== "..") parts.pop();
+      else if (!prefix) parts.push(part);
+    } else {
+      parts.push(part);
+    }
+  }
+  return prefix + parts.join("/");
+}
+
+function parseFilePath(value: string, cwd: string): PathLink | null {
+  if (!value || value.startsWith("//") || [...value].some((c) => c.charCodeAt(0) < 32)) return null;
+  const match = /^(.*?)(?::(\d+)(?::(\d+))?|#L(\d+))?$/.exec(value);
+  if (!match?.[1]) return null;
+  const link: PathLink = { path: absolutePath(match[1], cwd) };
   const line = match[2] ?? match[4];
   if (line) link.line = Math.max(0, Number(line) - 1);
   if (match[3]) link.col = Math.max(0, Number(match[3]) - 1);
   return link;
 }
 
-/**
- * The file an inline code span names (`src/lib.rs`, `src/main.rs:12`, `a/b.ts:3:5`,
- * `/abs/x.py#L7`), resolved against `cwd`; null for text that isn't a file path
- * (`foo()`, `cargo test`, URLs, `1.5`, folders, words without an extension).
- */
+/** Resolve a Markdown link to a local file, including local file URLs. */
+export function fileHref(href: string, cwd: string): PathLink | null {
+  if (!href || href.startsWith("#") || href.startsWith("//")) return null;
+  let value = href;
+  if (/^file:/i.test(value)) {
+    const local = localFileUriPath(value);
+    if (local === null) return null;
+    value = local;
+  } else if (!/^[a-z]:[\\/]/i.test(value) && /^[a-z][a-z\d+.-]*:/i.test(value)) {
+    return null;
+  }
+  try {
+    return parseFilePath(decodeURIComponent(value), cwd);
+  } catch {
+    return null;
+  }
+}
+
+/** A code span naming a local file; file existence is checked separately. */
 export function pathLink(text: string, cwd: string): PathLink | null {
-  const t = text.trim();
-  if (!t || /\s|:\/\//.test(t)) return null;
-  const absolute = t.startsWith("/");
-  const m = PATH.exec(absolute ? t.slice(1) : t);
-  if (!m) return null;
-  const rel = m[1]!;
-  const path = absolute ? `/${rel}` : `${cwd.replace(/\/$/, "")}/${rel}`;
-  const line = m[2] ?? m[4];
-  const out: PathLink = { path };
-  if (line) out.line = Math.max(0, Number(line) - 1);
-  if (m[3]) out.col = Math.max(0, Number(m[3]) - 1);
+  const value = text.trim();
+  if (!value || value.length > 4096 || /[\r\n]/.test(value)) return null;
+  if (/^file:/i.test(value)) return fileHref(value, cwd);
+  if (
+    value.startsWith("//") ||
+    value.startsWith("~/") ||
+    (!/^[a-z]:[\\/]/i.test(value) && /^[a-z][a-z\d+.-]*:/i.test(value))
+  )
+    return null;
+  const path = value.replace(/(?::\d+(?::\d+)?|#L\d+)$/, "");
+  const name = path.split(/[\\/]/).at(-1) ?? "";
+  if (!name || name === "." || name === "..") return null;
+  const extension = /\.[\p{L}][\p{L}\p{N}_-]{0,30}$/u.test(name);
+  const dotfile = /^\.[\p{L}\p{N}_-]+$/u.test(name);
+  if (!extension && !dotfile && !/[\\/]/.test(path)) return null;
+  return parseFilePath(value, cwd);
+}
+
+export interface FilePathToken {
+  from: number;
+  to: number;
+  link: PathLink;
+}
+
+// Bare paths are restricted to complete path-like tokens. Existing files are
+// checked before they become links, so prose that resembles a filename stays text.
+const PLAIN_PATH =
+  /(^|[\s([{"'“‘：])((?:(?:file:\/\/(?:localhost)?\/|[A-Za-z]:[\\/]|\/|\.\.?\/|[\p{L}\p{N}_.@-]+\/)[\p{L}\p{N}\p{M}_@.%+/\\-]+|[\p{L}\p{N}\p{M}_@-][\p{L}\p{N}\p{M}_@.-]*\.[\p{L}][\p{L}\p{N}_-]*)(?::\d+(?::\d+)?|#L\d+)?)/gmu;
+const QUOTED_PATH = /(["'])([^"'\r\n]+)\1/gu;
+const LINE_PATH =
+  /(?:^|\n)[ \t]*((?:[A-Za-z]:[\\/]|\/|\.\.?\/|[\p{L}\p{N}_.@-]+\/)[^\r\n"'<>]*?\.[\p{L}][\p{L}\p{N}_-]*(?::\d+(?::\d+)?|#L\d+)?)[.,;!?。，；！？]?[ \t]*(?=$|\n)/gu;
+
+/** Paths in prose, with offsets so their visible text can become clickable. */
+export function filePathTokens(text: string, cwd: string): FilePathToken[] {
+  const candidates: FilePathToken[] = [];
+  const add = (value: string, from: number) => {
+    const trimmed = value.replace(/[.,;!?。，；！？）)\]}]+$/u, "");
+    const link = pathLink(trimmed, cwd);
+    if (link) candidates.push({ from, to: from + trimmed.length, link });
+  };
+  for (const match of text.matchAll(LINE_PATH)) add(match[1]!, match.index + match[0].indexOf(match[1]!));
+  for (const match of text.matchAll(QUOTED_PATH)) add(match[2]!, match.index + 1);
+  for (const match of text.matchAll(PLAIN_PATH)) add(match[2]!, match.index + match[1]!.length);
+  candidates.sort((a, b) => a.from - b.from || b.to - a.to);
+  const out: FilePathToken[] = [];
+  for (const candidate of candidates) {
+    if (out.length && candidate.from < out.at(-1)!.to) continue;
+    out.push(candidate);
+    if (out.length === 128) break;
+  }
   return out;
 }
 

@@ -291,6 +291,10 @@
 .fileLink:hover {
   text-decoration: underline;
 }
+.fileLink:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: 2px;
+}
 
 /* Lezer classHighlighter tokens in fenced code (same colours as the Markdown preview). */
 .markdown :global(.tok-keyword),
