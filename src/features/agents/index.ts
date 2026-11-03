@@ -81,9 +81,9 @@ export function activate(): () => void {
       icon: () => "toolwindow-agents",
       restorable: true,
     }),
-    // An explicit editor drop sets the placement for subsequent sessions too.
+    // In side-panel mode, a small drag while choosing history must not move chats into the editor.
     registerEditorDropHandler({
-      accepts: (type) => type === TASK_DRAG,
+      accepts: (type) => type === TASK_DRAG && useAgents.getState().sessionLocation === "editor",
       drop: ({ payload }) => void executeAction("agents.openTaskInEditor", payload),
     }),
     registerStatusItem({ id: "agents.status", align: "right", priority: 3, title: "Agents", component: AgentsStatus }),

@@ -48,21 +48,74 @@ async function move(page: Page, source: string, target: string) {
   await page.mouse.up();
 }
 
+const rows = (java: string[], npm: string[]) => [
+  "Spring Boot",
+  "Running",
+  "Not Started",
+  ...java,
+  "npm",
+  "Running",
+  "Not Started",
+  ...npm,
+];
+
 test("service pointer ordering works for Java and npm and survives reload", async ({ workbench: page }) => {
   await configure(page);
   const tree = page.getByRole("tree", { name: "Services", exact: true });
   await move(page, "portal", "gateway");
-  await expect(tree.getByRole("treeitem")).toHaveText(["Spring Boot", "portal", "gateway", "npm", "web", "worker"]);
+  await expect(tree.getByRole("treeitem")).toHaveText(rows(["portal", "gateway"], ["web", "worker"]));
   await expect(tree.getByRole("treeitem", { name: "portal", exact: true })).toHaveAttribute("aria-selected", "true");
   await move(page, "worker", "web");
-  await expect(tree.getByRole("treeitem")).toHaveText(["Spring Boot", "portal", "gateway", "npm", "worker", "web"]);
+  await expect(tree.getByRole("treeitem")).toHaveText(rows(["portal", "gateway"], ["worker", "web"]));
   await page.reload();
   await expect(page.getByRole("tree", { name: "Project" })).toBeVisible();
   await configure(page);
-  await expect(tree.getByRole("treeitem")).toHaveText(["Spring Boot", "portal", "gateway", "npm", "worker", "web"]);
+  await expect(tree.getByRole("treeitem")).toHaveText(rows(["portal", "gateway"], ["worker", "web"]));
   await tree.getByRole("treeitem", { name: "web", exact: true }).click();
   await page.getByRole("button", { name: "Move Up", exact: true }).click();
-  await expect(tree.getByRole("treeitem")).toHaveText(["Spring Boot", "portal", "gateway", "npm", "web", "worker"]);
+  await expect(tree.getByRole("treeitem")).toHaveText(rows(["portal", "gateway"], ["web", "worker"]));
+});
+
+test("service rows move between running and not started as their state changes", async ({ workbench: page }) => {
+  await configure(page);
+  const tree = page.getByRole("tree", { name: "Services", exact: true });
+  await page.evaluate(async () => {
+    const storePath = "/src/features/run/store.ts";
+    const { useRun } = await import(storePath);
+    const config = useRun.getState().configs.find((c: { id: string }) => c.id === "gateway");
+    useRun.setState({
+      sessions: [
+        {
+          id: "gateway-run",
+          config,
+          runId: null,
+          status: "running",
+          exitCode: null,
+          startedAt: 1,
+          endedAt: null,
+          stdinClosed: false,
+        },
+      ],
+    });
+  });
+  await expect(tree.getByRole("treeitem")).toHaveText([
+    /Spring Boot/,
+    "Running",
+    /gateway/,
+    "Not Started",
+    "portal",
+    "npm",
+    "Running",
+    "Not Started",
+    "web",
+    "worker",
+  ]);
+  await page.evaluate(async () => {
+    const storePath = "/src/features/run/store.ts";
+    const { useRun } = await import(storePath);
+    useRun.setState({ sessions: useRun.getState().sessions.map((s: object) => ({ ...s, status: "finished" })) });
+  });
+  await expect(tree.getByRole("treeitem")).toHaveText(rows(["gatewayFinished", "portal"], ["web", "worker"]));
 });
 
 test("service dragging scrolls across virtual rows without losing source identity", async ({ workbench: page }) => {

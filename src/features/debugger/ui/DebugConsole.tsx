@@ -6,6 +6,9 @@ import { EmptyState, IconButton, showContextMenu, T, type MenuItem } from "@/ui"
 import { tx } from "@/platform/i18n";
 import { spanStyle } from "@/ui/ansi";
 import ansi from "@/ui/ansi.module.css";
+import { findOutputLinks } from "@/features/run/links";
+import { openTarget, openUrl, runDirectory } from "@/features/run/navigate";
+import { segmentLine } from "@/features/run/segments";
 import { appendConsole, clearConsole, evaluate, isLive, useDebug, type DebugSession } from "../state";
 import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
 import styles from "./DebugToolWindow.module.css";
@@ -21,6 +24,7 @@ export function DebugServiceConsole({ sessionId }: { sessionId: number }) {
 
 export function DebugConsole({ session, interactive = true }: { session: DebugSession; interactive?: boolean }) {
   const lines = useDebug((s) => s.console[session.id]);
+  const cwd = runDirectory(session.launch?.cwd ?? session.runConfig?.cwd);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const programmatic = useRef(false);
@@ -128,11 +132,31 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
                 className={clsx(styles.out, styles[`cat-${l.category}`])}
                 style={{ transform: `translateY(${item.start}px)` }}
               >
-                {l.spans.map((sp, i) => (
-                  <span key={i} style={spanStyle(sp)}>
-                    {sp.text}
-                  </span>
-                ))}
+                {segmentLine(l.spans, findOutputLinks(l.text)).map((segment, i) =>
+                  segment.link ? (
+                    <a
+                      key={i}
+                      role="link"
+                      tabIndex={-1}
+                      href={segment.link.kind === "url" ? segment.link.url : undefined}
+                      className={styles.link}
+                      style={spanStyle(segment.style)}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        if (window.getSelection()?.toString()) return;
+                        const link = segment.link!;
+                        if (link.kind === "url") void openUrl(link.url);
+                        else void openTarget(link.target, cwd);
+                      }}
+                    >
+                      {segment.text}
+                    </a>
+                  ) : (
+                    <span key={i} style={spanStyle(segment.style)}>
+                      {segment.text}
+                    </span>
+                  ),
+                )}
               </span>
             );
           })}

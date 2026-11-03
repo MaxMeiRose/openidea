@@ -29,6 +29,8 @@ import {
   vcsArg,
 } from "./operations";
 import { isSameOrInside } from "./paths";
+import { repositoriesForSelection, repositoryAction } from "./gitContextMenu";
+import { useVcs } from "@/features/vcs/store";
 import { tx } from "@/platform/i18n";
 
 /** Keys handled by the project view itself (the default keymap has no entries for them). */
@@ -148,7 +150,8 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   const singleFile = single && !single.dir ? single : null;
   const project = useProject.getState().project;
   // Scratches and other contributed roots live outside the project: no VCS, roots or LSP usages.
-  const inProject = !!project && nodes.every((n) => isSameOrInside(n.path, project.root));
+  const contentRoots = project ? (project.workspace?.projects ?? [project.root]) : [];
+  const inProject = nodes.length > 0 && nodes.every((n) => contentRoots.some((root) => isSameOrInside(n.path, root)));
   const items: MenuItem[] = [];
   const push = (...list: Entry[]) => list.forEach((i) => i && items.push(i));
 
@@ -315,9 +318,12 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   );
 
   // Git ›
-  if (inProject && project?.isGit) {
+  const vcs = useVcs.getState();
+  const repos = inProject && vcs.available ? repositoriesForSelection(nodes, vcs.roots) : [];
+  if (repos.length) {
     const arg = vcsArg(nodes);
     const dirs = nodes.some((n) => n.dir);
+    const repoAction = (id: string, label: string) => repositoryAction(id, label, repos);
     push(
       submenu(
         "git",
@@ -327,6 +333,7 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
           act("vcs.addToVcs", arg, "Add"),
           nonRoot.length === nodes.length &&
             nodes.length > 0 &&
+            nodes.every((n) => !vcs.roots.includes(n.path)) &&
             nodes.every((n) => !n.placeholder) &&
             submenu("gitIgnore", "Add to .gitignore", [
               act("vcs.ignoreShared", arg, ".gitignore"),
@@ -338,22 +345,25 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
           nodes.length > 0 &&
             nodes.every((n) => !n.placeholder) &&
             act("vcs.compareWithBranch", arg, "Compare with Branch…"),
-          nodes.length > 0 && nodes.every((n) => !n.placeholder) && act("vcs.showHistory", arg, "Show History"),
+          single && !single.placeholder && act("vcs.showHistory", arg, "Show History"),
+          act("vcs.showLog", undefined, "Show Git Log"),
           act("vcs.rollback", arg, "Rollback…"),
           { kind: "separator" },
-          act("vcs.push", undefined, "Push…"),
-          act("vcs.update", undefined, "Pull…"),
-          act("vcs.fetch", undefined, "Fetch"),
-          act("vcs.merge", undefined, "Merge…"),
-          act("vcs.rebase", undefined, "Rebase…"),
+          repoAction("vcs.push", "Push…"),
+          repoAction("vcs.pull", "Pull…"),
+          repoAction("vcs.fetch", "Fetch"),
+          repoAction("vcs.merge", "Merge…"),
+          repoAction("vcs.rebase", "Rebase…"),
           { kind: "separator" },
-          act("vcs.branches", undefined, "Branches…"),
-          act("vcs.newBranch", undefined, "New Branch…"),
-          act("vcs.newTag", undefined, "New Tag…"),
-          act("vcs.resetHead", undefined, "Reset HEAD…"),
+          repoAction("vcs.branches", "Branches…"),
+          repoAction("vcs.newBranch", "New Branch…"),
+          repoAction("vcs.checkoutRevision", "Checkout Tag or Revision…"),
+          repoAction("vcs.newTag", "New Tag…"),
+          repoAction("vcs.resetHead", "Reset HEAD…"),
           { kind: "separator" },
-          act("vcs.stash", undefined, "Stash Changes…"),
-          act("vcs.unstash", undefined, "Unstash Changes…"),
+          repoAction("vcs.stash", "Stash Changes…"),
+          repoAction("vcs.unstash", "Unstash Changes…"),
+          repoAction("vcs.manageRemotes", "Manage Remotes…"),
         ],
         "branch",
       ),

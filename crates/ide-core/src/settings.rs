@@ -836,6 +836,18 @@ mod tests {
     }
 
     #[test]
+    fn code_minimap_defaults_on_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"editor":{"appearance":{}}}"#).unwrap();
+        assert!(old.editor.appearance.show_minimap);
+        let mut settings = Settings::default();
+        settings.editor.appearance.show_minimap = false;
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["editor"]["appearance"]["showMinimap"], false);
+        let restored: Settings = serde_json::from_value(json).unwrap();
+        assert!(!restored.editor.appearance.show_minimap);
+    }
+
+    #[test]
     fn tool_window_badges_default_on_and_round_trip() {
         let old: Settings = serde_json::from_str(r#"{"appearance":{"showToolWindowNames":true}}"#).unwrap();
         assert!(old.appearance.show_tool_window_badges);

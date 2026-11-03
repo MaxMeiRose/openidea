@@ -99,6 +99,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     smoothCaretMovement: false,
     caretMovementStyle: "snappy",
     lineNumbers: true,
+    showMinimap: true,
     methodSeparators: false,
     whitespaceLeading: true,
     whitespaceInner: true,

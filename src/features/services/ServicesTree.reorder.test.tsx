@@ -45,7 +45,14 @@ beforeEach(() => {
     roots: {},
     selectedKey: null,
     selectedKeys: new Set(),
-    expanded: new Set(["run:type:spring-boot", "run:type:npm"]),
+    expanded: new Set([
+      "run:type:spring-boot",
+      "run:group:running:spring-boot",
+      "run:group:not-started:spring-boot",
+      "run:type:npm",
+      "run:group:running:npm",
+      "run:group:not-started:npm",
+    ]),
   });
   dispose = [
     registerServiceProvider(runServiceProvider),
@@ -74,20 +81,56 @@ describe("service reordering integration", () => {
     const { unmount } = render(<ServicesTreeView />);
     select("Portal");
     fireEvent.click(screen.getByRole("button", { name: "Move Up" }));
-    expect(names()).toEqual(["Spring Boot", "Portal", "Gateway", "npm", "Web", "Worker", "Docker"]);
+    expect(names()).toEqual([
+      "Spring Boot",
+      "Running",
+      "Not Started",
+      "Portal",
+      "Gateway",
+      "npm",
+      "Running",
+      "Not Started",
+      "Web",
+      "Worker",
+      "Docker",
+    ]);
     expect(useServicesTree.getState().selectedKey).toBe("run:config:Portal");
     expect(useRun.getState().configs).toBe(original);
     expect(screen.getByRole("button", { name: "Move Up" })).toBeDisabled();
     unmount();
     render(<ServicesTreeView />);
-    expect(names()).toEqual(["Spring Boot", "Portal", "Gateway", "npm", "Web", "Worker", "Docker"]);
+    expect(names()).toEqual([
+      "Spring Boot",
+      "Running",
+      "Not Started",
+      "Portal",
+      "Gateway",
+      "npm",
+      "Running",
+      "Not Started",
+      "Web",
+      "Worker",
+      "Docker",
+    ]);
   });
 
   it("uses the same ordering for npm without enabling groups or Docker", () => {
     render(<ServicesTreeView />);
     select("Worker");
     fireEvent.click(screen.getByRole("button", { name: "Move Up" }));
-    expect(names()).toEqual(["Spring Boot", "Gateway", "Portal", "npm", "Worker", "Web", "Docker"]);
+    expect(names()).toEqual([
+      "Spring Boot",
+      "Running",
+      "Not Started",
+      "Gateway",
+      "Portal",
+      "npm",
+      "Running",
+      "Not Started",
+      "Worker",
+      "Web",
+      "Docker",
+    ]);
     select("Docker");
     expect(screen.queryByRole("button", { name: "Move Up" })).toBeNull();
     select("Spring Boot");
@@ -101,7 +144,19 @@ describe("service reordering integration", () => {
     expect(useServicesTree.getState().selectedKeys.size).toBe(2);
     expect(screen.queryByRole("button", { name: "Move Up" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Move Down" })).toBeNull();
-    expect(names()).toEqual(["Spring Boot", "Gateway", "Portal", "npm", "Web", "Worker", "Docker"]);
+    expect(names()).toEqual([
+      "Spring Boot",
+      "Running",
+      "Not Started",
+      "Gateway",
+      "Portal",
+      "npm",
+      "Running",
+      "Not Started",
+      "Web",
+      "Worker",
+      "Docker",
+    ]);
   });
 
   it("cancels an active drag when the project changes", () => {
@@ -130,8 +185,32 @@ describe("service reordering integration", () => {
     select("Portal");
     fireEvent.click(screen.getByRole("button", { name: "Move Up" }));
     act(() => useRemote.setState({ session: { root: "/services", sshConfig: "host", host: "host", commands: [] } }));
-    expect(names()).toEqual(["Spring Boot", "Gateway", "Portal", "npm", "Web", "Worker", "Docker"]);
+    expect(names()).toEqual([
+      "Spring Boot",
+      "Running",
+      "Not Started",
+      "Gateway",
+      "Portal",
+      "npm",
+      "Running",
+      "Not Started",
+      "Web",
+      "Worker",
+      "Docker",
+    ]);
     act(() => useRemote.setState({ session: null }));
-    expect(names()).toEqual(["Spring Boot", "Portal", "Gateway", "npm", "Web", "Worker", "Docker"]);
+    expect(names()).toEqual([
+      "Spring Boot",
+      "Running",
+      "Not Started",
+      "Portal",
+      "Gateway",
+      "npm",
+      "Running",
+      "Not Started",
+      "Web",
+      "Worker",
+      "Docker",
+    ]);
   });
 });

@@ -5,11 +5,12 @@ import * as actions from "@/platform/actions";
 import { registerActions } from "@/platform/actions";
 import { EDITOR_TAB_MIME, type EditorInput } from "@/workbench/contributions";
 import { confirmChecked, showError } from "@/workbench/messages";
-import { ContextMenuHost, dragSession, hideContextMenu } from "@/ui";
+import { ContextMenuHost, FILES_DRAG, dragSession, hideContextMenu } from "@/ui";
 import { AgentsHeaderActions, AgentsLocationActions, AgentsView } from "./AgentsView";
 import { SESSION_KIND } from "./model";
 import { archiveTask, unarchiveTask, deleteTask, dockTask, openTask, setSessionLocation, useAgents } from "./store";
 import { taskActions, taskMenu } from "./taskActions";
+import { sendPaths } from "./references";
 import styles from "./Agents.module.css";
 
 const editor = vi.hoisted(() => ({
@@ -43,6 +44,7 @@ vi.mock("./store", async (original) => ({
 }));
 
 vi.mock("./SessionEditor", () => ({ SessionEditor: () => <div data-testid="docked-session" /> }));
+vi.mock("./references", () => ({ sendPaths: vi.fn(), sendSelection: vi.fn() }));
 
 vi.mock("@/workbench/messages", () => ({
   confirmChecked: vi.fn(async () => ({ checked: false })),
@@ -103,6 +105,7 @@ beforeEach(() => {
     error: null,
     tasks: new Map([task("one"), task("two"), task("three"), task("four")].map((t) => [t.id, t])),
     docked: null,
+    dockedTabs: [],
     homeOpen: false,
     sessionLocation: "editor",
   });
@@ -129,6 +132,7 @@ describe("Agents selection", () => {
   it("extends and shrinks a range without opening its lead or losing selection to an editor echo", () => {
     setup();
     select("one");
+    expect(setSessionLocation).toHaveBeenCalledWith("toolWindow");
     select("three", { shiftKey: true });
     expect(selectedTasks()).toEqual(["one", "two", "three"]);
     expect(openTask).toHaveBeenCalledTimes(1);
@@ -162,11 +166,26 @@ describe("Agents selection", () => {
 });
 
 describe("Agents docked view", () => {
+  it("moves an already active restored conversation into the tool window", () => {
+    useAgents.setState({ sessionLocation: "toolWindow" });
+    editor.active = { kind: SESSION_KIND, key: "agent:two", data: { task: "two" } };
+    setup();
+    expect(actions.executeAction).toHaveBeenCalledWith("agents.dockTask", "two");
+  });
+
+  it("shows multiple open conversations as tabs inside the tool window", () => {
+    useAgents.setState({ docked: "one", dockedTabs: ["one", "two"], sessionLocation: "toolWindow" });
+    setup();
+    const tabs = screen.getByRole("tablist", { name: "Open Agent Sessions" });
+    expect(within(tabs).getByRole("tab", { name: "one" })).toHaveAttribute("aria-selected", "true");
+    expect(within(tabs).getByRole("tab", { name: "two" })).toHaveAttribute("aria-selected", "false");
+  });
+
   it("opens session history on demand and closes it after switching tasks", () => {
     useAgents.setState({ docked: "one" });
     setup();
     expect(screen.getByTestId("docked-session")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Chat in Editor" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Chat in Editor" })).toBeNull();
     expect(openTask).not.toHaveBeenCalled();
     expect(screen.queryByRole("tree", { name: "Agent tasks" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
@@ -209,21 +228,21 @@ describe("Agents docked view", () => {
     expect(screen.getByTestId("docked-session")).toBeTruthy();
   });
 
-  it("switches placement from the global Agents header", () => {
+  it("keeps the tool-window control without offering an accidental editor switch", () => {
     useAgents.setState({ docked: "one", sessionLocation: "toolWindow" });
     setup();
     expect(screen.queryByRole("button", { name: "Open in Editor" })).toBeNull();
     expect(screen.getByRole("button", { name: "Chat in Tool Window" })).toHaveAttribute("aria-pressed", "true");
-    fireEvent.click(screen.getByRole("button", { name: "Chat in Editor" }));
-    expect(setSessionLocation).toHaveBeenCalledWith("editor");
+    expect(screen.queryByRole("button", { name: "Chat in Editor" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Chat in Tool Window" }));
     expect(setSessionLocation).toHaveBeenCalledWith("toolWindow");
   });
 
-  it("opens tabs as usual without a docked conversation", () => {
+  it("moves the history selection to the tool window without a docked conversation", () => {
     setup();
     expect(screen.queryByRole("button", { name: "Open in Editor" })).toBeNull();
     select("two");
+    expect(setSessionLocation).toHaveBeenCalledWith("toolWindow");
     expect(openTask).toHaveBeenCalledWith("two");
     expect(dockTask).not.toHaveBeenCalled();
   });
@@ -359,6 +378,23 @@ describe("Agents drag & drop", () => {
       expect(view.className).not.toContain(styles.dropTarget);
       act(() => session.drop(10, 10));
       expect(dockTask).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it("adds files dragged from the project tree or a code editor tab as references", () => {
+    editor.tabInput = () => ({ kind: "file", key: "file:a", path: "/project/a.go" });
+    setup();
+    const view = document.querySelector(`.${styles.view}`)!;
+    const restore = pointAt(view);
+    try {
+      const file = dragSession({ type: FILES_DRAG, payload: "/project/a.go\n/project/b.go" });
+      act(() => file.drop(10, 10));
+      expect(sendPaths).toHaveBeenCalledWith(["/project/a.go", "/project/b.go"]);
+      const tab = dragSession({ type: EDITOR_TAB_MIME, payload: JSON.stringify({ paneId: "p", tabId: "t" }) });
+      act(() => tab.drop(10, 10));
+      expect(sendPaths).toHaveBeenCalledWith(["/project/a.go"]);
     } finally {
       restore();
     }

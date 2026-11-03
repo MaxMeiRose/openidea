@@ -67,6 +67,8 @@ pub struct EditorAppearanceSettings {
     /// Smooth caret movement curve: `snappy` | `gliding`.
     pub caret_movement_style: String,
     pub line_numbers: bool,
+    /// Show a CodeGlance-style minimap at the right of text editors.
+    pub show_minimap: bool,
     pub method_separators: bool,
     /// Sub-options of `editor.showWhitespace`.
     pub whitespace_leading: bool,
@@ -90,6 +92,7 @@ impl Default for EditorAppearanceSettings {
             smooth_caret_movement: false,
             caret_movement_style: "snappy".into(),
             line_numbers: true,
+            show_minimap: true,
             method_separators: false,
             whitespace_leading: true,
             whitespace_inner: true,

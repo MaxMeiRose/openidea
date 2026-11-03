@@ -265,7 +265,10 @@ export function registerVcsActions(): () => void {
       category: "Git",
       icon: "git-fetch",
       when: VCS,
-      run: () => void runRemote({ op: "fetch" }, undefined, allRepos()),
+      run: ({ arg }) => {
+        const repo = (arg as { repo?: unknown } | undefined)?.repo;
+        void runRemote({ op: "fetch" }, undefined, typeof repo === "string" ? [repo] : allRepos());
+      },
     },
     {
       id: "vcs.refresh",

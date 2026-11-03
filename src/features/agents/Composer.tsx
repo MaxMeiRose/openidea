@@ -21,9 +21,11 @@ import {
   isPathQuery,
   resolveTyped,
   completionAt,
+  fileRefForPath,
   imageFromDataUrl,
   matchCommands,
   mentionOf,
+  pathInRoot,
   modeOption,
   nextValue,
   recall,
@@ -33,6 +35,7 @@ import {
 import { composerDraft, updateComposer, useAgents } from "./store";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useCompletionAnchor } from "./useCompletionAnchor";
+import { sendSelection } from "./references";
 import styles from "./Composer.module.css";
 import { isImeKey } from "@/platform/ime";
 
@@ -130,15 +133,19 @@ export function Composer(props: ComposerProps) {
           .catch(() => alive && setFiles([]));
         return;
       }
-      call(commands.findFiles(query, MAX_ITEMS))
+      call(commands.findFiles(query, MAX_ITEMS * 8))
         .then((found) => {
           if (!alive) return;
           setFiles(
-            found.map((f) => ({
-              kind: "file",
-              rel: f.relPath,
-              path: root === projectRoot ? f.path : `${root}/${f.relPath}`,
-            })),
+            found
+              .map((f, index) => ({
+                ref: fileRefForPath(f.path, projectRoot, root),
+                inside: !!pathInRoot(projectRoot, f.path),
+                index,
+              }))
+              .sort((a, b) => Number(b.inside) - Number(a.inside) || a.index - b.index)
+              .slice(0, MAX_ITEMS)
+              .map(({ ref }) => ({ kind: "file", ...ref })),
           );
         })
         .catch(() => alive && setFiles([]));
@@ -227,7 +234,7 @@ export function Composer(props: ComposerProps) {
             if (image) addImages([image]);
           });
         } else {
-          refs.push({ path, rel: path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path });
+          refs.push(fileRefForPath(path, projectRoot, root));
         }
       }
       if (refs.length) {
@@ -276,7 +283,7 @@ export function Composer(props: ComposerProps) {
       unlisten?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- re-subscribe only when the target changes
-  }, [id, root]);
+  }, [id, root, projectRoot]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (isImeKey(e.nativeEvent)) return;
@@ -428,6 +435,15 @@ export function Composer(props: ComposerProps) {
       <div className={styles.bar} onClick={(e) => e.stopPropagation()}>
         <div className={styles.toolbar}>{props.toolbar}</div>
         <div className={styles.actions}>
+          <IconButton
+            icon="file-code"
+            title="Reference Current File or Selection"
+            size="small"
+            onClick={() => {
+              if (!sendSelection(id))
+                notifications().notify({ level: "info", title: tx("Open a code file to reference it") });
+            }}
+          />
           <IconButton
             icon="file"
             title="Reference a File (@)"

@@ -12,6 +12,12 @@ export const test = base.extend<{ workbench: Page }>({
     await page.goto("/");
     await expect(page.getByRole("tree", { name: "Project" })).toBeVisible();
     await expect(page.getByRole("treeitem", { name: /acme-api/ })).toBeVisible();
+    // The plain-browser sample has no native VCS discovery; provide its known repository root.
+    await page.evaluate(async () => {
+      const module = "/src/features/vcs/store.ts";
+      const { useVcs } = await import(module);
+      useVcs.setState({ roots: ["/dev/acme-api"], repo: "/dev/acme-api" });
+    });
     await provide(page);
     expect(errors, "uncaught page errors").toEqual([]);
   },

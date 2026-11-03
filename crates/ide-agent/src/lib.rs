@@ -379,10 +379,11 @@ impl AgentManager {
             .shared
             .spec(&req.provider)
             .ok_or_else(|| IdeError::invalid(format!("unknown agent {}", req.provider)))?;
-        let prompt = clean(req.prompt).ok_or_else(|| IdeError::invalid("describe the task first"))?;
+        let mut prompt = clean(req.prompt).ok_or_else(|| IdeError::invalid("describe the task first"))?;
         let title = title_of(&prompt);
         let root = req.project_root.clone().map(|p| p.0).unwrap_or_else(|| self.shared.paths.project_root.clone());
         let project_root = Some(IpcPath(root.clone()));
+        let source_root = root.clone();
         let (cwd, branch, base, base_commit, before) = match req.isolation {
             Isolation::Worktree => {
                 // The UI offers worktrees for git projects only; state it when it isn't one.
@@ -405,6 +406,9 @@ impl AgentManager {
                 (root, None, base, commit, before)
             }
         };
+        if req.isolation == Isolation::Worktree {
+            map_prompt_files_to_worktree(&mut prompt, &source_root, &cwd);
+        }
         // Until the session reports its own, show what the agent offered last time with the choices applied.
         let mut config = self.shared.known_config(&spec.id);
         for choice in &req.config {
@@ -1572,6 +1576,18 @@ impl Handler for Client {
 fn clean(mut prompt: AgentPrompt) -> Option<AgentPrompt> {
     prompt.text = prompt.text.trim().to_owned();
     (!prompt.text.is_empty() || !prompt.images.is_empty() || !prompt.files.is_empty()).then_some(prompt)
+}
+
+/// A new task's references were picked in the original checkout before its worktree existed.
+fn map_prompt_files_to_worktree(prompt: &mut AgentPrompt, root: &Path, worktree: &Path) {
+    for file in &mut prompt.files {
+        let Ok(relative) = file.0.strip_prefix(root) else { continue };
+        let candidate = worktree.join(relative);
+        // Untracked files need to remain at their original path when absent from the worktree.
+        if candidate.exists() {
+            file.0 = candidate;
+        }
+    }
 }
 
 /// ACP content blocks: the text, each file (embedded when its text is in `contents`, else

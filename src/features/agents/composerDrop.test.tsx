@@ -34,13 +34,13 @@ afterEach(() => {
   document.elementFromPoint = originalHitTest;
 });
 
-function setup() {
+function setup(root = "/project", projectRoot = "/project") {
   const view = render(
     <div data-testid="editor">
       <Composer
         id="drop-test"
-        root="/project"
-        projectRoot="/project"
+        root={root}
+        projectRoot={projectRoot}
         placeholder="Message"
         commands={[]}
         history={[]}
@@ -96,6 +96,20 @@ describe("Composer file drops", () => {
     });
     expect(box.className).not.toMatch(/dropOver/);
     expect(composerDraft("drop-test").files).toEqual([]);
+  });
+
+  it("maps dropped project files into the task worktree and keeps other paths intact", () => {
+    const { input } = setup("/worktrees/project", "/project");
+    const drag = dragSession({ type: FILES_DRAG, payload: "/project/src/main.ts\n/other/notes.md" });
+    act(() => {
+      drag.move(20, 20);
+      expect(drag.drop(20, 20)).toBe(true);
+    });
+    expect(input).toHaveValue("@src/main.ts @/other/notes.md ");
+    expect(composerDraft("drop-test").files).toEqual([
+      { path: "/worktrees/project/src/main.ts", rel: "src/main.ts" },
+      { path: "/other/notes.md", rel: "/other/notes.md" },
+    ]);
   });
 
   it("still accepts native file drops only within the prompt", async () => {

@@ -261,7 +261,8 @@ let tabSeq = 0;
  * they are: Show History for a file, Show Git Log for a branch.
  */
 export function openLogTab(kind: LogTab["kind"], target: string): string {
-  const repo = kind === "history" ? repoOf(target) : currentRepoRoot();
+  const repo =
+    kind === "history" ? (useVcs.getState().roots.includes(target) ? target : repoOf(target)) : currentRepoRoot();
   const existing = useGitLog.getState().logTabs.find((t) => t.kind === kind && t.target === target && t.repo === repo);
   if (existing) {
     selectGitTab(existing.id);
