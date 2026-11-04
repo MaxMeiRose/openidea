@@ -56,6 +56,7 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsView)),
       headerContent: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsLocationActions)),
       headerActions: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsHeaderActions)),
+      headerActionsAlwaysVisible: true,
       useBadge: () => {
         const n = useAgents(
           (s) => [...s.tasks.values()].filter((t) => t.status === "needsInput" || s.unread.has(t.id)).length,

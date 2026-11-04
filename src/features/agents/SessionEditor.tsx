@@ -9,6 +9,7 @@ import { basename, relativeDir, useProject } from "@/platform/project";
 import { editorService, notifications, type EditorInput } from "@/workbench/contributions";
 import {
   Button,
+  Dialog,
   EmptyState,
   Icon,
   IconButton,
@@ -40,6 +41,7 @@ import {
 } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { Markdown } from "./Markdown";
+import { PermissionDock } from "./PermissionDock";
 import {
   branchLabel,
   entriesKey,
@@ -64,7 +66,6 @@ import {
   quoteInComposer,
   removeQueued,
   resendMessage,
-  respond,
   sendMessage,
   sendQueuedNow,
   setTaskConfig,
@@ -145,7 +146,6 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
           docked={docked}
         />
         {view && <SubagentBar task={task} path={path} cards={cards} onNavigate={setPath} />}
-        <PermissionBanner task={task} entries={entries ?? null} />
         <Stream
           key={view ?? ""}
           task={task}
@@ -156,13 +156,6 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
           findFocus={findFocus}
           onCloseFind={() => setFinding(false)}
         />
-        {view ? (
-          <div className={styles.readOnly}>
-            <T>Subagents take their instructions from the agent that started them.</T>
-          </div>
-        ) : (
-          <SessionComposer task={task} entries={entries ?? null} onOpenSubagent={openSubagent} />
-        )}
       </div>
       {changesOpen && (
         <ChangesPane
@@ -173,6 +166,18 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
           onHide={() => setChangesOpen(false)}
         />
       )}
+      <div className={styles.sessionFooter}>
+        <PermissionDock task={task} entries={entries ?? null} />
+        <div className={styles.composerHost} hidden={docked && changesOpen}>
+          {view ? (
+            <div className={styles.readOnly}>
+              <T>Subagents take their instructions from the agent that started them.</T>
+            </div>
+          ) : (
+            <SessionComposer task={task} entries={entries ?? null} onOpenSubagent={openSubagent} />
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -431,6 +436,7 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
       {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
       <div
         ref={ref}
+        data-agent-stream
         // The conversation is read and copied like a document; focusable so ⌘F reaches it.
         className={clsx(styles.stream, selectableText)}
         tabIndex={-1}
@@ -710,9 +716,11 @@ function Entry({
     case "agent":
       return <Markdown text={entry.text} cwd={task.cwd} />;
     case "thought":
+      if (!entry.text.trim()) return null;
       return (
         <details className={styles.thought}>
           <summary>
+            <Icon name="chevron-right" size={12} className={styles.toolChevron} />
             <T>Thinking</T>
           </summary>
           <div className={styles.thoughtText}>{entry.text}</div>
@@ -998,13 +1006,26 @@ function ToolGroup({ task, name, calls }: { task: AgentTask; name: string; calls
       <summary className={styles.tool}>
         <Icon name="chevron-right" size={12} className={styles.toolChevron} />
         <Icon name={TOOL_ICONS[first.kind] ?? "run"} size={14} />
-        <span className={styles.toolTitle}>
-          {grouped ? tx(toolGroupLabel(name, first.kind) || "Tool") : shortTitle(task, first.title || first.kind)}
+        <span className={styles.toolHeading}>
+          <span className={styles.toolTitle} title={first.title}>
+            {grouped ? tx(toolGroupLabel(name, first.kind) || "Tool") : shortTitle(task, first.title || first.kind)}
+          </span>
+          {grouped && (
+            <span className={styles.toolPreview}>
+              {calls
+                .slice(0, 2)
+                .map((call) => shortTitle(task, call.title))
+                .join(" · ")}
+            </span>
+          )}
         </span>
         {grouped && <span className={styles.toolCount}>×{calls.length}</span>}
         {!grouped && <ToolDiffs task={task} entry={first} />}
         {running && <Spinner size={12} />}
         {failed && <Icon name="error" size={12} label={tx("Failed")} />}
+        <span className={styles.toolState} data-state={running ? "running" : failed ? "failed" : first.status}>
+          <T>{running ? "Running" : failed ? "Failed" : "Completed"}</T>
+        </span>
       </summary>
       {grouped ? (
         <div className={styles.toolChildren}>
@@ -1012,12 +1033,8 @@ function ToolGroup({ task, name, calls }: { task: AgentTask; name: string; calls
             <ToolEntry key={entry.id} task={task} entry={entry} />
           ))}
         </div>
-      ) : first.output ? (
-        <pre className={styles.output}>{first.output}</pre>
       ) : (
-        <div className={styles.toolEmpty}>
-          <T>No output</T>
-        </div>
+        <ToolOutput task={task} entry={first} />
       )}
     </details>
   );
@@ -1044,18 +1061,84 @@ function ToolEntry({ task, entry }: { task: AgentTask; entry: ToolCall }) {
   const head = (
     <>
       <Icon name={TOOL_ICONS[entry.kind] ?? "run"} size={14} />
-      <span className={styles.toolTitle}>{shortTitle(task, entry.title || entry.kind)}</span>
+      <span className={styles.toolTitle} title={entry.title}>
+        {shortTitle(task, entry.title || entry.kind)}
+      </span>
       <ToolDiffs task={task} entry={entry} />
       {(entry.status === "running" || entry.status === "pending") && <Spinner size={12} />}
-      {entry.status === "failed" && <Icon name="error" size={12} />}
+      {entry.status === "failed" && <Icon name="error" size={12} label={tx("Failed")} />}
+      <span className={styles.toolState} data-state={entry.status}>
+        <T>
+          {entry.status === "completed"
+            ? "Completed"
+            : entry.status === "failed"
+              ? "Failed"
+              : entry.status === "running"
+                ? "Running"
+                : "Pending"}
+        </T>
+      </span>
     </>
   );
-  if (!entry.output) return <div className={styles.tool}>{head}</div>;
   return (
     <details className={styles.toolDetails}>
-      <summary className={styles.tool}>{head}</summary>
-      <pre className={styles.output}>{entry.output}</pre>
+      <summary className={styles.tool}>
+        <Icon name="chevron-right" size={12} className={styles.toolChevron} />
+        {head}
+      </summary>
+      <ToolOutput task={task} entry={entry} />
     </details>
+  );
+}
+
+function ToolOutput({ task, entry }: { task: AgentTask; entry: ToolCall }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className={styles.outputBox}>
+      {entry.locations.length > 0 && (
+        <div className={styles.toolFiles}>
+          {[...new Set(entry.locations)].map((path) => (
+            <button key={path} title={path} onClick={() => void editorService().openFile(path, { focus: true })}>
+              <Icon name={fileIconName(basename(path))} size={13} />
+              {shortTitle(task, path)}
+            </button>
+          ))}
+        </div>
+      )}
+      {entry.output ? (
+        <>
+          <div className={styles.outputBar}>
+            <span>
+              <T>Output</T>
+            </span>
+            <IconButton icon="copy" title="Copy output" size="small" onClick={() => void copyText(entry.output!)} />
+            <IconButton icon="maximize" title="Expand output" size="small" onClick={() => setExpanded(true)} />
+          </div>
+          <pre className={styles.output}>{entry.output}</pre>
+          <Dialog
+            open={expanded}
+            onClose={() => setExpanded(false)}
+            title={tx("Tool output")}
+            width="min(960px, calc(100vw - 48px))"
+            buttons={[{ label: "Close", role: "cancel" }]}
+            footerStart={
+              <Button size="small" icon="copy" onClick={() => void copyText(entry.output!)}>
+                Copy output
+              </Button>
+            }
+          >
+            <div className={clsx(styles.outputViewer, selectableText)}>
+              <p className={styles.outputTitle}>{entry.title}</p>
+              <pre>{entry.output}</pre>
+            </div>
+          </Dialog>
+        </>
+      ) : (
+        <div className={styles.toolEmpty}>
+          <T>{entry.status === "running" || entry.status === "pending" ? "No output yet" : "No output"}</T>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1175,38 +1258,14 @@ function WorkingSubagents({ entries, onOpen }: { entries: AgentEntry[] | null; o
 const shortTitle = (task: AgentTask, title: string) => title.replaceAll(`${task.cwd}/`, "");
 
 function PermissionLine({ task, entry }: { task: AgentTask; entry: Extract<AgentEntry, { type: "permission" }> }) {
+  const rejected =
+    entry.chosen === "Cancelled" ||
+    entry.options.find((option) => option.name === entry.chosen)?.kind.startsWith("reject");
   return (
     <div className={styles.permissionLine}>
-      <Icon name={!entry.chosen ? "warning" : entry.chosen === "Cancelled" ? "minus" : "check"} size={13} />
+      <Icon name={!entry.chosen ? "warning" : rejected ? "minus" : "check"} size={13} />
       <span className={styles.permissionTitle}>{shortTitle(task, entry.title)}</span>
       <span className={styles.muted}>{entry.chosen ?? <T>Waiting for your answer</T>}</span>
-    </div>
-  );
-}
-
-/** The open permission request, as an editor notification banner above the conversation. */
-function PermissionBanner({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
-  const [busy, setBusy] = useState(false);
-  const entry = entries?.find(
-    (e): e is Extract<AgentEntry, { type: "permission" }> => e.type === "permission" && !e.chosen,
-  );
-  if (!entry) return null;
-  const answer = (option: string | null) => {
-    setBusy(true);
-    void respond(task.id, entry.id, option).finally(() => setBusy(false));
-  };
-  return (
-    <div className={styles.banner} role="alert" aria-label={entry.title}>
-      <Icon name="warning" size={16} />
-      <span className={styles.bannerText} title={entry.title}>
-        {shortTitle(task, entry.title)}
-      </span>
-      <span className={styles.bannerSpacer} />
-      {entry.options.map((o) => (
-        <button key={o.id} type="button" className={styles.bannerLink} disabled={busy} onClick={() => answer(o.id)}>
-          {o.name}
-        </button>
-      ))}
     </div>
   );
 }

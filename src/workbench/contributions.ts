@@ -42,6 +42,8 @@ export interface ToolWindowContribution {
   component: ComponentType<{ id: string }>;
   /** Extra header controls, right-aligned (shown on hover like IDEA). */
   headerActions?: ComponentType<{ id: string }>;
+  /** Keep primary navigation visible even while the editor has focus. */
+  headerActionsAlwaysVisible?: boolean;
   /**
    * Content tabs rendered right after the title (Terminal "Local × + ▾",
    * Run sessions…). The header then gets a bottom divider.

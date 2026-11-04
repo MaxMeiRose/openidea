@@ -108,6 +108,7 @@ beforeEach(() => {
     dockedTabs: [],
     homeOpen: false,
     sessionLocation: "editor",
+    sessionsOpen: false,
   });
   dispose = registerActions(taskActions);
 });
@@ -166,6 +167,29 @@ describe("Agents selection", () => {
 });
 
 describe("Agents docked view", () => {
+  it("searches and filters history without closing or remounting the active conversation", () => {
+    useAgents.setState({
+      docked: "one",
+      tasks: new Map([task("one"), task("two", "needsInput"), task("three", "archived")].map((t) => [t.id, t])),
+    });
+    setup();
+    const session = screen.getByTestId("docked-session");
+    fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
+    const search = screen.getByRole("textbox", { name: "Search sessions" });
+    expect(search).toHaveFocus();
+    fireEvent.change(search, { target: { value: "three" } });
+    const tree = screen.getByRole("tree", { name: "Agent tasks" });
+    expect(within(tree).queryByText("one")).toBeNull();
+    expect(within(tree).getByText("three")).toBeVisible();
+    expect(screen.getByTestId("docked-session")).toBe(session);
+    fireEvent.change(search, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Needs input" }));
+    expect(within(tree).queryByText("one")).toBeNull();
+    fireEvent.click(within(tree).getByText("two"));
+    expect(openTask).toHaveBeenCalledWith("two");
+    expect(screen.queryByRole("dialog", { name: "Agent sessions" })).toBeNull();
+  });
+
   it("moves an already active restored conversation into the tool window", () => {
     useAgents.setState({ sessionLocation: "toolWindow" });
     editor.active = { kind: SESSION_KIND, key: "agent:two", data: { task: "two" } };
@@ -282,7 +306,7 @@ describe("Agents bulk actions", () => {
     const tasks = [task("one", "running"), task("two"), task("three", "archived")];
     useAgents.setState({ tasks: new Map(tasks.map((t) => [t.id, t])) });
     setup();
-    fireEvent.doubleClick(screen.getByText("Archived"));
+    fireEvent.doubleClick(within(screen.getByRole("tree", { name: "Agent tasks" })).getByText("Archived"));
     select("one");
     select("three", { shiftKey: true });
     context("two");
@@ -294,7 +318,7 @@ describe("Agents bulk actions", () => {
     const tasks = [task("one"), task("two", "archived"), task("three", "archived")];
     useAgents.setState({ tasks: new Map(tasks.map((t) => [t.id, t])) });
     setup();
-    fireEvent.doubleClick(screen.getByText("Archived"));
+    fireEvent.doubleClick(within(screen.getByRole("tree", { name: "Agent tasks" })).getByText("Archived"));
     select("one");
     select("three", { shiftKey: true });
     context("two");

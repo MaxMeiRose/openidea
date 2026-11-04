@@ -650,7 +650,7 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
           </div>
         )}
         <div className={styles.headerSpacer} />
-        <div className={styles.headerActions}>
+        <div className={clsx(styles.headerActions, tw.headerActionsAlwaysVisible && styles.headerActionsAlwaysVisible)}>
           {Actions && <Actions id={tw.id} />}
           <IconButton
             ref={moreRef}

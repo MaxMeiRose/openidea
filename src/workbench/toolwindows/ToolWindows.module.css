@@ -408,6 +408,7 @@
 }
 .window:hover .headerActions,
 .window:focus-within .headerActions,
+.headerActionsAlwaysVisible,
 .headerActions:has([aria-expanded="true"]) {
   opacity: 1;
 }

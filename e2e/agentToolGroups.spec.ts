@@ -62,14 +62,14 @@ test("agent tool groups are collapsed, expand independently, and reveal search m
   await expect(group).toHaveCount(1);
   await expect(group).not.toHaveAttribute("open");
   await expect(group.getByText("×3")).toBeVisible();
-  await expect(group.getByText("Read alpha.ts")).toBeHidden();
+  await expect(group.getByText("Read alpha.ts", { exact: true })).toBeHidden();
   await expect(page.getByRole("alert", { name: "Approval required" })).toBeVisible();
   await expect(page.getByText("Other read")).toBeVisible();
   await expect(group.getByText("Read gamma.ts")).toBeHidden();
   await expect(page.getByText("Read delta.ts")).toBeVisible();
 
   await group.locator("summary").first().click();
-  await expect(group.getByText("Read alpha.ts")).toBeVisible();
+  await expect(group.getByText("Read alpha.ts", { exact: true })).toBeVisible();
   await expect(group.getByText("Read gamma.ts")).toBeVisible();
   const alpha = group.locator("details").filter({ hasText: "Read alpha.ts" });
   await expect(alpha).not.toHaveAttribute("open");

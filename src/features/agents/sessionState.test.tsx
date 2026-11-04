@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { registerActions } from "@/platform/actions";
 import type { AgentChange, AgentEntry, AgentTask } from "@/bindings";
-import { AgentsView } from "./AgentsView";
+import { AgentsHeaderActions, AgentsView } from "./AgentsView";
 import { SessionEditor } from "./SessionEditor";
 import { entriesKey, SESSION_KIND, sessionKey, type SubagentEntry } from "./model";
 import { disconnect, useAgents } from "./store";
@@ -93,11 +93,46 @@ beforeEach(() => {
 });
 
 describe("session state across tasks and hosts", () => {
+  it("keeps approval controls available while reading a subagent and reviewing changes", async () => {
+    backend.changes = [{ path: "/project/a.ts", relPath: "a.ts", kind: "modified", added: 1, removed: 0 }];
+    backend.entries.set("A", [
+      { type: "agent", text: "Answer A" },
+      subagent,
+      {
+        type: "permission",
+        id: 1,
+        title: "Run tests?",
+        chosen: null,
+        options: [{ id: "yes", name: "Allow once", kind: "allow_once" }],
+      },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} docked />);
+    const approval = await screen.findByRole("alert", { name: "Run tests?" });
+    expect(stream().contains(approval)).toBe(false);
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Keep my draft" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show changes" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Show changes" }));
+    expect(approval).toBeVisible();
+    expect(screen.getByRole("button", { name: "Allow once" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Back to conversation" }));
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Keep my draft");
+    fireEvent.click(screen.getByRole("button", { name: /Explore task A/ }));
+    expect(await screen.findByText("Child answer")).toBeVisible();
+    expect(approval).toBeVisible();
+    expect(screen.getByRole("button", { name: "Allow once" })).toBeEnabled();
+  });
+
   it("returns to the task conversation when the docked task changes after opening a subagent", async () => {
     const dispose = registerActions(taskActions);
     try {
       useAgents.setState({ docked: "A", sessionLocation: "toolWindow" });
-      render(<AgentsView />);
+      render(
+        <>
+          <AgentsHeaderActions />
+          <AgentsView />
+        </>,
+      );
       fireEvent.click(screen.getByRole("button", { name: /Explore task A/ }));
       expect(await screen.findByText("Child answer")).toBeInTheDocument();
       expect(screen.queryByRole("textbox", { name: "Message" })).not.toBeInTheDocument();

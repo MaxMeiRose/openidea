@@ -83,6 +83,8 @@ interface AgentsState {
   sessionLocation: SessionLocation;
   lastTask: string | null;
   homeOpen: boolean;
+  /** Session history drawer, independent of the active conversation. */
+  sessionsOpen: boolean;
 }
 
 const DRAFT_KEY = "openidea.agents.draft.v2";
@@ -152,6 +154,7 @@ export const useAgents = create<AgentsState>(() => ({
   sessionLocation: "toolWindow",
   lastTask: null,
   homeOpen: false,
+  sessionsOpen: false,
   scrollPositions: new Map(),
 }));
 
@@ -273,6 +276,7 @@ export function disconnect() {
     dockedTabs: [],
     lastTask: null,
     homeOpen: false,
+    sessionsOpen: false,
     scrollPositions: new Map(),
   });
 }
@@ -441,6 +445,7 @@ function showDockedTask(task: string) {
     dockedTabs: s.dockedTabs.includes(task) ? s.dockedTabs : [...s.dockedTabs, task],
     lastTask: task,
     homeOpen: false,
+    sessionsOpen: false,
   }));
   toolWindowService().show(TOOL_WINDOW, true);
   closeAgentTabs([sessionKey(task)]);
@@ -526,6 +531,7 @@ export function openTaskInEditorLocation(task: string) {
 
 /** Opens the New Task page; `prompt` pre-fills it. */
 export function openHome(prompt?: string) {
+  useAgents.setState({ sessionsOpen: false });
   const project = useProject.getState().project;
   if (project?.workspace) {
     const previous = useAgents.getState().draft.projectRoot;

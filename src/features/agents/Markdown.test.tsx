@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
+import { StrictMode } from "react";
 import { Markdown } from "./Markdown";
 
 const { openFile, openExternalUrl, probe, listeners } = vi.hoisted(() => ({
@@ -30,6 +31,29 @@ beforeEach(() => {
   listeners.clear();
   probe.mockResolvedValue({ status: "ok", data: { size: 0, binary: false, tooLarge: false } });
   window.getSelection()?.removeAllRanges();
+});
+
+it("keeps one code toolbar and table wrapper when effects run again, and updates relative file links", async () => {
+  const text =
+    "```ts\nconst n = 1;\n```\n\n| Name | Result |\n| --- | --- |\n| Build | Passed |\n\nSee reports/result.md";
+  const view = render(
+    <StrictMode>
+      <Markdown text={text} cwd="/first" />
+    </StrictMode>,
+  );
+  expect(screen.getAllByRole("button", { name: "Copy Code" })).toHaveLength(1);
+  const table = view.container.querySelector("table")!;
+  expect(table.parentElement?.parentElement).toBe(view.container.firstElementChild);
+  fireEvent.click(await screen.findByRole("link", { name: "reports/result.md" }));
+  expect(openFile).toHaveBeenLastCalledWith("/first/reports/result.md", { focus: true, selection: undefined });
+  view.rerender(
+    <StrictMode>
+      <Markdown text={text} cwd="/second" />
+    </StrictMode>,
+  );
+  expect(screen.getAllByRole("button", { name: "Copy Code" })).toHaveLength(1);
+  fireEvent.click(await screen.findByRole("link", { name: "reports/result.md" }));
+  expect(openFile).toHaveBeenLastCalledWith("/second/reports/result.md", { focus: true, selection: undefined });
 });
 
 it.each([

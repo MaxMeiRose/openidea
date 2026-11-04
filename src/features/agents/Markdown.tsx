@@ -93,6 +93,16 @@ export function openPathLink(link: PathLink) {
 
 /** Highlighting, Copy buttons and file links over freshly rendered `root`. */
 function enhance(root: HTMLElement, cwd: string): () => void {
+  // Layout effects may run again without replacing the HTML (StrictMode or a
+  // changed working directory). Start from the existing content, not old UI wrappers.
+  root.querySelectorAll(`.${styles.codeBlock}`).forEach((block) => {
+    const pre = block.querySelector("pre");
+    if (pre) block.replaceWith(pre);
+  });
+  root.querySelectorAll(`.${styles.tableScroll}`).forEach((wrapper) => wrapper.replaceWith(...wrapper.childNodes));
+  root
+    .querySelectorAll("[data-agent-text-path]")
+    .forEach((span) => span.replaceWith(document.createTextNode(span.textContent ?? "")));
   let alive = true;
   type Candidate = { el: HTMLElement; link: PathLink; revision: number; timer?: ReturnType<typeof setTimeout> };
   const candidates = new Map<string, Candidate[]>();
@@ -124,6 +134,13 @@ function enhance(root: HTMLElement, cwd: string): () => void {
     }, 80);
   };
   const register = (el: HTMLElement, link: PathLink) => {
+    el.classList.remove(styles.fileLink!);
+    delete el.dataset.agentPath;
+    delete el.dataset.line;
+    delete el.dataset.col;
+    el.removeAttribute("role");
+    el.removeAttribute("tabindex");
+    el.removeAttribute("title");
     const candidate = { el, link, revision: 0 };
     const list = candidates.get(link.path) ?? [];
     list.push(candidate);
@@ -144,11 +161,25 @@ function enhance(root: HTMLElement, cwd: string): () => void {
     copy.setAttribute("aria-label", label);
     copy.appendChild(iconNode("copy", 14));
     copy.dataset.copy = text;
-    pre.appendChild(copy);
+    const block = document.createElement("div");
+    block.className = styles.codeBlock!;
+    const header = document.createElement("div");
+    header.className = styles.codeHeader!;
+    const language = document.createElement("span");
+    language.textContent = lang || tx("Code");
+    header.append(language, copy);
+    pre.replaceWith(block);
+    block.append(header, pre);
     if (!text.includes("\n")) {
       const link = pathLink(text, cwd);
       if (link) register(code, link);
     }
+  });
+  root.querySelectorAll("table").forEach((table) => {
+    const wrapper = document.createElement("div");
+    wrapper.className = styles.tableScroll!;
+    table.replaceWith(wrapper);
+    wrapper.appendChild(table);
   });
   root.querySelectorAll<HTMLElement>("code").forEach((code) => {
     if (code.parentElement?.tagName === "PRE" || code.closest("a")) return;
@@ -171,6 +202,7 @@ function enhance(root: HTMLElement, cwd: string): () => void {
     for (const token of tokens) {
       fragment.append(document.createTextNode(node.data.slice(at, token.from)));
       const span = document.createElement("span");
+      span.dataset.agentTextPath = "";
       span.textContent = node.data.slice(token.from, token.to);
       register(span, token.link);
       fragment.append(span);

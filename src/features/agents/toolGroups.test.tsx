@@ -97,7 +97,7 @@ describe("tool call groups", () => {
     const group = (await screen.findByText("Read", { exact: true })).closest("details")!;
     expect(group).not.toHaveAttribute("open");
     expect(within(group).getByText("×3")).toBeVisible();
-    expect(within(group).getByLabelText("Failed")).toBeInTheDocument();
+    expect(within(group.querySelector("summary")!).getByLabelText("Failed")).toBeInTheDocument();
     expect(within(group).getByText("Read a.ts")).not.toBeVisible();
     expect(screen.getByRole("alert", { name: "Permission needed" })).toBeVisible();
     expect(screen.getByText("Other tool").closest("details")).not.toHaveAttribute("open");
@@ -147,7 +147,7 @@ describe("tool call groups", () => {
     expect(group).toHaveAttribute("open");
     expect(within(group).getByText("×3")).toBeVisible();
     expect(within(group).getByText("output a")).toBeVisible();
-    expect(within(group).getByLabelText("Failed")).toBeVisible();
+    expect(within(group.querySelector("summary")!).getByLabelText("Failed")).toBeVisible();
   });
 
   it("starts a replacement call collapsed after the conversation is rolled back", async () => {
