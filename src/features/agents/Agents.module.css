@@ -211,13 +211,19 @@
   background: var(--bg-selected);
   color: var(--fg-strong);
 }
-.attentionCount {
-  min-width: 16px;
-  padding: 0 4px;
-  border-radius: 8px;
-  font-size: var(--fs-tiny);
-  background: var(--bg-feedback-warning);
-  color: var(--fg-strong);
+.historyAction {
+  position: relative;
+}
+.historyAction[data-attention]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--warning);
+  pointer-events: none;
 }
 .attentionDot {
   width: 6px;

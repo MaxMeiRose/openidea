@@ -66,6 +66,7 @@
   padding: 16px 12px 12px;
 }
 .docked .inner {
+  width: 100%;
   gap: 8px;
 }
 .docked .where {

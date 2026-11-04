@@ -142,7 +142,15 @@ test("session history can be searched and switched without closing the conversat
   const agents = page.getByRole("region", { name: "Agents" });
   await page.getByRole("tree", { name: "Project" }).click();
   await page.mouse.move(600, 300);
-  await expect(agents.getByRole("button", { name: "Agent sessions" }).locator("..")).toHaveCSS("opacity", "1");
+  const historyButton = agents.getByRole("button", { name: "Agent sessions" });
+  const newTaskButton = agents.getByRole("button", { name: "New Agent Task" });
+  await expect(historyButton.locator("..")).toHaveCSS("opacity", "1");
+  for (const button of [historyButton, newTaskButton]) {
+    await expect(button).toHaveText("");
+    await expect(button.locator("svg")).toBeVisible();
+    await expect(button).toHaveAttribute("data-tooltip", /.+/);
+  }
+  await expect(historyButton).toHaveAttribute("data-attention", "true");
   await agents.getByRole("textbox", { name: "Message" }).fill("Draft for the first task");
   await agents.getByRole("button", { name: "Agent sessions" }).click();
   const history = agents.getByRole("dialog", { name: "Agent sessions" });
@@ -159,6 +167,35 @@ test("session history can be searched and switched without closing the conversat
   await page.keyboard.press("Escape");
   await expect(history).toHaveCount(0);
   await expect(agents.getByRole("textbox", { name: "Message" })).toHaveValue("Draft for the first task");
+});
+
+test("conversation content fills the Agents panel as it grows and shrinks", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1800, height: 1000 });
+  await seed(page);
+  const agents = page.getByRole("region", { name: "Agents" });
+  const stream = agents.locator("[data-agent-stream]");
+  for (const width of [1080, 680, 320, 1080]) {
+    await page.evaluate(async (size) => {
+      const path = "/src/workbench/toolwindows/store.ts";
+      (await import(path)).setToolWindowSize("right", size);
+    }, width);
+    await expect
+      .poll(() =>
+        stream.evaluate((element) => {
+          const style = getComputedStyle(element);
+          const available = element.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+          const items = Array.from(element.children).filter((child) =>
+            child.matches('[class*="markdown"], [class*="message"], details'),
+          );
+          return {
+            count: items.length,
+            fillsWidth: items.every((child) => Math.abs(child.getBoundingClientRect().width - available) < 1),
+            overflow: element.scrollWidth > element.clientWidth + 1,
+          };
+        }),
+      )
+      .toMatchObject({ count: 19, fillsWidth: true, overflow: false });
+  }
 });
 
 test("approval stays beside the composer while scrolling and reviewing changes, and questions keep their answer choices", async ({

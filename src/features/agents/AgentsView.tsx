@@ -40,32 +40,21 @@ import { executeAction } from "@/platform/actions";
 import { openLayer, trapTab } from "@/ui/popupState";
 
 export function AgentsHeaderActions() {
-  const tx = useTx();
   const open = useAgents((s) => s.sessionsOpen || (!s.docked && !s.homeOpen));
-  const waiting = useAgents((s) => [...s.tasks.values()].filter((task) => task.status === "needsInput").length);
+  const waiting = useAgents((s) => [...s.tasks.values()].some((task) => task.status === "needsInput"));
   return (
     <>
-      <Button
+      <IconButton
         icon="history"
-        variant="ghost"
+        title="Agent sessions"
         size="small"
-        aria-label={tx("Agent sessions")}
+        className={styles.historyAction}
+        data-attention={waiting || undefined}
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => useAgents.setState((s) => ({ sessionsOpen: !s.sessionsOpen }))}
-      >
-        <T>History</T>
-        {waiting > 0 && <span className={styles.attentionCount}>{waiting}</span>}
-      </Button>
-      <Button
-        icon="plus"
-        variant="ghost"
-        size="small"
-        aria-label={tx("New Agent Task")}
-        onClick={() => void executeAction("agents.newTask")}
-      >
-        New task
-      </Button>
+      />
+      <IconButton icon="plus" action="agents.newTask" size="small" />
     </>
   );
 }

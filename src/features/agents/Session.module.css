@@ -146,7 +146,8 @@
 .stream > * {
   flex: none;
   min-width: 0;
-  max-width: 84ch;
+  width: 100%;
+  max-width: 100%;
 }
 .stream:focus {
   outline: none;
