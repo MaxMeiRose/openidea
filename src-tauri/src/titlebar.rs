@@ -21,7 +21,7 @@ const BEFORE_COMMIT: CFIndex = 1_999_999;
 
 struct Titlebar {
     height: Rc<Cell<f64>>,
-    spacing: f64,
+    spacing: Rc<Cell<Option<f64>>>,
     observer: CFRetained<CFRunLoopObserver>,
     inset: Rc<Cell<f64>>,
 }
@@ -42,26 +42,27 @@ pub fn set_height(window: &tauri::WebviewWindow, height: f64) -> tauri::Result<(
     // with_webview runs on the AppKit thread; the observer is also delivered there.
     window.with_webview(move |webview| unsafe {
         let native = &*webview.ns_window().cast::<NSWindow>();
-        let Some(close) = native.standardWindowButton(NSWindowButton::CloseButton) else { return };
-        let Some(minimize) = native.standardWindowButton(NSWindowButton::MiniaturizeButton) else { return };
         let Some(run_loop) = CFRunLoop::main() else { return };
-        let spacing = minimize.frame().origin.x - close.frame().origin.x;
         TITLEBARS.with_borrow_mut(|bars| {
             if let Some(bar) = bars.get(&label) {
                 bar.height.set(height);
-                center_buttons(native, height, bar.spacing);
+                center_buttons(native, height, &bar.spacing);
                 publish_inset(&app, &label, native, &bar.inset, true);
                 return;
             }
             let shared = Rc::new(Cell::new(height));
             let current = shared.clone();
+            // Fullscreen tabs may not have traffic-light buttons yet. Observe the
+            // inset anyway and measure their spacing when they become available.
+            let spacing = Rc::new(Cell::new(None));
+            let current_spacing = spacing.clone();
             let inset = Rc::new(Cell::new(-1.0));
             let current_inset = inset.clone();
             let current_app = app.clone();
             let current_label = label.clone();
             let pointer = native as *const NSWindow;
             let block = RcBlock::new(move |_: *mut CFRunLoopObserver, _: CFRunLoopActivity| {
-                center_buttons(&*pointer, current.get(), spacing);
+                center_buttons(&*pointer, current.get(), &current_spacing);
                 publish_inset(&current_app, &current_label, &*pointer, &current_inset, false);
             });
             let activities = CFRunLoopActivity::BeforeWaiting.0 as CFOptionFlags;
@@ -70,7 +71,7 @@ pub fn set_height(window: &tauri::WebviewWindow, height: f64) -> tauri::Result<(
                 return;
             };
             run_loop.add_observer(Some(&observer), kCFRunLoopCommonModes);
-            center_buttons(native, height, spacing);
+            center_buttons(native, height, &spacing);
             publish_inset(&app, &label, native, &inset, true);
             bars.insert(label, Titlebar { height: shared, spacing, observer, inset });
         });
@@ -115,7 +116,7 @@ pub fn forget(window: &tauri::Window) {
     });
 }
 
-unsafe fn center_buttons(window: &NSWindow, height: f64, spacing: f64) {
+unsafe fn center_buttons(window: &NSWindow, height: f64, spacing: &Cell<Option<f64>>) {
     // Fullscreen and native project tabs use AppKit's own window chrome.
     if window.styleMask().contains(NSWindowStyleMask::FullScreen)
         || window.tabGroup().is_some_and(|group| group.isTabBarVisible())
@@ -123,6 +124,18 @@ unsafe fn center_buttons(window: &NSWindow, height: f64, spacing: f64) {
         return;
     }
     let Some(close) = window.standardWindowButton(NSWindowButton::CloseButton) else { return };
+    let Some(minimize) = window.standardWindowButton(NSWindowButton::MiniaturizeButton) else { return };
+    let spacing = match spacing.get() {
+        Some(spacing) => spacing,
+        None => {
+            let measured = minimize.frame().origin.x - close.frame().origin.x;
+            if !measured.is_finite() || measured < 1.0 {
+                return;
+            }
+            spacing.set(Some(measured));
+            measured
+        }
+    };
     let Some(container) = (unsafe { close.superview().and_then(|view| view.superview()) }) else { return };
     let Some(content) = window.contentView() else { return };
     let mut frame = container.frame();

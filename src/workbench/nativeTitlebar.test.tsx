@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
+import { useWindowGroup } from "@/platform/windowGroups";
 import type { Settings } from "@/platform/ipc";
 import { useNativeTitlebar } from "./nativeTitlebar";
 
@@ -18,7 +19,7 @@ const { setHeight, desktop, listen, unlisten } = vi.hoisted(() => {
     }),
   };
 });
-vi.mock("@tauri-apps/api/event", () => ({ listen }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({ getCurrentWebviewWindow: () => ({ listen }) }));
 vi.mock("@/platform/ipc", async (original) => {
   const ipc = await original<typeof import("@/platform/ipc")>();
   return { ...ipc, isTauri: () => desktop.enabled, commands: { ...ipc.commands, windowSetTitlebarHeight: setHeight } };
@@ -26,6 +27,7 @@ vi.mock("@/platform/ipc", async (original) => {
 
 const platform = usePlatform.getState();
 const project = useProject.getState();
+const windowGroup = useWindowGroup.getState();
 let resize: () => void;
 const disconnect = vi.fn();
 
@@ -37,6 +39,7 @@ beforeEach(() => {
   setHeight.mockClear();
   disconnect.mockClear();
   usePlatform.setState({ overlayTitleBar: true });
+  useWindowGroup.setState({ tabs: [] });
   vi.stubGlobal(
     "ResizeObserver",
     class {
@@ -53,6 +56,7 @@ afterEach(() => {
   desktop.enabled = false;
   usePlatform.setState(platform);
   useProject.setState(project);
+  useWindowGroup.setState(windowGroup);
   vi.unstubAllGlobals();
 });
 
@@ -145,5 +149,77 @@ describe("native title bar alignment", () => {
     expect(document.documentElement.style.getPropertyValue("--native-top-inset")).toBe("36px");
     act(() => desktop.onInset?.({ payload: 0 }));
     expect(document.documentElement.style.getPropertyValue("--native-top-inset")).toBe("0px");
+  });
+
+  it("rechecks the native inset when project windows join or leave a group", async () => {
+    desktop.enabled = true;
+    zoom(100);
+    const { bar } = titlebar(40);
+    renderHook(() => useNativeTitlebar(bar));
+    await waitFor(() => expect(listen).toHaveBeenCalledOnce());
+    setHeight.mockClear();
+    const tabs = [
+      { label: "one", name: "One", root: null, current: true },
+      { label: "two", name: "Two", root: null, current: false },
+    ];
+    act(() => useWindowGroup.setState({ tabs }));
+    expect(setHeight).toHaveBeenCalledWith(40);
+    setHeight.mockClear();
+    act(() => useWindowGroup.setState({ tabs: [] }));
+    expect(setHeight).toHaveBeenCalledWith(40);
+  });
+
+  it("rechecks the native inset when a grouped project becomes focused", async () => {
+    desktop.enabled = true;
+    zoom(100);
+    useWindowGroup.setState({
+      tabs: [
+        { label: "one", name: "One", root: null, current: true },
+        { label: "two", name: "Two", root: null, current: false },
+      ],
+    });
+    const { bar } = titlebar(40);
+    renderHook(() => useNativeTitlebar(bar));
+    await waitFor(() => expect(listen).toHaveBeenCalledOnce());
+    setHeight.mockClear();
+    act(() => window.dispatchEvent(new Event("focus")));
+    expect(setHeight).toHaveBeenCalledWith(40);
+  });
+
+  it("rechecks after layout settles and stops observing after unmount", async () => {
+    desktop.enabled = true;
+    zoom(100);
+    let frame: FrameRequestCallback | undefined;
+    const request = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frame = callback;
+      return 1;
+    });
+    const cancel = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+    const { bar } = titlebar(40);
+    const { unmount } = renderHook(() => useNativeTitlebar(bar));
+    await waitFor(() => expect(listen).toHaveBeenCalledOnce());
+    setHeight.mockClear();
+    const tabs = [
+      { label: "one", name: "One", root: null, current: true },
+      { label: "two", name: "Two", root: null, current: false },
+    ];
+    act(() => useWindowGroup.setState({ tabs }));
+    expect(setHeight).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledOnce();
+    act(() => frame?.(0));
+    expect(setHeight).toHaveBeenCalledTimes(2);
+
+    setHeight.mockClear();
+    act(() => useWindowGroup.setState({ tabs: tabs.map((tab) => ({ ...tab, name: `${tab.name}!` })) }));
+    expect(setHeight).not.toHaveBeenCalled();
+    act(() => window.dispatchEvent(new Event("focus")));
+    unmount();
+    expect(cancel).toHaveBeenCalledWith(1);
+    setHeight.mockClear();
+    act(() => useWindowGroup.setState({ tabs: [] }));
+    act(() => window.dispatchEvent(new Event("focus")));
+    expect(setHeight).not.toHaveBeenCalled();
+    request.mockRestore();
+    cancel.mockRestore();
   });
 });

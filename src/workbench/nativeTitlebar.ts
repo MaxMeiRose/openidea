@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
+import { useWindowGroup } from "@/platform/windowGroups";
 import { clampZoom } from "@/platform/zoom";
 
 export function useNativeTitlebar(bar: HTMLElement | null) {
@@ -27,10 +28,32 @@ export function useNativeTitlebar(bar: HTMLElement | null) {
     observer.observe(bar);
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    let offGroup: (() => void) | undefined;
+    let refreshFrame: number | undefined;
+    const refresh = () => {
+      // The native tab bar may be laid out after the group/focus event.
+      lastHeight.current = null;
+      update();
+      if (refreshFrame !== undefined) cancelAnimationFrame(refreshFrame);
+      refreshFrame = requestAnimationFrame(() => {
+        refreshFrame = undefined;
+        lastHeight.current = null;
+        update();
+      });
+    };
+    const onFocus = () => {
+      if (useWindowGroup.getState().tabs.length > 1) refresh();
+    };
     if (isTauri()) {
-      void import("@tauri-apps/api/event")
-        .then(async ({ listen }) => {
-          const off = await listen<number>("openidea://native-top-inset", ({ payload }) => {
+      offGroup = useWindowGroup.subscribe((state, previous) => {
+        const labels = (tabs: typeof state.tabs) => tabs.map((tab) => tab.label).join("\0");
+        if (labels(state.tabs) !== labels(previous.tabs)) refresh();
+      });
+      window.addEventListener("focus", onFocus);
+      void import("@tauri-apps/api/webviewWindow")
+        .then(async ({ getCurrentWebviewWindow }) => {
+          // A global Tauri listener also receives insets emitted to other windows.
+          const off = await getCurrentWebviewWindow().listen<number>("openidea://native-top-inset", ({ payload }) => {
             if (!disposed && Number.isFinite(payload) && payload >= 0)
               document.documentElement.style.setProperty("--native-top-inset", `${(payload * 100) / zoom}px`);
           });
@@ -48,6 +71,9 @@ export function useNativeTitlebar(bar: HTMLElement | null) {
     return () => {
       disposed = true;
       unlisten?.();
+      offGroup?.();
+      window.removeEventListener("focus", onFocus);
+      if (refreshFrame !== undefined) cancelAnimationFrame(refreshFrame);
       observer.disconnect();
       bar.style.removeProperty("--titlebar-zoom");
       document.documentElement.style.removeProperty("--native-top-inset");
