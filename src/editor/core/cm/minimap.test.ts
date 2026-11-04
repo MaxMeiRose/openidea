@@ -48,6 +48,27 @@ it("scrolls on a minimap click and removes its window listeners on close", () =>
   for (const [type, handler] of handlers) expect(remove).toHaveBeenCalledWith(type, handler);
 });
 
+it("prevents a primary minimap press from starting an editor selection", () => {
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+  const view = new EditorView({
+    state: EditorState.create({ doc: "line\n".repeat(100), extensions: heavyExtension(500, settings(true)) }),
+    parent: document.body,
+  });
+  const editorMouseDown = vi.fn();
+  view.dom.addEventListener("mousedown", editorMouseDown);
+  const overlay = view.dom.querySelector<HTMLElement>(".cm-minimap-overlay-container")!;
+  const primary = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 });
+  overlay.dispatchEvent(primary);
+  expect(primary.defaultPrevented).toBe(true);
+  expect(editorMouseDown).not.toHaveBeenCalled();
+
+  const secondary = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 2 });
+  overlay.dispatchEvent(secondary);
+  expect(secondary.defaultPrevented).toBe(false);
+  expect(editorMouseDown).toHaveBeenCalledOnce();
+  view.destroy();
+});
+
 it("applies the minimap setting to an already open editor", () => {
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
   const compartment = new Compartment();
