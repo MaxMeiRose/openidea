@@ -92,6 +92,32 @@ test("dragging a project file to Agents does not select editor text", async ({ w
   await page.mouse.up();
   const selected = await selection();
   expect(selected.anchor).not.toBe(selected.head);
+
+  // A second file drag also preserves an existing editor selection.
+  const otherFile = page.getByRole("treeitem", { name: "settings.gradle.kts", exact: true });
+  const otherFrom = (await otherFile.locator("[data-project-path]").boundingBox())!;
+  await page.mouse.move(otherFrom.x + 35, otherFrom.y + otherFrom.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(code.x + 120, code.y + code.height / 2, { steps: 15 });
+  const during = await selection();
+  expect({ anchor: during.anchor, head: during.head }).toEqual({ anchor: selected.anchor, head: selected.head });
+  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 15 });
+  await page.mouse.up();
+  await expect(composer).toHaveValue(/@settings\.gradle\.kts/);
+});
+
+test("project files can still be dropped into an empty editor", async ({ workbench: page }) => {
+  await expect(page.locator("#splash")).toBeHidden();
+  const empty = page.getByText("Drop files here to open them");
+  const target = (await empty.boundingBox())!;
+  const file = page.getByRole("treeitem", { name: "README.md", exact: true }).locator("[data-project-path]");
+  const from = (await file.boundingBox())!;
+  await page.mouse.move(from.x + 35, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 15 });
+  await expect(page.locator('[class*="dropZone"]')).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await page.mouse.up();
+  await expect(page.getByRole("tab", { name: "README.md" })).toHaveAttribute("aria-selected", "true");
 });
 
 test("project files can still be dropped into and split the editor", async ({ workbench: page }) => {
