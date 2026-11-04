@@ -778,6 +778,14 @@ export function ProjectView() {
       className={styles.view}
       {...OWNS_FILE_DROP}
       onKeyDown={onKeyDown}
+      // A project-row press can become a pointer drag. Suppress WebKit's
+      // native text-selection gesture while leaving the tree's own selection
+      // handler and the subsequent click intact.
+      onMouseDown={(e) => {
+        if (e.button !== 0 || !pointerSelecting.current) return;
+        e.preventDefault();
+        handle.current?.focus();
+      }}
       // WKWebView can otherwise start dragging selected filename text and cancel
       // our pointer drag before it reaches the prompt/editor target.
       onDragStartCapture={(e) => {

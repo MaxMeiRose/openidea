@@ -68,16 +68,16 @@ export function EditorAreaView() {
 /** The empty editor still accepts drops: reopening tabs, opening files, feature drags (agent tasks). */
 function EmptyEditorArea() {
   const ref = useRef<HTMLDivElement>(null);
-  const [over, setOver] = useState(false);
+  const [dropType, setDropType] = useState<string | null>(null);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     return registerDropTarget(el, {
       accepts: (type) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type),
-      over: () => setOver(true),
-      leave: () => setOver(false),
+      over: (data) => setDropType(data.type),
+      leave: () => setDropType(null),
       drop: (data) => {
-        setOver(false);
+        setDropType(null);
         const paneId = Object.keys(useTabs.getState().panes)[0];
         if (!paneId) return;
         if (data.type === FILES_DRAG) {
@@ -96,7 +96,12 @@ function EmptyEditorArea() {
   return (
     <div ref={ref} className={styles.area}>
       <EmptyEditor />
-      {over && <div className={clsx(styles.dropZone, styles["drop-center"])} aria-hidden="true" />}
+      {dropType && (
+        <div
+          className={clsx(styles.dropZone, styles["drop-center"], dropType === FILES_DRAG && styles.fileDropZone)}
+          aria-hidden="true"
+        />
+      )}
     </div>
   );
 }
@@ -176,7 +181,7 @@ function PaneView({ paneId }: { paneId: string }) {
   const tints = useFileDecorations(useShallow(() => paths.map((p) => (p ? (getFileDecoration(p)?.tint ?? "") : ""))));
 
   const hints = useTitleHints();
-  const [dropZone, setDropZone] = useState<DropZone | null>(null);
+  const [dropZone, setDropZone] = useState<{ zone: DropZone; file: boolean } | null>(null);
   const tabPrefs = useEditorPrefs().tabs;
   const distractionFree = useDistractionFree((s) => s.active);
   const { showExtension, markModified, showCloseButton, showFileIcon, showDirectoryForNonUnique, showFullPathOnHover } =
@@ -269,8 +274,11 @@ function PaneView({ paneId }: { paneId: string }) {
     const zoneAt = (x: number, y: number) => dropZoneAt(x, y, el.getBoundingClientRect());
     return registerDropTarget(el, {
       accepts: (type) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type),
-      over: (data, x, y) =>
-        setDropZone(data.type === EDITOR_TAB_MIME || data.type === FILES_DRAG ? zoneAt(x, y) : "center"),
+      over: (data, x, y) => {
+        const zone = data.type === EDITOR_TAB_MIME || data.type === FILES_DRAG ? zoneAt(x, y) : "center";
+        const file = data.type === FILES_DRAG;
+        setDropZone((current) => (current?.zone === zone && current.file === file ? current : { zone, file }));
+      },
       leave: () => setDropZone(null),
       drop: (data, x, y) => {
         const zone = zoneAt(x, y);
@@ -374,7 +382,12 @@ function PaneView({ paneId }: { paneId: string }) {
         ref={contentRef}
       >
         {active ? <PaneContent paneId={paneId} tab={active} tabsVisible={!hidden} /> : <EmptyEditor />}
-        {dropZone && <div className={clsx(styles.dropZone, styles[`drop-${dropZone}`])} aria-hidden="true" />}
+        {dropZone && (
+          <div
+            className={clsx(styles.dropZone, styles[`drop-${dropZone.zone}`], dropZone.file && styles.fileDropZone)}
+            aria-hidden="true"
+          />
+        )}
       </div>
     </section>
   );

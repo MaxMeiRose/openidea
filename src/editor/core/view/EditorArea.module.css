@@ -214,6 +214,11 @@
   border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
   inset: 0;
 }
+/* File drags often cross an editor en route to Agents. Keep the drop outline
+   without tinting the code and making it look selected. */
+.fileDropZone {
+  background: transparent;
+}
 .drop-left {
   right: 50%;
 }
