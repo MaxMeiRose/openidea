@@ -22,6 +22,7 @@ import { openTarget, openUrl } from "./navigate";
 import { segmentLine, type SegmentMark } from "./segments";
 import styles from "./Run.module.css";
 import { useConsoleSelection } from "./useConsoleSelection";
+import { useConsoleSelectAll } from "./useConsoleSelectAll";
 import { hostBinding, formatBinding, hasPrimaryModifier, registerKeyClaim } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { ConsoleFindBar } from "./FindBar";
@@ -180,6 +181,12 @@ export function ConsoleView({
 }: ConsoleViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
+  const { selectAll, selectedOutput, onSelectAllKeyDown, onCopy } = useConsoleSelectAll(
+    scrollRef,
+    innerRef,
+    () => model.text(),
+    () => onFollowChange(false),
+  );
   const lines = model.lines;
   const patterns = useWorkflowSettings((s) => s.console.foldPatterns);
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set());
@@ -378,27 +385,6 @@ export function ConsoleView({
     scrolledMatch.current = key;
   }, [findOpen, activeMatch, rowOfLine, rows, virtualizer]);
 
-  /** Rows are virtualized, so "everything" is a selection of the container, not of the mounted rows. */
-  const selectAll = () => {
-    const inner = innerRef.current;
-    if (inner) window.getSelection()?.selectAllChildren(inner);
-  };
-  const allSelected = () => {
-    const inner = innerRef.current;
-    const s = window.getSelection();
-    return (
-      !!inner &&
-      !!s &&
-      !s.isCollapsed &&
-      s.anchorNode === inner &&
-      s.focusNode === inner &&
-      s.anchorOffset === 0 &&
-      s.focusOffset === inner.childNodes.length
-    );
-  };
-  /** The selected text; after Select All the whole buffer, including rows that are not mounted. */
-  const selectedOutput = () => (allSelected() ? model.text() : (window.getSelection()?.toString() ?? ""));
-
   const onContextMenu = (e: MouseEvent) => {
     e.preventDefault();
     const selection = selectedOutput();
@@ -433,11 +419,7 @@ export function ConsoleView({
       openFind();
       return;
     }
-    if (hasPrimaryModifier(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") {
-      e.preventDefault();
-      selectAll();
-      return;
-    }
+    if (onSelectAllKeyDown(e)) return;
     if (copySelectionOnKeyDown(e, selectedOutput)) return;
     if (!input) return;
     if (e.key === "d" && e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -524,12 +506,7 @@ export function ConsoleView({
         onScroll={onScroll}
         onContextMenu={onContextMenu}
         onKeyDown={onKeyDown}
-        onCopy={(e) => {
-          // Native copy (menu, macOS) would take only the mounted rows.
-          if (!allSelected()) return;
-          e.preventDefault();
-          e.clipboardData.setData("text/plain", model.text());
-        }}
+        onCopy={onCopy}
         onPaste={onPaste}
         data-autofocus=""
       >

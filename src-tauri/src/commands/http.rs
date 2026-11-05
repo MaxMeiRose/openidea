@@ -59,6 +59,31 @@ pub async fn http_execute(
     Ok(exchange)
 }
 
+/// Sends a literal request from API Client; the body is never interpreted as .http syntax.
+#[tauri::command]
+#[specta::specta]
+pub async fn http_execute_raw(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    prepared: ide_http::PreparedRequest,
+) -> IdeResult<HttpExchange> {
+    let project = state.project(window.label())?;
+    let cancel = state.begin_request(request);
+    let result = ide_http::run_prepared(prepared, None, &cancel).await;
+    state.end_request(request);
+    let exchange = result?;
+    let history = project.http_history.clone();
+    let saved = exchange.clone();
+    // Complete the history write before exposing the exchange to a history refresh.
+    match tauri::async_runtime::spawn_blocking(move || history.add(&saved)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!("http history: {}", error.message),
+        Err(error) => tracing::warn!("http history: {error}"),
+    }
+    Ok(exchange)
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn http_history(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<HistoryEntry>> {
@@ -83,4 +108,34 @@ pub fn http_history_clear(window: Window, state: State<'_, AppState>) -> IdeResu
 #[specta::specta]
 pub async fn proxy_check_connection(proxy: ide_core::settings::ProxySettings, url: String) -> IdeResult<String> {
     ide_http::client::check_connection(&proxy, &url, &ide_core::CancellationToken::new()).await
+}
+
+/// Reads the selected Eureka management gateway without browser CORS restrictions.
+#[tauri::command]
+#[specta::specta]
+pub async fn eureka_services(
+    state: State<'_, AppState>,
+    request: RequestId,
+    base_url: String,
+) -> IdeResult<Vec<ide_http::eureka::EurekaService>> {
+    let cancel = state.begin_request(request);
+    let result = ide_http::eureka::services(&base_url, &cancel).await;
+    state.end_request(request);
+    result
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn eureka_set_status(
+    state: State<'_, AppState>,
+    request: RequestId,
+    base_url: String,
+    service: String,
+    instance: String,
+    status: ide_http::eureka::EurekaStatus,
+) -> IdeResult<()> {
+    let cancel = state.begin_request(request);
+    let result = ide_http::eureka::set_status(&base_url, &service, &instance, status, &cancel).await;
+    state.end_request(request);
+    result
 }

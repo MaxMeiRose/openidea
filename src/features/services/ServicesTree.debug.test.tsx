@@ -73,7 +73,20 @@ const select = () =>
       .getByText("Gateway")
       .closest('[role="treeitem"]')!,
   );
-const toolbar = () => within(screen.getByRole("toolbar", { name: "Services actions" }));
+const toolbar = () => within(screen.getByRole("toolbar", { name: "Service console actions" }));
+const treeToolbar = () => within(screen.getByRole("toolbar", { name: "Services actions" }));
+
+it("keeps Run and Debug in the right console toolbar before the first launch", () => {
+  render(<ServicesTreeView />);
+  select();
+  expect(toolbar().getByRole("button", { name: /^Run$/ })).toBeEnabled();
+  expect(toolbar().getByRole("button", { name: /^Debug$/ })).toBeEnabled();
+  expect(toolbar().getByRole("button", { name: /^Stop$/ })).toBeDisabled();
+  expect(treeToolbar().queryByRole("button", { name: /^Run$/ })).toBeNull();
+  expect(treeToolbar().queryByRole("button", { name: /^Debug$/ })).toBeNull();
+  expect(screen.getAllByRole("button", { name: /^Run$/ })).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: /^Debug$/ })).toHaveLength(1);
+});
 
 it("shows debug output/state, pins actions, and does not rebuild the tree for stdout", async () => {
   adoptSession(1, { runConfig: config });
@@ -135,7 +148,10 @@ it("shows the owning Run output for attached debugging and overrides both sets o
   render(<ServicesTreeView />);
   select();
   expect(screen.getByRole("log")).toHaveTextContent("Maven application log");
-  const actions = within(screen.getByRole("toolbar", { name: "Run actions" }));
+  const actions = toolbar();
+  expect(
+    within(screen.getByRole("toolbar", { name: "Run actions" })).queryByRole("button", { name: "Rerun" }),
+  ).toBeNull();
   fireEvent.click(actions.getByRole("button", { name: "Rerun" }));
   expect(d.rerun).toHaveBeenCalledOnce();
   await act(async () => fireEvent.click(actions.getByRole("button", { name: "Stop" })));
@@ -151,7 +167,7 @@ it("group Stop stops all roots but terminates a shared Maven process only once",
   useDebugRunSessions.setState({ serviceSessions: [first, second] });
   render(<ServicesTreeView />);
   fireEvent.mouseDown(within(screen.getByRole("tree")).getByText("Spring Boot").closest('[role="treeitem"]')!);
-  fireEvent.click(toolbar().getByRole("button", { name: "Stop" }));
+  fireEvent.click(treeToolbar().getByRole("button", { name: "Stop" }));
   await vi.waitFor(() => expect(second.stop).toHaveBeenCalledOnce());
   expect(first.stop).toHaveBeenCalledExactlyOnceWith({ stopProcess: false });
   expect(second.stop).toHaveBeenCalledExactlyOnceWith();

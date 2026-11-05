@@ -24,12 +24,6 @@
   font-family: var(--font-mono);
   font-size: var(--fs-code);
 }
-.actions {
-  display: flex;
-  gap: 6px;
-  padding: 0 12px 12px;
-}
-
 .debugConsole {
   display: flex;
   height: 100%;

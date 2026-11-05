@@ -4,6 +4,55 @@
   flex-direction: column;
   min-height: 0;
 }
+.selectedDetail {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+.treePane {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.treeContent {
+  flex: 1;
+  min-height: 0;
+}
+.consoleToolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+.consoleTitle {
+  color: var(--fg-secondary);
+  margin-right: 4px;
+}
+.consoleName {
+  color: var(--fg-subtle);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-left: 6px;
+  font-size: var(--fs-small);
+}
+.detailContent {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+.detailContent > * {
+  flex: 1;
+  min-width: 0;
+}
 .toolbar,
 .subToolbar {
   height: 32px;

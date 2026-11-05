@@ -232,6 +232,10 @@ export interface ServiceProviderContribution {
   activate?(item: ServiceTreeItem): void;
   /** Right pane for a selected node. */
   detail?: ComponentType<{ item: ServiceTreeItem }>;
+  /** Execution controls above the right-hand console, instead of inside its content or tree toolbar. */
+  detailActions?(item: ServiceTreeItem): ServiceItemAction[];
+  /** Selects this configuration's console in Services; false when this provider does not own it. */
+  revealRunConsole?(config: RunConfig, focus: boolean): boolean;
   /** Status line above the tree (a long operation in progress…); renders null when idle. */
   banner?: ComponentType;
   /** Entries of the "Add Service" (+, ⌘N) menu. */
@@ -257,6 +261,11 @@ export function registerServiceProvider(p: ServiceProviderContribution): () => v
 
 export function serviceProviders(map = useServiceProviders.getState().providers): ServiceProviderContribution[] {
   return [...map.values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id));
+}
+
+/** Routes run/debug output directly to its Services detail pane when a provider owns it. */
+export function revealRunConsole(config: RunConfig, focus = false): boolean {
+  return serviceProviders().some((provider) => provider.revealRunConsole?.(config, focus) ?? false);
 }
 
 export interface EditorInput {

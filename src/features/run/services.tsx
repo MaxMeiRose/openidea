@@ -13,10 +13,12 @@ import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { projectLocation, useRemote } from "@/platform/remote";
 import { tx, useT, useTxTemplate } from "@/platform/i18n";
-import { Button, EmptyState, T } from "@/ui";
+import { EmptyState, T } from "@/ui";
 import type { MenuItem } from "@/ui";
 import {
   toolWindowService,
+  showServiceView,
+  useActiveServiceView,
   notifications,
   useRunConfigTypes,
   useDebugRunSessions,
@@ -29,7 +31,8 @@ import { commandLine, configIcon, KIND_OPTIONS, kindLabel } from "./configs";
 import { SessionPanel } from "./RunView";
 import { showApplicationUpdate } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
-import { startRun, useRun, type RunSession } from "./store";
+import { runtime, startRun, useRun, type RunSession } from "./store";
+import { SERVICES_TREE_VIEW, useServicesTree } from "@/features/services/tree";
 import {
   currentServiceSession,
   currentServiceSessions,
@@ -289,6 +292,8 @@ function resolve(item: ServiceTreeItem): Resolved {
 }
 
 function showOutput(s: RunSession) {
+  const rt = runtime(s.id);
+  if (rt) rt.consoleInRun = true;
   useRun.setState({ activeSession: s.id });
   toolWindowService().show("run", true);
 }
@@ -299,8 +304,8 @@ function run(r: Resolved) {
   if (debug) debug.rerun?.();
   else if (r.session?.run) {
     const s = r.session.run;
-    void startRun(s.config, s.id, s.baseConfig, { show: false });
-  } else if (r.config) void startRun(r.config, undefined, undefined, { show: false });
+    void startRun(s.config, s.id, s.baseConfig, { show: false, consoleLocation: "services" });
+  } else if (r.config) void startRun(r.config, undefined, undefined, { show: false, consoleLocation: "services" });
 }
 
 function debug(r: Resolved) {
@@ -413,6 +418,7 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
         session={execution.run!}
         onRerun={d ? d.rerun : undefined}
         onStop={d ? () => void stopServiceSessions([execution]) : undefined}
+        hideExecutionActions
       />
     );
   }
@@ -447,14 +453,6 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
           <T>Not started</T>
         </dd>
       </dl>
-      <div className={styles.actions}>
-        <Button icon="run" disabled={isDebugOnly(r.config)} onClick={() => run(r)}>
-          Run
-        </Button>
-        <Button icon="debug" onClick={() => debug(r)}>
-          Debug
-        </Button>
-      </div>
     </div>
   );
 }
@@ -492,6 +490,34 @@ export const runServiceProvider: ServiceProviderContribution = {
     if (r.config && !(r.session && liveServiceSession(r.session)) && !isDebugOnly(r.config)) run(r);
   },
   detail: RunDetail,
+  detailActions: (item) => (resolve(item).config ? actions(item) : []),
+  revealRunConsole: (config, focus) => {
+    if (!useProject.getState().project) return false;
+    const key = CONFIG_PREFIX + config.id;
+    useServicesTree.setState((state) => {
+      const expand = [
+        TYPE_PREFIX + config.kind,
+        `${GROUP_PREFIX}running:${config.kind}`,
+        `${GROUP_PREFIX}not-started:${config.kind}`,
+      ];
+      if (
+        state.selectedKey === key &&
+        state.selectedKeys.size === 1 &&
+        state.selectedKeys.has(key) &&
+        expand.every((id) => state.expanded.has(id))
+      )
+        return state;
+      return { selectedKey: key, selectedKeys: new Set([key]), expanded: new Set([...state.expanded, ...expand]) };
+    });
+    if (
+      focus ||
+      useActiveServiceView.getState().active !== SERVICES_TREE_VIEW ||
+      !toolWindowService().isVisible("services")
+    ) {
+      showServiceView(SERVICES_TREE_VIEW, focus);
+    }
+    return true;
+  },
   addMenu,
   reorder: {
     canMove: (source, target) => {

@@ -23,7 +23,13 @@ import {
   type ThreadInfo,
   type Variable,
 } from "@/platform/ipc";
-import { maybeEditorService, notifications, toolWindowService, useDebugRunSessions } from "@/workbench/contributions";
+import {
+  maybeEditorService,
+  notifications,
+  revealRunConsole,
+  toolWindowService,
+  useDebugRunSessions,
+} from "@/workbench/contributions";
 import { breakpointsOf, consumeTemporary, flushBreakpoints, refreshStates, resetStatuses } from "./breakpoints/store";
 import { interpolateLog, logParts, suspends } from "./breakpoints/model";
 import { syncSpecial, useSpecialBreakpoints } from "./breakpoints/special";
@@ -423,7 +429,7 @@ export async function startPreparedSession(
   }));
   publishContext();
   try {
-    if (workflowSettings().run.showOnStart) toolWindowService().show("debug");
+    if (workflowSettings().run.showOnStart && !revealRunConsole(config)) toolWindowService().show("debug");
   } catch {
     /* no workbench (tests) */
   }
@@ -469,7 +475,8 @@ export async function startSession(
   });
   publishContext();
   try {
-    if (workflowSettings().run.showOnStart) toolWindowService().show("debug");
+    if (workflowSettings().run.showOnStart && !(options.runConfig && revealRunConsole(options.runConfig)))
+      toolWindowService().show("debug");
   } catch {
     // Workbench not ready (tests).
   }

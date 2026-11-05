@@ -59,6 +59,41 @@ const rows = (java: string[], npm: string[]) => [
   ...npm,
 ];
 
+test("launching a service keeps one console and puts execution actions above it", async ({ workbench: page }) => {
+  await configure(page);
+  const services = page.getByRole("region", { name: "Services", exact: true });
+  await page
+    .getByRole("tree", { name: "Services", exact: true })
+    .getByRole("treeitem", { name: "gateway", exact: true })
+    .click();
+  const actions = services.getByRole("toolbar", { name: "Service console actions" });
+  await expect(actions.getByRole("button", { name: "Run", exact: true })).toBeVisible();
+  await expect(actions.getByRole("button", { name: "Debug", exact: true })).toBeVisible();
+  await expect(services.getByRole("button", { name: "Run", exact: true })).toHaveCount(1);
+  await expect(
+    services.getByRole("toolbar", { name: "Services actions" }).getByRole("button", { name: "Run", exact: true }),
+  ).toHaveCount(0);
+  await page.evaluate(async () => {
+    const path = "/src/features/run/store.ts";
+    const { useRun, startRun } = await import(path);
+    const config = useRun.getState().configs.find((c: { id: string }) => c.id === "gateway");
+    await startRun({ ...config, focusToolWindow: true, showOnStdout: true, showOnStderr: true });
+  });
+  await expect(services.getByRole("log")).toBeVisible();
+  await expect(services.getByRole("log")).toContainText("Running processes requires the desktop app.");
+  await expect(page.getByRole("region", { name: "Run", exact: true })).toBeHidden();
+  await expect(services.getByRole("button", { name: "Debug", exact: true })).toHaveCount(1);
+  await expect(
+    services.getByRole("toolbar", { name: "Run actions" }).getByRole("button", { name: "Rerun", exact: true }),
+  ).toHaveCount(0);
+  const header = (await actions.boundingBox())!;
+  const treeHeader = (await services.getByRole("toolbar", { name: "Services actions" }).boundingBox())!;
+  const output = (await services.getByRole("log").boundingBox())!;
+  expect(header.y).toBeCloseTo(treeHeader.y, 0);
+  expect(header.y + header.height).toBeLessThanOrEqual(output.y);
+  await services.screenshot({ path: "/tmp/openidea-services-console.png", animations: "disabled" });
+});
+
 test("service pointer ordering works for Java and npm and survives reload", async ({ workbench: page }) => {
   await configure(page);
   const tree = page.getByRole("tree", { name: "Services", exact: true });

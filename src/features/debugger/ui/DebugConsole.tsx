@@ -9,6 +9,7 @@ import ansi from "@/ui/ansi.module.css";
 import { findOutputLinks } from "@/features/run/links";
 import { openTarget, openUrl, runDirectory } from "@/features/run/navigate";
 import { segmentLine } from "@/features/run/segments";
+import { useConsoleSelectAll } from "@/features/run/useConsoleSelectAll";
 import { appendConsole, clearConsole, evaluate, isLive, useDebug, type DebugSession } from "../state";
 import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
 import styles from "./DebugToolWindow.module.css";
@@ -26,7 +27,16 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const lines = useDebug((s) => s.console[session.id]);
   const cwd = runDirectory(session.launch?.cwd ?? session.runConfig?.cwd);
   const scroller = useRef<HTMLDivElement>(null);
+  const inner = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const { selectAll, selectedOutput, onSelectAllKeyDown, onCopy } = useConsoleSelectAll(
+    scroller,
+    inner,
+    () => (lines ?? []).map((line) => line.text).join(""),
+    () => {
+      stick.current = false;
+    },
+  );
   const programmatic = useRef(false);
   const [input, setInput] = useState("");
   const history = useRef<string[]>(readHistory("console"));
@@ -110,17 +120,31 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
         }}
         onContextMenu={(e) => {
           e.preventDefault();
-          showContextMenu(e, [{ label: "Clear All", icon: "trash", run: () => clearConsole(session.id) }]);
+          const selection = selectedOutput();
+          showContextMenu(e, [
+            {
+              label: "Copy",
+              icon: "copy",
+              disabled: !selection,
+              run: () => void navigator.clipboard?.writeText(selection).catch(() => {}),
+            },
+            { label: "Select All", run: selectAll },
+            { kind: "separator" },
+            { label: "Clear All", icon: "trash", run: () => clearConsole(session.id) },
+          ]);
         }}
         role="log"
-        onKeyDown={copySelectionOnKeyDown}
+        onKeyDown={(event) => {
+          if (!onSelectAllKeyDown(event)) copySelectionOnKeyDown(event, selectedOutput);
+        }}
+        onCopy={onCopy}
         aria-label={tx("Debug console")}
         tabIndex={0}
       >
         {!lines?.length && session.launch?.request === "attach" && (
           <T>The attached process may not provide standard output to the debugger.</T>
         )}
-        <div className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
+        <div ref={inner} className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
           {virtualizer.getVirtualItems().map((item) => {
             const l = lines?.[item.index];
             if (!l) return null;

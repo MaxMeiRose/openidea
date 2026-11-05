@@ -954,6 +954,8 @@ export const commands = {
 	 *  the exchange in the response history. Cancel with `cancel_request(request)`.
 	 */
 	httpExecute: (request: RequestId, path: string | null, text: string, index: number, env: string | null) => typedError<HttpExchange, IdeError>(__TAURI_INVOKE("http_execute", { request, path, text, index, env })),
+	/**  Sends a literal request from API Client; the body is never interpreted as .http syntax. */
+	httpExecuteRaw: (request: RequestId, prepared: PreparedRequest) => typedError<HttpExchange, IdeError>(__TAURI_INVOKE("http_execute_raw", { request, prepared })),
 	httpHistory: () => typedError<HttpHistoryEntry[], IdeError>(__TAURI_INVOKE("http_history")),
 	httpHistoryGet: (id: string) => typedError<HttpExchange, IdeError>(__TAURI_INVOKE("http_history_get", { id })),
 	httpHistoryClear: () => typedError<null, IdeError>(__TAURI_INVOKE("http_history_clear")),
@@ -962,6 +964,9 @@ export const commands = {
 	 *  edited (not yet applied); the response status, or why there was none.
 	 */
 	proxyCheckConnection: (proxy: ProxySettings, url: string) => typedError<string, IdeError>(__TAURI_INVOKE("proxy_check_connection", { proxy, url })),
+	/**  Reads the selected Eureka management gateway without browser CORS restrictions. */
+	eurekaServices: (request: RequestId, baseUrl: string) => typedError<EurekaService_Serialize[], IdeError>(__TAURI_INVOKE("eureka_services", { request, baseUrl })),
+	eurekaSetStatus: (request: RequestId, baseUrl: string, service: string, instance: string, status: EurekaStatus) => typedError<null, IdeError>(__TAURI_INVOKE("eureka_set_status", { request, baseUrl, service, instance, status })),
 	dbSources: () => typedError<DataSource[], IdeError>(__TAURI_INVOKE("db_sources")),
 	dbSaveSources: (sources: DataSource[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_sources", { sources })),
 	/**
@@ -3031,6 +3036,25 @@ export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "inv
 "outOfSync" | "cancelled" | "timedOut" | 
 /**  A required external tool (language server, git, debugger) is unavailable. */
 "unavailable" | "io" | "protocol" | "internal";
+
+export type EurekaInstance = {
+	instanceId: string,
+	status: string,
+};
+
+export type EurekaService = EurekaService_Serialize | EurekaService_Deserialize;
+
+export type EurekaService_Deserialize = {
+	name: string,
+	instance: EurekaInstance[],
+};
+
+export type EurekaService_Serialize = {
+	name: string,
+	instance: EurekaInstance[],
+};
+
+export type EurekaStatus = "UP" | "DOWN";
 
 /**  An exception breakpoint filter offered by an adapter (`exceptionBreakpointFilters`). */
 export type ExceptionFilter = {

@@ -28,7 +28,13 @@ import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { maybeEditorService, notifications, toolWindowService, useDebugRunSessions } from "@/workbench/contributions";
+import {
+  maybeEditorService,
+  notifications,
+  revealRunConsole,
+  toolWindowService,
+  useDebugRunSessions,
+} from "@/workbench/contributions";
 import { ConsoleModel } from "./console";
 import { jvmFrameTarget } from "./links";
 import { confirmRerun, confirmTerminate } from "./dialogs";
@@ -78,6 +84,8 @@ export interface RunSession {
 }
 
 interface SessionRuntime {
+  /** Explicitly shown in Run by the user; subsequent output keeps that choice. */
+  consoleInRun?: boolean;
   resolveRequest?: { id: RequestId; controller: AbortController };
   console: ConsoleModel;
   tests: TestResults | null;
@@ -505,6 +513,8 @@ export async function startRun(
   baseConfig?: RunConfig,
   options: {
     show?: boolean;
+    /** A Console toolbar overrides the last explicitly chosen output destination. */
+    consoleLocation?: "services" | "run";
     /** Launch this instead of `config` (e.g. with a debug agent); the tab still shows `config`. Skips before launch tasks. */
     launch?: RunConfig;
     /** Every output line of this run. */
@@ -570,6 +580,7 @@ export async function startRun(
   if (session) {
     const prev = runtimes.get(session.id);
     const rt = newRuntime(config);
+    rt.consoleInRun = options.consoleLocation ? options.consoleLocation === "run" : prev?.consoleInRun;
     rt.generation = (prev?.generation ?? 0) + 1;
     if (prev) cancelFlush(prev);
     runtimes.set(session.id, rt);
@@ -603,7 +614,9 @@ export async function startRun(
       stdinClosed: false,
       baseConfig,
     };
-    runtimes.set(session.id, newRuntime(config));
+    const rt = newRuntime(config);
+    rt.consoleInRun = options.consoleLocation === "run";
+    runtimes.set(session.id, rt);
     const created = session;
     useRun.setState((s) => ({ sessions: [...s.sessions, created], activeSession: created.id }));
   }
@@ -629,9 +642,13 @@ export async function startRun(
   });
   rt.onExit = options.onExit;
   try {
-    if (config.focusToolWindow) toolWindowService().show("run", true);
-    else if (options.show ?? config.openToolWindow ?? workflowSettings().run.showOnStart)
-      toolWindowService().show("run");
+    const focus = !!config.focusToolWindow;
+    if (
+      options.show !== false &&
+      (focus || (options.show ?? config.openToolWindow ?? workflowSettings().run.showOnStart))
+    ) {
+      if (rt.consoleInRun || !revealRunConsole(config, focus)) toolWindowService().show("run", focus);
+    }
   } catch {
     /* no workbench (tests) */
   }
@@ -707,6 +724,8 @@ export async function startRun(
 function revealSession(sessionId: string) {
   try {
     if (useRun.getState().activeSession !== sessionId) useRun.setState({ activeSession: sessionId });
+    const session = getSession(sessionId);
+    if (session && !runtime(sessionId)?.consoleInRun && revealRunConsole(session.config)) return;
     if (!toolWindowService().isVisible("run")) toolWindowService().show("run");
   } catch {
     /* no workbench (tests) */

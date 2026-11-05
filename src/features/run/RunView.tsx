@@ -48,10 +48,12 @@ export function SessionPanel({
   session,
   onRerun,
   onStop,
+  hideExecutionActions = false,
 }: {
   session: RunSession;
   onRerun?: (() => void) | null;
   onStop?: () => void;
+  hideExecutionActions?: boolean;
 }) {
   const updating = useApplicationUpdates((s) => s.ids.has(session.id));
   const version = useRun((s) => s.versions[session.id] ?? 0);
@@ -128,14 +130,16 @@ export function SessionPanel({
   return (
     <div className={styles.session}>
       <div className={styles.toolbar} role="toolbar" aria-orientation="vertical" aria-label={tx("Run actions")}>
-        <IconButton
-          icon="rerun"
-          iconSize={14}
-          title="Rerun"
-          shortcut={shortcutLabel("run.rerun")}
-          disabled={onRerun === null}
-          onClick={onRerun ?? (() => rerunSession(session.id))}
-        />
+        {!hideExecutionActions && (
+          <IconButton
+            icon="rerun"
+            iconSize={14}
+            title="Rerun"
+            shortcut={shortcutLabel("run.rerun")}
+            disabled={onRerun === null}
+            onClick={onRerun ?? (() => rerunSession(session.id))}
+          />
+        )}
         {rt.tests && (
           <IconButton
             icon="rerun"
@@ -147,15 +151,17 @@ export function SessionPanel({
             onClick={() => rerunFailed(session.id)}
           />
         )}
-        <IconButton
-          icon="stop"
-          iconSize={13}
-          title="Stop"
-          tone={running || onStop ? "danger" : "default"}
-          disabled={!running && !onStop}
-          onClick={onStop ?? (() => void stopSession(session.id))}
-        />
-        {isUpdatable(session.config) && (
+        {!hideExecutionActions && (
+          <IconButton
+            icon="stop"
+            iconSize={13}
+            title="Stop"
+            tone={running || onStop ? "danger" : "default"}
+            disabled={!running && !onStop}
+            onClick={onStop ?? (() => void stopSession(session.id))}
+          />
+        )}
+        {!hideExecutionActions && isUpdatable(session.config) && (
           <IconButton
             icon="refresh"
             title="Update Application"
@@ -164,7 +170,7 @@ export function SessionPanel({
             onClick={() => showApplicationUpdate(session.id)}
           />
         )}
-        <div className={styles.toolbarSep} />
+        {(!hideExecutionActions || rt.tests) && <div className={styles.toolbarSep} />}
         {!rt.terminal && (
           <>
             <IconButton
