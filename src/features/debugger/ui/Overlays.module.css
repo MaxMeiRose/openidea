@@ -65,7 +65,7 @@
   border: 1.5px solid var(--danger);
 }
 .bpDot[data-look="unverified"] {
-  background: var(--fg-gutter);
+  background: var(--danger);
 }
 
 .bpFooter {

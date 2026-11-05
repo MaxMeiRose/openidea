@@ -31,9 +31,9 @@
   border: 1.5px solid var(--danger);
 }
 
-/* Not bound by the adapter. */
+/* Enabled breakpoints stay red while waiting for adapter verification. */
 .unverified::before {
-  background: var(--fg-gutter);
+  background: var(--danger);
 }
 
 /* Condition / hit count: dot with a small notch. */

@@ -1,10 +1,13 @@
 /** Visual API debugging, sharing the HTTP engine and Spring endpoint providers. */
 import { registerActions } from "@/platform/actions";
+import { registerEditorContribution } from "@/editor/api";
 import { useProject } from "@/platform/project";
 import { projectLocation, useRemote } from "@/platform/remote";
 import { lazyComponent } from "@/ui";
 import { registerToolWindow, toolWindowService } from "@/workbench/contributions";
-import { API_CLIENT_WINDOW, newRequest, openProject } from "./store";
+import { API_CLIENT_WINDOW, newRequest, openEndpoint, openProject } from "./store";
+import { apiRequestLenses } from "./editor";
+import type { ApiEndpointTarget } from "./model";
 
 export function activate(): () => void {
   const synchronizeProject = () => {
@@ -13,6 +16,7 @@ export function activate(): () => void {
   };
   synchronizeProject();
   const disposers = [
+    registerEditorContribution({ id: "apiClient.requests", order: 58, extensions: apiRequestLenses }),
     useProject.subscribe((state, previous) => {
       if (state.project?.root !== previous.project?.root) synchronizeProject();
     }),
@@ -28,6 +32,20 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./ApiClientView").then((module) => module.ApiClientView)),
     }),
     registerActions([
+      {
+        id: "apiClient.openEndpoint",
+        title: "API Call",
+        category: "Tools",
+        icon: "toolwindow-api",
+        when: "projectOpen",
+        run: async ({ arg }) => {
+          const target = arg as ApiEndpointTarget | undefined;
+          if (!target?.endpoint) return;
+          const opened = openEndpoint(target.endpoint, target.source);
+          toolWindowService().show(API_CLIENT_WINDOW, true);
+          await opened;
+        },
+      },
       {
         id: "apiClient.show",
         title: "API Client",

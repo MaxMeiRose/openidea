@@ -192,7 +192,7 @@ const reader: SourceReader = {
     }
   },
 };
-export async function openEndpoint(endpoint: EndpointEntry) {
+export async function openEndpoint(endpoint: EndpointEntry, sourceText?: string) {
   const state = useApiClient.getState();
   const existing = state.tabs.find((draft) => draft.endpointKey === endpointKey(endpoint));
   if (existing) {
@@ -203,7 +203,10 @@ export async function openEndpoint(endpoint: EndpointEntry) {
   addTab(draft);
   const generation = workspaceGeneration;
   try {
-    const [source, host] = await Promise.all([reader.read(endpoint.path), findHost(endpoint.path, state.root, reader)]);
+    const [source, host] = await Promise.all([
+      sourceText ?? reader.read(endpoint.path),
+      findHost(endpoint.path, state.root, reader),
+    ]);
     const mapping = source
       ? springControllers(source)
           .flatMap((controller) => controller.endpoints)

@@ -8,6 +8,7 @@ import {
   cancelRequest,
   closeTab,
   newRequest,
+  openEndpoint,
   openProject,
   refreshEndpoints,
   refreshHistory,
@@ -33,6 +34,44 @@ vi.mock("@/platform/ipc", async (original) => {
       fsReadText: vi.fn(),
     },
   };
+});
+
+it("prepares controller requests from unsaved source and preserves an existing edited request on reopening", async () => {
+  const source = `@RestController
+@RequestMapping("/api/unsaved")
+class OrderController {
+  @PostMapping(produces = "application/json")
+  public Order save(@RequestParam(defaultValue = "25") int limit, @RequestBody CreateOrder body) { return null; }
+}
+class CreateOrder { private String name; private int count; }
+`;
+  vi.mocked(commands.fsReadText).mockImplementation(async (path) =>
+    ok(path.endsWith("application.properties") ? "server.port=9191" : ""),
+  );
+  const endpoint = {
+    method: "POST",
+    url: "/api/unsaved",
+    controller: "OrderController",
+    methodName: "save",
+    path: "/project-a/OrderController.java",
+    rel: "OrderController.java",
+    line: 4,
+    col: 15,
+  };
+  await openEndpoint(endpoint, source);
+  const draft = useApiClient.getState().tabs[0]!;
+  expect(draft).toMatchObject({ method: "POST", url: "/api/unsaved", baseUrl: "http://localhost:9191" });
+  expect(draft.query).toMatchObject([{ key: "limit", value: "25" }]);
+  expect(draft.headers).toMatchObject([
+    { key: "Accept", value: "application/json" },
+    { key: "Content-Type", value: "application/json" },
+  ]);
+  expect(JSON.parse(draft.body)).toEqual({ name: "", count: 0 });
+  expect(commands.httpExecuteRaw).not.toHaveBeenCalled();
+  updateDraft(draft.id, { body: '{"name":"keep"}' });
+  await openEndpoint(endpoint, source);
+  expect(useApiClient.getState().tabs).toHaveLength(1);
+  expect(useApiClient.getState().tabs[0]!.body).toBe('{"name":"keep"}');
 });
 const ok = <T>(data: T) => ({ status: "ok" as const, data });
 function deferred<T>() {

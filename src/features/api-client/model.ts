@@ -2,6 +2,11 @@ import type { HttpExchange, PreparedRequest } from "@/bindings";
 import type { EndpointEntry } from "@/workbench/contributions";
 
 export const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const;
+export interface ApiEndpointTarget {
+  endpoint: EndpointEntry;
+  /** Unsaved controller content, when invoked from its editor. */
+  source?: string;
+}
 export interface Pair {
   id: string;
   key: string;
