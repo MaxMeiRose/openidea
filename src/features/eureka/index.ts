@@ -1,16 +1,17 @@
 import { registerActions } from "@/platform/actions";
 import { lazyComponent } from "@/ui";
-import { registerServiceView, showServiceView } from "@/workbench/contributions";
-import { cancelRefresh, EUREKA_VIEW, watchEnvironments } from "./store";
+import { registerToolWindow, toolWindowService } from "@/workbench/contributions";
+import { cancelRefresh, EUREKA_WINDOW, watchEnvironments } from "./store";
 
 export function activate(): () => void {
   const disposers = [
     watchEnvironments(),
-    registerServiceView({
-      id: EUREKA_VIEW,
+    registerToolWindow({
+      id: EUREKA_WINDOW,
       title: "Eureka",
-      icon: "toolwindow-services",
-      order: 30,
+      icon: "toolwindow-eureka",
+      anchor: "right",
+      order: 19,
       component: lazyComponent(() => import("./EurekaView").then((m) => m.EurekaView)),
     }),
     registerActions([
@@ -19,10 +20,10 @@ export function activate(): () => void {
         title: "Eureka",
         description: "Manage Eureka service instances across environments",
         category: "Tools",
-        icon: "toolwindow-services",
+        icon: "toolwindow-eureka",
         keywords: ["eureka", "registry", "environment", "service", "注册中心", "环境"],
         when: "projectOpen",
-        run: () => showServiceView(EUREKA_VIEW, true),
+        run: () => toolWindowService().show(EUREKA_WINDOW, true),
       },
     ]),
     cancelRefresh,

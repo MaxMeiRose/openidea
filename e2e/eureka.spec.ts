@@ -7,7 +7,7 @@ async function configure(page: Page) {
     const contributionPath = "/src/workbench/contributions.ts";
     const layoutPath = "/src/workbench/toolwindows/store.ts";
     const { commands } = await import(bindingsPath);
-    const { showServiceView } = await import(contributionPath);
+    const { toolWindowService } = await import(contributionPath);
     const { setToolWindowSize } = await import(layoutPath);
     const lists = new Map<string, Array<{ name: string; instance: Array<{ instanceId: string; status: string }> }>>();
     const calls: Array<{ url: string; service: string; instance: string; status: string }> = [];
@@ -53,11 +53,19 @@ async function configure(page: Page) {
         .instance.find((item) => item.instanceId === instance)!.status = status;
       return { status: "ok", data: null };
     };
-    setToolWindowSize("bottom", 520);
-    showServiceView("eureka", true);
+    setToolWindowSize("right", 1000);
+    toolWindowService().show("eureka", true);
+    const storePath = "/src/features/eureka/store.ts";
+    await (await import(storePath)).refreshEureka();
   });
   const view = page.getByRole("region", { name: "Eureka", exact: true });
   await expect(view).toBeVisible();
+  await expect(
+    page.locator('[data-anchor="right"]').getByRole("region", { name: "Eureka", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator('[data-anchor="bottom"]').getByRole("region", { name: "Eureka", exact: true })).toHaveCount(
+    0,
+  );
   return view;
 }
 

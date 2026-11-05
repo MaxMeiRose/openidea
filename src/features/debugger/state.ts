@@ -29,6 +29,7 @@ import {
   revealRunConsole,
   toolWindowService,
   useDebugRunSessions,
+  type DebugServiceSession,
 } from "@/workbench/contributions";
 import { breakpointsOf, consumeTemporary, flushBreakpoints, refreshStates, resetStatuses } from "./breakpoints/store";
 import { interpolateLog, logParts, suspends } from "./breakpoints/model";
@@ -44,6 +45,7 @@ export interface DebugSession {
   /** Originating configuration, retained for toolbar targeting and prepared debug reruns. */
   runConfig?: RunConfig;
   startedAt?: number;
+  startupError?: DebugServiceSession["startupError"];
   adapter: string;
   parent: DebugSessionId | null;
   /** Launch configuration (root sessions), used by Rerun. */
@@ -254,6 +256,7 @@ export function publishContext() {
           startedAt: session.startedAt ?? 0,
           status: paused ? ("paused" as const) : session.status,
           processId: session.process,
+          startupError: session.startupError,
           rerun: session.runConfig || session.launch ? () => void rerunSession(session.id) : null,
           stop: (options?: { stopProcess?: boolean }) => stopSession(session.id, options),
           show: () => {
@@ -415,6 +418,7 @@ const preparations = new Map<DebugSessionId, AbortController>();
 export async function startPreparedSession(
   config: RunConfig,
   prepare: (signal: AbortSignal, report: (text: string, kind?: "system" | "stderr") => void) => Promise<LaunchConfig>,
+  options: { process?: RunId | null; rerunnable?: boolean } = {},
 ): Promise<DebugSessionId | null> {
   const id = --preparationSeq as DebugSessionId;
   const controller = new AbortController();
@@ -440,7 +444,11 @@ export async function startPreparedSession(
     report(tx`Starting debugger for ${config.name}…` + "\n");
     const launch = await prepare(controller.signal, report);
     controller.signal.throwIfAborted();
-    return await startSession(launch, { runConfig: config, preparation: { id, signal: controller.signal } });
+    return await startSession(launch, {
+      ...options,
+      runConfig: config,
+      preparation: { id, signal: controller.signal },
+    });
   } catch (e) {
     if (controller.signal.aborted || isCancelled(e)) return null;
     report((e instanceof Error ? e.message : String(e)) + "\n", "stderr");
@@ -465,6 +473,10 @@ export async function startSession(
   if (!isTauri()) {
     notifications().notify({ group: "run", level: "warning", title: "Debugging needs the desktop app" });
     return null;
+  }
+  // Native adapters can build or fail before DAP has an id. Keep that phase and its errors in the selected console.
+  if (options.runConfig && !options.preparation) {
+    return startPreparedSession(options.runConfig, async () => launch, options);
   }
   // Drop finished sessions; keep running ones (multiple concurrent sessions are fine).
   useDebug.setState((s) => {
@@ -538,6 +550,33 @@ export async function startSession(
     if (options.preparation)
       appendConsole(options.preparation.id, "stderr", (e instanceof Error ? e.message : String(e)) + "\n");
     const missing = missingAdapter(launch.adapter, e);
+    const install = missing
+      ? () => {
+          if (!options.runConfig) {
+            void executeAction("tools.install", missing.tool).then(() => startSession(launch, options));
+            return;
+          }
+          void startPreparedSession(
+            options.runConfig,
+            async (signal, report) => {
+              report(tx`Installing ${missing.tool}…` + "\n");
+              if (!(await executeAction("tools.install", missing.tool)))
+                throw new Error(tx("The debugger installer is not available"), { cause: e });
+              signal.throwIfAborted();
+              return launch;
+            },
+            options,
+          ).catch(() => {});
+        }
+      : undefined;
+    if (options.preparation) {
+      patch(options.preparation.id, {
+        startupError: {
+          message: missing?.title ?? (e instanceof Error ? e.message : String(e)),
+          action: install ? { label: "Install and Debug", run: install } : undefined,
+        },
+      });
+    }
     if (missing) {
       notifications().notify({
         group: "run",
@@ -549,7 +588,7 @@ export async function startSession(
         actions: [
           {
             label: "Install and Debug",
-            run: () => void executeAction("tools.install", missing.tool).then(() => startSession(launch, options)),
+            run: install!,
           },
         ],
       });

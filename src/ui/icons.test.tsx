@@ -30,6 +30,8 @@ describe("tool window icons", () => {
       "problems",
       "commit",
       "git",
+      "apiClient",
+      "eureka",
     ]) {
       expect(ids).toContain(id);
     }
@@ -82,6 +84,19 @@ describe("Icon", () => {
   it("uses the 20px variant for large tool window icons", () => {
     const { container } = render(<Icon name="toolwindow-project" size={20} />);
     expect(container.querySelector("svg")!.getAttribute("viewBox")).toBe("0 0 20 20");
+  });
+
+  it.each(["toolwindow-api", "toolwindow-eureka"])("keeps %s monochrome at action and stripe sizes", (name) => {
+    for (const size of [16, 18, 20]) {
+      const { container, unmount } = render(<Icon name={name} size={size} />);
+      const svg = container.querySelector("svg")!;
+      expect(svg.getAttribute("viewBox")).toBe(size >= 18 ? "0 0 20 20" : "0 0 16 16");
+      const strokes = [...svg.querySelectorAll("[stroke]")];
+      expect(strokes.length).toBeGreaterThan(0);
+      expect(strokes.every((shape) => shape.getAttribute("stroke") === "currentColor")).toBe(true);
+      expect(svg.querySelectorAll("g")).toHaveLength(0);
+      unmount();
+    }
   });
 
   it("makes element ids unique per instance", () => {

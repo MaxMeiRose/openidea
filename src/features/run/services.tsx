@@ -13,7 +13,9 @@ import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { projectLocation, useRemote } from "@/platform/remote";
 import { tx, useT, useTxTemplate } from "@/platform/i18n";
-import { EmptyState, T } from "@/ui";
+import { Button, EmptyState, T } from "@/ui";
+import { workflowSettings } from "@/platform/workflowSettings";
+import { showError } from "@/workbench/messages";
 import type { MenuItem } from "@/ui";
 import {
   toolWindowService,
@@ -31,7 +33,8 @@ import { commandLine, configIcon, KIND_OPTIONS, kindLabel } from "./configs";
 import { SessionPanel } from "./RunView";
 import { showApplicationUpdate } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
-import { runtime, startRun, useRun, type RunSession } from "./store";
+import { runtime, startRun, useRun, waitForExit, type RunSession } from "./store";
+import { confirmRerun } from "./dialogs";
 import { SERVICES_TREE_VIEW, useServicesTree } from "@/features/services/tree";
 import {
   currentServiceSession,
@@ -308,10 +311,37 @@ function run(r: Resolved) {
   } else if (r.config) void startRun(r.config, undefined, undefined, { show: false, consoleLocation: "services" });
 }
 
-function debug(r: Resolved) {
+const debugStarts = new Set<string>();
+
+async function debug(r: Resolved) {
+  const config = r.config;
+  if (!config || debugStarts.has(config.id)) return;
   const session = serviceDebugger(r.session);
-  if (session) session.rerun?.();
-  else if (r.config) void executeAction("run.debugConfig", r.config);
+  if (session) {
+    session.rerun?.();
+    return;
+  }
+  debugStarts.add(config.id);
+  try {
+    const activeRun = r.session?.run;
+    if (activeRun && busy(activeRun) && !config.allowParallel) {
+      if (workflowSettings().run.confirmRerun && !(await confirmRerun(config.name))) return;
+      await stopServiceSessions([r.session!]);
+      await waitForExit([activeRun.id]);
+      if (useRun.getState().sessions.some((run) => run.id === activeRun.id && busy(run))) {
+        await showError(
+          tx`Cannot start debugger for ${config.name}`,
+          tx("The running process did not stop; debugging was not started."),
+        );
+        return;
+      }
+    }
+    if (!(await executeAction("run.debugConfig", config))) {
+      await showError("Debugger is not available", tx`Cannot start debugger for ${config.name}`);
+    }
+  } finally {
+    debugStarts.delete(config.id);
+  }
 }
 
 function actions(item: ServiceTreeItem): ServiceItemAction[] {
@@ -327,15 +357,22 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
   if (!r.config) return [stop];
   const live = !!r.session && liveServiceSession(r.session);
   const debugging = serviceDebugger(r.session);
+  const starting = debugging?.status === "starting" || r.session?.run?.status === "starting";
   return [
     {
       id: "run",
       title: live ? "Rerun" : "Run",
       icon: live ? "rerun" : "run",
-      disabled: debugging ? !debugging.rerun : isDebugOnly(r.config),
+      disabled: starting || (debugging ? !debugging.rerun : isDebugOnly(r.config)),
       run: () => run(r),
     },
-    { id: "debug", title: "Debug", icon: "debug", disabled: !!debugging && !debugging.rerun, run: () => debug(r) },
+    {
+      id: "debug",
+      title: "Debug",
+      icon: "debug",
+      disabled: starting || (!!debugging && !debugging.rerun),
+      run: () => void debug(r),
+    },
     stop,
     ...(isUpdatable(r.config)
       ? [
@@ -426,6 +463,18 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
   if (d && Console)
     return (
       <div className={styles.debugConsole}>
+        {d.startupError && (
+          <div className={styles.startupError} role="alert">
+            <span>
+              <T>{d.startupError.message}</T>
+            </span>
+            {d.startupError.action && (
+              <Button size="small" onClick={d.startupError.action.run}>
+                {d.startupError.action.label}
+              </Button>
+            )}
+          </div>
+        )}
         <Console key={d.id} sessionId={d.id} />
       </div>
     );

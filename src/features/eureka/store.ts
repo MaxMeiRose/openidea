@@ -4,7 +4,7 @@ import { tx } from "@/platform/i18n";
 import { instanceKey, readSettings, serverAddress, type EurekaEnvironment, type EurekaSettings } from "./model";
 
 export const ENVIRONMENTS_KEY = "openidea.eureka.environments";
-export const EUREKA_VIEW = "eureka";
+export const EUREKA_WINDOW = "eureka";
 const SYNC_DELAY = 2500;
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 

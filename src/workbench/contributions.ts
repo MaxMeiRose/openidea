@@ -1402,6 +1402,11 @@ export interface DebugServiceSession {
   rerun: (() => void) | null;
   stop: (options?: { stopProcess?: boolean }) => Promise<void>;
   show: () => void;
+  /** A failed launch stays visible with its remedy beside the retained console. */
+  startupError?: {
+    message: string;
+    action?: { label: string; run: () => void };
+  };
 }
 
 export const useDebugRunSessions = create<{

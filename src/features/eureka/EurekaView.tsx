@@ -113,7 +113,7 @@ export function EurekaView() {
   };
 
   return (
-    <div className={styles.view} role="region" aria-label="Eureka">
+    <div className={styles.view}>
       <div className={styles.toolbar}>
         <Select
           aria-label="Eureka environment"

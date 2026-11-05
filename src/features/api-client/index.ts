@@ -22,7 +22,7 @@ export function activate(): () => void {
     registerToolWindow({
       id: API_CLIENT_WINDOW,
       title: "API Client",
-      icon: "file-http",
+      icon: "toolwindow-api",
       anchor: "right",
       order: 18,
       component: lazyComponent(() => import("./ApiClientView").then((module) => module.ApiClientView)),
@@ -33,7 +33,7 @@ export function activate(): () => void {
         title: "API Client",
         description: "Browse and test project APIs across environments",
         category: "Tools",
-        icon: "file-http",
+        icon: "toolwindow-api",
         when: "projectOpen",
         keywords: ["HTTP", "REST", "Spring", "API", "接口调试", "请求"],
         run: () => toolWindowService().show(API_CLIENT_WINDOW, true),

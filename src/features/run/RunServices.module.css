@@ -26,6 +26,22 @@
 }
 .debugConsole {
   display: flex;
+  flex-direction: column;
   height: 100%;
   min-height: 0;
+}
+.startupError {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-feedback-warning);
+}
+.startupError > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
