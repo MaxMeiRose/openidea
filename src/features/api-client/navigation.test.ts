@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EndpointEntry } from "@/workbench/contributions";
-import { apiNodeKey, branchKeys, endpointGroups, endpointTitle } from "./navigation";
+import { apiNodeKey, apiBranchPath, branchKeys, endpointGroups, endpointTitle } from "./navigation";
 
 const entry = (module: string, extra: Partial<EndpointEntry> = {}): EndpointEntry => ({
   method: "GET",
@@ -21,7 +21,7 @@ describe("API browser groups", () => {
     expect(groups.map((node) => node.label)).toEqual(["orders", "admin"]);
     expect(branchKeys(groups)).toHaveLength(4);
     const filtered = endpointGroups([first, second], "admin GET", "work");
-    expect(filtered).toMatchObject([{ label: "admin", count: 1, children: [{ label: "OrderController", count: 1 }] }]);
+    expect(filtered).toMatchObject([{ kind: "controller", label: "Order", detail: "OrderController", count: 1 }]);
   });
   it("searches API summaries, controller documentation, paths and method names", () => {
     const api = entry("orders", { summary: "查询订单", controllerSummary: "订单管理" });
@@ -33,5 +33,22 @@ describe("API browser groups", () => {
     expect(endpointTitle(api, "path")).toBe("/api/orders/{id}");
     expect(endpointTitle(entry("orders"), "summary")).toBe("getOrder");
     expect(apiNodeKey(api)).toBe(apiNodeKey({ ...api, summary: "Updated documentation" }));
+  });
+  it("uses compact controller names, hides a redundant module level, and reveals only the active API's branches", () => {
+    const first = entry("orders", { summary: "查询订单", controllerSummary: "订单管理" });
+    const second = entry("orders", {
+      controller: "ProductCapabilityManageController",
+      methodName: "updateCapability",
+      path: "/work/orders/src/main/java/ProductCapabilityManageController.java",
+      url: "/products/update",
+    });
+    const groups = endpointGroups([first, second], "", "work");
+    expect(groups).toMatchObject([
+      { kind: "controller", label: "订单管理", detail: "OrderController" },
+      { kind: "controller", label: "ProductCapabilityManage", detail: "ProductCapabilityManageController" },
+    ]);
+    expect(apiBranchPath(groups)).toEqual([groups[0]!.id, apiNodeKey(first)]);
+    expect(apiBranchPath(groups, apiNodeKey(second))).toEqual([groups[1]!.id, apiNodeKey(second)]);
+    expect(apiBranchPath(groups, "missing")).toEqual([]);
   });
 });

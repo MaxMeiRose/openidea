@@ -51,6 +51,7 @@ import {
 import styles from "./ApiClient.module.css";
 import {
   apiNodeKey,
+  apiBranchPath,
   branchKeys,
   endpointGroups,
   endpointTitle,
@@ -204,19 +205,27 @@ function Navigation() {
   const projectName = useProject((state) => state.project?.name ?? tx("Project"));
   const [tab, setTab] = useState("endpoints");
   const [query, setQuery] = useState("");
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [branchState, setBranchState] = useState<{ activeKey?: string; overrides: Map<string, boolean> }>({
+    overrides: new Map(),
+  });
   const [selection, setSelection] = useState<{ activeKey?: string; keys: Set<string> }>({ keys: new Set() });
   const [display, setDisplay] = useState<EndpointDisplay>(() => {
     try {
-      return localStorage.getItem(DISPLAY_KEY) === "summary" ? "summary" : "path";
+      return localStorage.getItem(DISPLAY_KEY) === "path" ? "path" : "summary";
     } catch {
-      return "path";
+      return "summary";
     }
   });
   const groups = useMemo(() => endpointGroups(endpoints, query, projectName), [endpoints, query, projectName]);
   const branches = useMemo(() => branchKeys(groups), [groups]);
   const source = tabs.find((draft) => draft.id === active)?.source;
   const activeKey = source && apiNodeKey(source);
+  const reveal = useMemo(() => new Set(apiBranchPath(groups, activeKey)), [groups, activeKey]);
+  const expansion = branchState.overrides;
+  // Reset only the newly active request's ancestors; keep other manual expansion choices.
+  if (branchState.activeKey !== activeKey) {
+    setBranchState({ activeKey, overrides: new Map([...expansion].filter(([key]) => !reveal.has(key))) });
+  }
   const selected = selection.activeKey === activeKey ? selection.keys : new Set(activeKey ? [activeKey] : []);
   useEffect(() => {
     if (tab === "history") void refreshHistory();
@@ -234,57 +243,6 @@ function Navigation() {
         ]}
         trailing={
           <span className={styles.navigationActions}>
-            {tab === "endpoints" && (
-              <>
-                <IconButton
-                  icon="expand-all"
-                  title="Expand All"
-                  size="small"
-                  disabled={!branches.length}
-                  onClick={() => setCollapsed(new Set())}
-                />
-                <IconButton
-                  icon="collapse-all"
-                  title="Collapse All"
-                  size="small"
-                  disabled={!branches.length || !!query}
-                  onClick={() => setCollapsed(new Set(branches))}
-                />
-                <IconButton
-                  icon="more"
-                  title="API display options"
-                  size="small"
-                  onClick={(event) =>
-                    showContextMenu(event, [
-                      {
-                        label: "Path and summary",
-                        checked: display === "path",
-                        run: () => {
-                          setDisplay("path");
-                          try {
-                            localStorage.setItem(DISPLAY_KEY, "path");
-                          } catch {
-                            /* preference only */
-                          }
-                        },
-                      },
-                      {
-                        label: "Summary only",
-                        checked: display === "summary",
-                        run: () => {
-                          setDisplay("summary");
-                          try {
-                            localStorage.setItem(DISPLAY_KEY, "summary");
-                          } catch {
-                            /* preference only */
-                          }
-                        },
-                      },
-                    ])
-                  }
-                />
-              </>
-            )}
             <IconButton
               icon="refresh"
               title={tab === "endpoints" ? "Refresh API endpoints" : "Refresh request history"}
@@ -298,10 +256,59 @@ function Navigation() {
       <div className={styles.search}>
         <SearchField
           aria-label="Search API requests"
+          className={styles.searchInput}
           value={query}
           onChange={setQuery}
-          placeholder="Search name, path or controller"
+          placeholder="Search APIs"
         />
+        {tab === "endpoints" && (
+          <IconButton
+            icon="more"
+            title="API display options"
+            size="small"
+            onClick={(event) =>
+              showContextMenu(event, [
+                {
+                  label: "Summary only",
+                  checked: display === "summary",
+                  run: () => {
+                    setDisplay("summary");
+                    try {
+                      localStorage.setItem(DISPLAY_KEY, "summary");
+                    } catch {
+                      /* preference only */
+                    }
+                  },
+                },
+                {
+                  label: "Request paths",
+                  checked: display === "path",
+                  run: () => {
+                    setDisplay("path");
+                    try {
+                      localStorage.setItem(DISPLAY_KEY, "path");
+                    } catch {
+                      /* preference only */
+                    }
+                  },
+                },
+                { kind: "separator" },
+                {
+                  label: "Expand All",
+                  icon: "expand-all",
+                  disabled: !branches.length,
+                  run: () => setBranchState({ activeKey, overrides: new Map(branches.map((key) => [key, true])) }),
+                },
+                {
+                  label: "Collapse All",
+                  icon: "collapse-all",
+                  disabled: !branches.length || !!query,
+                  run: () => setBranchState({ activeKey, overrides: new Map(branches.map((key) => [key, false])) }),
+                },
+              ])
+            }
+          />
+        )}
       </div>
       {(tab === "endpoints" ? indexError : historyError) && (
         <p role="alert" className={styles.error}>
@@ -319,17 +326,17 @@ function Navigation() {
           <Tree<ApiNode>
             roots={groups}
             getKey={(node) => node.id}
-            getLabel={(node) => node.label}
+            getLabel={(node) =>
+              "endpoint" in node ? `${node.endpoint.method} ${endpointTitle(node.endpoint, display)}` : node.label
+            }
             getChildren={(node) => ("children" in node ? node.children : undefined)}
             isExpandable={(node) => "children" in node}
-            expanded={new Set(branches.filter((key) => query || !collapsed.has(key)))}
+            expanded={new Set(branches.filter((key) => query || (expansion.get(key) ?? reveal.has(key))))}
             onExpandedChange={(_next, node, isExpanded) =>
-              setCollapsed((current) => {
-                const next = new Set(current);
-                if (isExpanded) next.delete(node.id);
-                else next.add(node.id);
-                return next;
-              })
+              setBranchState((current) => ({
+                activeKey,
+                overrides: new Map(current.overrides).set(node.id, isExpanded),
+              }))
             }
             selected={selected}
             onSelectionChange={(keys, node) => {
@@ -353,26 +360,22 @@ function Navigation() {
                     {node.endpoint.method}
                   </span>
                   <span className={styles.endpointPath}>{endpointTitle(node.endpoint, display)}</span>
-                  {display === "path" && node.endpoint.summary && (
-                    <span className={styles.nodeDescription}>{node.endpoint.summary}</span>
-                  )}
                 </span>
               ) : (
-                <span className={styles.controller} title={[node.label, node.detail].filter(Boolean).join(" · ")}>
+                <span
+                  className={styles.controller}
+                  title={[...new Set([node.label, node.detail].filter(Boolean))].join(" · ")}
+                >
                   <Icon name={node.kind === "module" ? "module" : "class"} size={14} />
                   <span className={styles.nodeLabel}>{node.label}</span>
-                  {node.kind === "controller" && node.detail && (
-                    <span className={styles.nodeDescription}>{node.detail}</span>
-                  )}
                   <span className={styles.count}>{node.count}</span>
                 </span>
               )
             }
             aria-label="API endpoints"
             className={styles.endpointTree}
-            rowHeight={28}
-            indent={14}
-            horizontalScroll
+            rowHeight={24}
+            indent={10}
             multiSelect={false}
             empty={
               !loading ? (
@@ -743,9 +746,9 @@ export function ApiClientView() {
         className={styles.workspace}
       >
         <SplitPanel
-          defaultSize={stacked ? "180px" : "300px"}
-          minSize={stacked ? "120px" : "220px"}
-          maxSize={stacked ? "55%" : "65%"}
+          defaultSize={stacked ? "160px" : "200px"}
+          minSize={stacked ? "100px" : "160px"}
+          maxSize={stacked ? "45%" : "35%"}
         >
           <Navigation />
         </SplitPanel>

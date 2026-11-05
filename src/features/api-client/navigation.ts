@@ -43,8 +43,8 @@ export function endpointGroups(endpoints: EndpointEntry[], query: string, projec
       controller = {
         kind: "controller",
         id,
-        label: endpoint.controller,
-        detail: endpoint.controllerSummary,
+        label: endpoint.controllerSummary || endpoint.controller.replace(/Controller$/, "") || endpoint.controller,
+        detail: endpoint.controller,
         count: 0,
         children: [],
       };
@@ -60,11 +60,26 @@ export function endpointGroups(endpoints: EndpointEntry[], query: string, projec
       endpoint,
     });
   }
-  return [...modules.values()];
+  const groups = [...modules.values()];
+  // A single module adds no information and costs an indentation level in a narrow sidebar.
+  return groups.length === 1 ? groups[0]!.children : groups;
 }
 
 export function branchKeys(nodes: readonly ApiNode[]): string[] {
   return nodes.flatMap((node) => ("children" in node ? [node.id, ...branchKeys(node.children)] : []));
+}
+
+/** Reveal the active request, falling back to the first API when opening an empty workspace. */
+export function apiBranchPath(nodes: readonly ApiNode[], endpointId?: string): string[] {
+  for (const node of nodes) {
+    if (node.kind === "endpoint") {
+      if (!endpointId || node.id === endpointId) return [node.id];
+    } else {
+      const nested = apiBranchPath(node.children, endpointId);
+      if (nested.length) return [node.id, ...nested];
+    }
+  }
+  return [];
 }
 
 export function endpointTitle(endpoint: EndpointEntry, display: EndpointDisplay): string {

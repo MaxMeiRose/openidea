@@ -50,47 +50,58 @@
   flex: none;
 }
 .search {
-  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+}
+.searchInput {
+  flex: 1;
+  min-width: 0;
 }
 .endpointTree {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  --tree-inset: 4px;
+}
+.endpointTree :global([role="treeitem"]:not([aria-expanded]) > [data-tree-toggle]) {
+  display: none;
 }
 .endpoint,
 .controller {
   display: flex;
-  gap: 6px;
+  gap: 5px;
   align-items: center;
-  flex: none;
-  width: max-content;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
 }
 .endpointPath,
-.nodeLabel,
-.nodeDescription {
-  flex: none;
+.nodeLabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .endpointPath {
   font-size: var(--fs-ui);
 }
-.nodeDescription {
-  color: var(--fg-subtle);
-  font-size: var(--fs-small);
-  padding-left: 3px;
-}
 .methodBadge {
   flex: none;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 600;
   line-height: 16px;
-  text-align: center;
-  padding: 0 4px;
-  border-radius: 3px;
-  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
-  background: color-mix(in srgb, currentColor 8%, transparent);
+  text-align: left;
   color: var(--link);
-  min-width: 43px;
+  width: 38px;
+}
+.count {
+  flex: none;
+  margin-left: auto;
+  padding-left: 3px;
 }
 .selectedEndpoint .methodBadge {
   color: inherit;
