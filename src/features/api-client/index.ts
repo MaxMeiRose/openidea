@@ -1,12 +1,10 @@
 /** Visual API debugging, sharing the HTTP engine and Spring endpoint providers. */
 import { registerActions } from "@/platform/actions";
-import { registerEditorContribution } from "@/editor/api";
 import { useProject } from "@/platform/project";
 import { projectLocation, useRemote } from "@/platform/remote";
 import { lazyComponent } from "@/ui";
 import { registerToolWindow, toolWindowService } from "@/workbench/contributions";
 import { API_CLIENT_WINDOW, newRequest, openEndpoint, openProject } from "./store";
-import { apiRequestLenses } from "./editor";
 import type { ApiEndpointTarget } from "./model";
 
 export function activate(): () => void {
@@ -16,7 +14,6 @@ export function activate(): () => void {
   };
   synchronizeProject();
   const disposers = [
-    registerEditorContribution({ id: "apiClient.requests", order: 58, extensions: apiRequestLenses }),
     useProject.subscribe((state, previous) => {
       if (state.project?.root !== previous.project?.root) synchronizeProject();
     }),

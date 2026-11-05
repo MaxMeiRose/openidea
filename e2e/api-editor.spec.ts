@@ -45,21 +45,26 @@ async function openSource(page: Page, source: string, path: string) {
   return editor;
 }
 
-test("controller text buttons prepare unsaved API mappings, parameters and JSON without sending", async ({
+test("controller gutter icons prepare unsaved API mappings, parameters and JSON without sending", async ({
   workbench: page,
 }) => {
   await page.setViewportSize({ width: 1900, height: 1050 });
   const editor = await openSource(page, SOURCE, "/dev/acme-api/OrderController.java");
   const current = SOURCE.replace("/api/orders", "/api/unsaved-orders");
   await editor.locator(".cm-content").fill(current);
-  const calls = editor.locator(".cm-openidea-lens").getByRole("button", { name: "API Call", exact: true });
+  // CodeMirror hides its gutter container from the accessibility tree.
+  const calls = editor.locator('.cm-openidea-gutter-spring button[aria-label^="API Call · "]');
   await expect(calls).toHaveCount(2);
-  const before = await calls.first().boundingBox();
-  const annotation = await editor
+  await expect(editor.locator(".cm-openidea-lens").getByRole("button", { name: "API Call", exact: true })).toHaveCount(
+    0,
+  );
+  const icon = await calls.first().boundingBox();
+  const method = await editor
     .locator(".cm-line")
-    .filter({ hasText: /^\s*@GetMapping\($/ })
+    .filter({ hasText: /public Order find\(/ })
     .boundingBox();
-  expect(before!.y).toBeLessThan(annotation!.y);
+  expect(icon!.x + icon!.width).toBeLessThan(method!.x);
+  expect(Math.abs(icon!.y + icon!.height / 2 - method!.y - method!.height / 2)).toBeLessThan(3);
   await calls.first().click();
   const client = page.getByRole("region", { name: "API Client", exact: true });
   await expect(client).toBeVisible();
@@ -76,10 +81,10 @@ test("controller text buttons prepare unsaved API mappings, parameters and JSON 
   );
   await calls.nth(1).click();
   await expect(client.getByRole("tablist", { name: "API request tabs" }).getByRole("tab")).toHaveCount(2);
-  await page.screenshot({ path: "/tmp/openidea-api-controller-lens.png", animations: "disabled" });
+  await page.screenshot({ path: "/tmp/openidea-api-controller-gutter.png", animations: "disabled" });
 });
 
-test("Kotlin controller text buttons offer each mapped URL", async ({ workbench: page }) => {
+test("Kotlin controller gutter icons offer each mapped URL", async ({ workbench: page }) => {
   const source = `@RestController
 @RequestMapping("/api")
 class HealthController {
@@ -87,7 +92,7 @@ class HealthController {
   fun health(): String = "ok"
 }`;
   const editor = await openSource(page, source, "/dev/acme-api/HealthController.kt");
-  await editor.locator(".cm-openidea-lens").getByRole("button", { name: "API Call", exact: true }).click();
+  await editor.locator('.cm-openidea-gutter-spring button[aria-label^="API Call · "]').click();
   await page.getByRole("menuitem", { name: "GET /api/ready", exact: true }).click();
   const client = page.getByRole("region", { name: "API Client", exact: true });
   await expect(client.getByRole("textbox", { name: "Request URL", exact: true })).toHaveValue("/api/ready");

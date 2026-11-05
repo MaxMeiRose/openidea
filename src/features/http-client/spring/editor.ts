@@ -1,9 +1,9 @@
 /**
  * Spring Web in Java / Kotlin editors: a gutter icon on every request mapping
- * and controller, context actions and editor menu items that generate the
- * requests into the `generated-requests.http` scratch and open it.
+ * and controller. Method icons open the visual API client; context actions
+ * can still generate requests into the `generated-requests.http` scratch.
  */
-import { RangeSet, StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
+import { MapMode, RangeSet, StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
 import {
   activeEditor,
@@ -15,6 +15,7 @@ import {
   type TextEditorHandle,
 } from "@/editor/api";
 import { tx } from "@/platform/i18n";
+import { executeAction } from "@/platform/actions";
 import { call, commands, emitLocalIdeEvent, IpcError } from "@/platform/ipc";
 import { ipcPath } from "@/platform/paths";
 import { useProject } from "@/platform/project";
@@ -24,6 +25,7 @@ import { editorService, notifications, type MenuGroupContext } from "@/workbench
 import { springAt, springControllers, type Controller, type Endpoint } from "./endpoints";
 import { appendRequests, bodyLookup, findHost, renderRequest, skeleton, type SourceReader } from "./request";
 import { parseSource } from "./source";
+import type { ApiEndpointTarget } from "@/features/api-client/model";
 import styles from "../HttpClient.module.css";
 
 export const SPRING_LANGUAGES = new Set(["java", "kotlin"]);
@@ -206,9 +208,11 @@ export async function generateAtCaret(scope: "endpoint" | "controller"): Promise
 
 interface Mark {
   pos: number;
+  offset: number;
   /** Endpoint key or the controller's name. */
   key: string;
   title: string;
+  methodName?: string;
   items: (path: string, text: string) => MenuItem[];
 }
 
@@ -219,7 +223,10 @@ const marksField = StateField.define<Mark[]>({
   update(value, tr) {
     for (const e of tr.effects) if (e.is(setMarks)) return e.value;
     if (!tr.docChanged || !value.length) return value;
-    return value.map((m) => ({ ...m, pos: tr.state.doc.lineAt(tr.changes.mapPos(m.pos, -1)).from }));
+    return value.flatMap((m) => {
+      const offset = tr.changes.mapPos(m.offset, 1, MapMode.TrackDel);
+      return offset === null ? [] : [{ ...m, offset, pos: tr.state.doc.lineAt(offset).from }];
+    });
   },
 });
 
@@ -231,6 +238,7 @@ function computeMarks(state: EditorState): Mark[] {
     if (c.endpoints.length)
       marks.push({
         pos: lineStart(c.offset),
+        offset: c.offset,
         key: `class:${c.name}`,
         title: "Generate Requests for Controller",
         items: (path, text) => controllerItems(path, text, c),
@@ -238,8 +246,10 @@ function computeMarks(state: EditorState): Mark[] {
     for (const e of c.endpoints)
       marks.push({
         pos: lineStart(e.offset),
-        key: `${e.httpMethod} ${e.paths.join(",")}`,
-        title: `${e.httpMethod} ${e.paths[0] ?? "/"}`,
+        offset: e.offset,
+        key: `${e.className}.${e.methodName}: ${e.httpMethod} ${e.paths.join(",")}`,
+        title: `${tx("API Call")} · ${e.httpMethod} ${e.paths.join(", ")}`,
+        methodName: e.methodName,
         items: (path, text) => endpointItems(path, text, e),
       });
   }
@@ -247,20 +257,91 @@ function computeMarks(state: EditorState): Mark[] {
   return marks.filter((m, i) => marks.findIndex((x) => x.pos === m.pos) === i);
 }
 
+function openApiRequest(view: EditorView, sourcePath: string, mark: Mark, event: MouseEvent) {
+  const text = view.state.doc.toString();
+  // Source edits may still be inside the detector's debounce window.
+  const candidates = springControllers(text)
+    .flatMap((controller) => controller.endpoints)
+    .filter((endpoint) => view.state.doc.lineAt(endpoint.offset).from === mark.pos);
+  const endpoint = candidates.find((entry) => entry.methodName === mark.methodName) ?? candidates[0];
+  if (!endpoint) return;
+  const at = view.state.doc.lineAt(endpoint.offset);
+  const root = useProject.getState().project?.root;
+  const open = (url: string) => {
+    const arg: ApiEndpointTarget = {
+      endpoint: {
+        method: endpoint.httpMethod,
+        url,
+        controller: endpoint.className,
+        methodName: endpoint.methodName,
+        path: sourcePath,
+        rel: root && sourcePath.startsWith(root + "/") ? sourcePath.slice(root.length + 1) : sourcePath,
+        line: at.number - 1,
+        col: endpoint.offset - at.from,
+      },
+      source: text,
+    };
+    void executeAction("apiClient.openEndpoint", arg);
+  };
+  if (endpoint.paths.length === 1) open(endpoint.paths[0]!);
+  else
+    showContextMenu(
+      event,
+      endpoint.paths.map((url) => ({
+        label: `${endpoint.httpMethod} ${url}`,
+        verbatim: true,
+        icon: "toolwindow-api",
+        run: () => open(url),
+      })),
+    );
+}
+
 class SpringMarker extends GutterMarker {
-  constructor(readonly mark: Mark) {
+  constructor(
+    readonly mark: Mark,
+    readonly path: string,
+  ) {
     super();
   }
   override eq(other: GutterMarker): boolean {
-    return other instanceof SpringMarker && other.mark.key === this.mark.key && other.mark.title === this.mark.title;
+    return (
+      other instanceof SpringMarker &&
+      other.mark.key === this.mark.key &&
+      other.mark.title === this.mark.title &&
+      other.mark.offset === this.mark.offset &&
+      other.path === this.path
+    );
   }
-  override toDOM(): Node {
-    const el = document.createElement("div");
+  override toDOM(view: EditorView): Node {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.tabIndex = -1;
     el.className = styles.runMarker ?? "";
     el.title = this.mark.title;
-    el.setAttribute("role", "button");
     el.setAttribute("aria-label", this.mark.title);
-    el.innerHTML = gutterIconMarkup("file-http") ?? "";
+    el.innerHTML = gutterIconMarkup(this.mark.methodName ? "toolwindow-api" : "file-http") ?? "";
+    el.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    el.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const mark = view.state
+        .field(marksField)
+        .find((entry) => entry.key === this.mark.key && entry.pos === this.mark.pos);
+      if (!mark) return;
+      if (mark.methodName) openApiRequest(view, this.path, mark, event);
+      else showContextMenu(event, mark.items(this.path, view.state.doc.toString()));
+    });
+    el.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const mark = view.state
+        .field(marksField)
+        .find((entry) => entry.key === this.mark.key && entry.pos === this.mark.pos);
+      if (mark) showContextMenu(event, mark.items(this.path, view.state.doc.toString()));
+    });
     return el;
   }
 }
@@ -283,10 +364,7 @@ export function springEditorExtension(ctx: EditorDocContext): Extension {
         clearTimeout(this.timer);
         this.timer = setTimeout(() => {
           const found = computeMarks(this.view.state);
-          const cur = this.view.state.field(marksField);
-          const same =
-            cur.length === found.length && cur.every((m, i) => m.pos === found[i]!.pos && m.key === found[i]!.key);
-          if (!same) this.view.dispatch({ effects: setMarks.of(found) });
+          this.view.dispatch({ effects: setMarks.of(found) });
         }, delay);
       }
       destroy() {
@@ -329,20 +407,9 @@ export function springEditorExtension(ctx: EditorDocContext): Extension {
       class: `${styles.runGutter} cm-openidea-gutter-spring`,
       markers: (view) =>
         RangeSet.of(
-          view.state.field(marksField).map((m) => new SpringMarker(m).range(m.pos)),
+          view.state.field(marksField).map((m) => new SpringMarker(m, path).range(m.pos)),
           true,
         ),
-      domEventHandlers: {
-        mousedown: (view, block, event) => {
-          const mark = view.state.field(marksField).find((m) => m.pos === block.from);
-          if (!mark || (event as MouseEvent).button !== 0) return false;
-          const el = (event.target as HTMLElement).closest?.(`.${styles.runMarker}`) as HTMLElement | null;
-          const rect = (el ?? (event.target as HTMLElement)).getBoundingClientRect();
-          event.preventDefault();
-          showContextMenu({ x: rect.left, y: rect.bottom + 2 }, mark.items(path, view.state.doc.toString()));
-          return true;
-        },
-      },
     }),
   ];
 }

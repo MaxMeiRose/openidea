@@ -15,6 +15,10 @@
   justify-content: center;
   border-radius: var(--radius-small);
   cursor: pointer;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--fg-icon);
 }
 .runMarker:hover {
   background: var(--bg-hover);
