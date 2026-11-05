@@ -319,7 +319,7 @@ class SpringMarker extends GutterMarker {
     el.className = styles.runMarker ?? "";
     el.title = this.mark.title;
     el.setAttribute("aria-label", this.mark.title);
-    el.innerHTML = gutterIconMarkup(this.mark.methodName ? "toolwindow-api" : "file-http") ?? "";
+    el.innerHTML = gutterIconMarkup(this.mark.methodName ? "gutter-api-request" : "file-http") ?? "";
     el.addEventListener("mousedown", (event) => {
       event.preventDefault();
       event.stopPropagation();

@@ -345,6 +345,7 @@ const ICONS = {
   "toolwindow-coverage": "toolwindows/coverage",
   "toolwindow-profiler": "toolwindows/profiler",
   "gutter-run": "gutter/run",
+  "gutter-api-request": "openidea/gutter/apiRequest",
   "gutter-run-all": "actions/runAll",
   "gutter-run-passed": "gutter/runSuccess",
   "gutter-run-failed": "gutter/runError",

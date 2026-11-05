@@ -1,0 +1,10 @@
+<!-- OpenIDEA: invoke an HTTP endpoint -->
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<defs><mask id="play-gap"><rect width="16" height="16" fill="white"/><path d="M8.5 7.5L16 11.8V16H8.5V7.5Z" fill="black"/></mask></defs>
+<g mask="url(#play-gap)" stroke="#548AF7" stroke-width="1.2">
+<circle cx="7" cy="7" r="5.5"/>
+<ellipse cx="7" cy="7" rx="2.3" ry="5.5"/>
+<path d="M1.5 7H12.5"/>
+</g>
+<path d="M10 9L15 12L10 15V9Z" fill="#57965C" stroke="#57965C" stroke-linejoin="round"/>
+</svg>
