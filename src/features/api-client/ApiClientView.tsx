@@ -222,9 +222,9 @@ function Navigation() {
   const activeKey = source && apiNodeKey(source);
   const reveal = useMemo(() => new Set(apiBranchPath(groups, activeKey)), [groups, activeKey]);
   const expansion = branchState.overrides;
-  // Reset only the newly active request's ancestors; keep other manual expansion choices.
+  // Keep explicitly expanded groups; reveal collapsed ancestors even when search hid the module level.
   if (branchState.activeKey !== activeKey) {
-    setBranchState({ activeKey, overrides: new Map([...expansion].filter(([key]) => !reveal.has(key))) });
+    setBranchState({ activeKey, overrides: new Map([...expansion].filter(([, expanded]) => expanded)) });
   }
   const selected = selection.activeKey === activeKey ? selection.keys : new Set(activeKey ? [activeKey] : []);
   useEffect(() => {

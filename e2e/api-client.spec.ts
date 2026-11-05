@@ -309,3 +309,42 @@ class ProductCapabilityManageController {
   );
   await expect(products).toHaveAttribute("aria-expanded", "false");
 });
+
+test("API browser reveals a selected module again after clearing a filtered search", async ({ workbench: page }) => {
+  const client = await harness(page);
+  await page.evaluate(async (source) => {
+    const bindingsPath = "/src/bindings.ts";
+    const storePath = "/src/features/api-client/store.ts";
+    const { commands } = await import(bindingsPath);
+    commands.springRouteSources = async () => ({
+      status: "ok",
+      data: [
+        { path: "/dev/acme-api/orders/src/main/java/com/acme/OrderController.java", text: source },
+        {
+          path: "/dev/acme-api/admin/src/main/java/com/acme/AdminController.java",
+          text: `
+@Tag(name = "后台管理")
+@RestController
+class AdminController {
+  @Operation(summary = "查询后台配置")
+  @GetMapping("/admin/config")
+  public Object config() { return null; }
+}`,
+        },
+      ],
+    });
+    await (await import(storePath)).refreshEndpoints();
+  }, SOURCE);
+  const tree = client.getByRole("tree", { name: "API endpoints", exact: true });
+  await client.getByRole("button", { name: "API display options", exact: true }).click();
+  await page.getByRole("menu").getByText("Collapse All", { exact: true }).click();
+  const search = client.getByRole("textbox", { name: "Search API requests", exact: true });
+  await search.fill("后台");
+  await tree.getByRole("treeitem", { name: "GET 查询后台配置", exact: true }).click();
+  await search.fill("");
+  await expect(tree.getByRole("treeitem", { name: "GET 查询后台配置", exact: true })).toBeVisible();
+  await expect(tree.getByRole("treeitem", { name: "GET 查询后台配置", exact: true })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+});
