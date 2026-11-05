@@ -36,6 +36,7 @@ import { isUpdatable } from "./updatePolicies";
 import { runtime, startRun, useRun, waitForExit, type RunSession } from "./store";
 import { confirmRerun } from "./dialogs";
 import { SERVICES_TREE_VIEW, useServicesTree } from "@/features/services/tree";
+import { mergePorts } from "./serverPort";
 import {
   currentServiceSession,
   currentServiceSessions,
@@ -159,19 +160,27 @@ export function sessionStatus(s: RunSession | undefined): string | undefined {
 
 /** A node's grey text: the HTTP port of a running web application, else the state. */
 export function sessionDetail(s: RunSession | undefined): string | undefined {
-  return s && busy(s) && s.httpPort ? `:${s.httpPort}` : sessionStatus(s);
+  const ports = s && busy(s) ? mergePorts(s.serverPorts, s.httpPort ? [s.httpPort] : []) : [];
+  return ports.length ? ports.map((port) => `:${port}`).join(", ") : sessionStatus(s);
+}
+
+export function servicePorts(session: ServiceSession | undefined): number[] {
+  if (!session) return [];
+  const run = session.run;
+  return mergePorts(
+    run && busy(run) ? mergePorts(run.serverPorts, run.httpPort ? [run.httpPort] : []) : [],
+    session.debug.filter((debug) => debug.status !== "terminated").flatMap((debug) => debug.serverPorts ?? []),
+  );
 }
 
 function executionDetail(s: ServiceSession | undefined): string | undefined {
   if (!s) return undefined;
   const debug = serviceDebugger(s);
-  if (debug?.status === "paused") return "Suspended";
-  if (debug)
-    return s.run && busy(s.run) && s.run.httpPort
-      ? `:${s.run.httpPort}`
-      : debug.status === "starting"
-        ? "Starting"
-        : "Debugging";
+  const ports = servicePorts(s)
+    .map((port) => `:${port}`)
+    .join(", ");
+  if (debug?.status === "paused") return ports ? `${tx("Suspended")} · ${ports}` : "Suspended";
+  if (debug) return ports || (debug.status === "starting" ? "Starting" : "Debugging");
   return s.run ? sessionDetail(s.run) : "Finished";
 }
 
@@ -204,11 +213,13 @@ export function runServiceItems(
     if (!entries.length && DEFAULT_TYPES.includes(kind)) return [];
     const children = orderServices(entries, order[kind]).map((c): ServiceTreeItem => {
       const s = latest.get(c.id);
+      const ports = servicePorts(s);
       return {
         key: CONFIG_PREFIX + c.id,
         label: c.name,
         icon: serviceDebugger(s) ? "debug" : s && liveServiceSession(s) ? "run" : configIcon(c),
         detail: executionDetail(s),
+        ...(ports.length ? { ports } : {}),
         dim: !s || !liveServiceSession(s),
       };
     });

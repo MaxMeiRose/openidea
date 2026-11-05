@@ -3,11 +3,14 @@ import type { PreparedRequest } from "../src/bindings";
 import { expect, test } from "./fixtures";
 
 const SOURCE = `package com.acme;
+@Tag(name = "订单管理")
 @RestController
 @RequestMapping("/api/orders")
 public class OrderController {
+  @Operation(summary = "查询订单")
   @GetMapping("/{id}")
   public Order find(@PathVariable String id, @RequestParam(defaultValue = "10") int limit) { return null; }
+  @Operation(summary = "保存订单")
   @PostMapping
   public Order save(@RequestBody CreateOrder request) { return null; }
 }
@@ -88,7 +91,7 @@ async function harness(page: Page) {
     await (await import(clientPath)).refreshEndpoints();
   }, SOURCE);
   const client = page.getByRole("region", { name: "API Client", exact: true });
-  await expect(client.getByRole("treeitem", { name: "GET /api/orders/{id}", exact: true })).toBeVisible();
+  await expect(client.getByRole("treeitem", { name: /^GET (?:\/api\/orders\/\{id\} )?查询订单$/ })).toBeVisible();
   return client;
 }
 const recorded = (page: Page) => page.evaluate(() => (window as unknown as { apiHarness: Harness }).apiHarness.sent);
@@ -98,7 +101,7 @@ test("discovers Spring endpoints, fills parameters, switches environment, restor
 }) => {
   await page.setViewportSize({ width: 1800, height: 1100 });
   const client = await harness(page);
-  await client.getByRole("treeitem", { name: "GET /api/orders/{id}", exact: true }).click();
+  await client.getByRole("treeitem", { name: /^GET (?:\/api\/orders\/\{id\} )?查询订单$/ }).click();
   await expect(client.getByRole("textbox", { name: "Request URL", exact: true })).toHaveValue("/api/orders/{id}");
   await expect(client.getByRole("textbox", { name: "Query parameters value 1" })).toHaveValue("10");
   await expect(client.getByRole("textbox", { name: "Request base URL" })).toHaveValue("http://localhost:9090");
@@ -106,7 +109,7 @@ test("discovers Spring endpoints, fills parameters, switches environment, restor
   await client.getByRole("button", { name: "Go to API source" }).click();
   await expect
     .poll(() => page.evaluate(() => (window as unknown as { apiHarness: Harness }).apiHarness.sources))
-    .toMatchObject([{ path: "/dev/acme-api/src/main/java/com/acme/OrderController.java", selection: { line: 5 } }]);
+    .toMatchObject([{ path: "/dev/acme-api/src/main/java/com/acme/OrderController.java", selection: { line: 7 } }]);
   await client.getByRole("button", { name: "Send", exact: true }).click();
   await expect.poll(() => recorded(page)).toMatchObject([{ url: "http://localhost:9090/api/orders/a%2Fb?limit=10" }]);
   await expect(client.getByLabel("Response body", { exact: true })).toContainText('"ok": true');
@@ -147,7 +150,7 @@ test("builds JSON skeletons and sends raw bodies and request header overrides wi
 }) => {
   await page.setViewportSize({ width: 1800, height: 1100 });
   const client = await harness(page);
-  await client.getByRole("treeitem", { name: "POST /api/orders", exact: true }).click();
+  await client.getByRole("treeitem", { name: /^POST (?:\/api\/orders )?保存订单$/ }).click();
   await client.getByRole("tablist", { name: "Request data" }).getByRole("tab", { name: "Body", exact: true }).click();
   await expect(client.getByRole("textbox", { name: "Request body", exact: true })).toHaveValue(
     '{\n  "name": "",\n  "count": 0\n}',
@@ -180,4 +183,41 @@ test("builds JSON skeletons and sends raw bodies and request header overrides wi
   });
   await expect.poll(() => client.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
   await page.screenshot({ path: "/tmp/openidea-api-client-narrow.png", animations: "disabled" });
+});
+
+test("API browser shows controller descriptions, resizes, searches summaries and remembers display mode", async ({
+  workbench: page,
+}) => {
+  await page.setViewportSize({ width: 1800, height: 1000 });
+  const client = await harness(page);
+  const tree = client.getByRole("tree", { name: "API endpoints", exact: true });
+  await expect(tree).toContainText("acme-api");
+  await expect(tree).toContainText("订单管理");
+  const entry = tree.getByRole("treeitem", { name: /^GET (?:\/api\/orders\/\{id\} )?查询订单$/ });
+  await expect(entry).toContainText("查询订单");
+  await entry.click();
+  const before = (await tree.boundingBox())!;
+  const handle = client.getByRole("separator", { name: "Resize API endpoint list" });
+  const bounds = (await handle.boundingBox())!;
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + 70);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + 100, bounds.y + 70, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(async () => (await tree.boundingBox())!.width).toBeGreaterThan(before.width + 60);
+  await expect(client.getByRole("textbox", { name: "Request URL", exact: true })).toHaveValue("/api/orders/{id}");
+  await client.getByRole("button", { name: "API display options", exact: true }).click();
+  await page.getByRole("menu").getByText("Summary only", { exact: true }).click();
+  await expect(entry).toContainText("查询订单");
+  await expect(entry).not.toContainText("/api/orders/{id}");
+  await expect.poll(() => tree.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await client.getByRole("textbox", { name: "Search API requests", exact: true }).fill("保存");
+  await expect(tree.getByRole("treeitem", { name: /^POST (?:\/api\/orders )?保存订单$/ })).toBeVisible();
+  await expect(entry).toHaveCount(0);
+  await client.getByRole("textbox", { name: "Search API requests", exact: true }).fill("");
+  await client.screenshot({ path: "/tmp/openidea-api-browser-coolrequest.png", animations: "disabled" });
+  await page.reload();
+  await expect(page.getByRole("tree", { name: "Project" })).toBeVisible();
+  await harness(page);
+  await expect(entry).toContainText("查询订单");
+  await expect(entry).not.toContainText("/api/orders/{id}");
 });

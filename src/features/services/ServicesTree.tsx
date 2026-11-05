@@ -277,6 +277,11 @@ export function ServicesTreeView() {
                     />
                   ))}
                   <span className={styles.consoleName}>{selected?.item.label}</span>
+                  {!!selected?.item.ports?.length && (
+                    <span className={styles.consolePorts} role="status" aria-label={tx("Service ports")}>
+                      <T>Ports</T>: {selected.item.ports.join(", ")}
+                    </span>
+                  )}
                 </div>
               )}
               <div className={styles.detailContent}>

@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useTx } from "@/platform/i18n";
 import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { projectLocation, useRemote } from "@/platform/remote";
-import { editorService, type EndpointEntry } from "@/workbench/contributions";
+import { editorService } from "@/workbench/contributions";
 import { bodyKind, formatMs, formatSize, prettyBody } from "@/features/http-client/format";
 import { isRouteSource } from "@/features/http-client/spring/routeIndex";
 import {
@@ -26,6 +26,7 @@ import {
   T,
   copyText,
   selectableText,
+  showContextMenu,
 } from "@/ui";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { confirm } from "@/workbench/messages";
@@ -48,6 +49,16 @@ import {
   useApiClient,
 } from "./store";
 import styles from "./ApiClient.module.css";
+import {
+  apiNodeKey,
+  branchKeys,
+  endpointGroups,
+  endpointTitle,
+  type ApiNode,
+  type EndpointDisplay,
+} from "./navigation";
+
+const DISPLAY_KEY = "openidea.apiClient.endpointDisplay";
 
 function PairEditor({
   label,
@@ -187,38 +198,26 @@ function EnvironmentDialog({ environment, onClose }: { environment: ApiEnvironme
   );
 }
 
-type ApiNode =
-  | { id: string; label: string; children: ApiNode[] }
-  | { id: string; label: string; endpoint: EndpointEntry };
-function endpointGroups(endpoints: EndpointEntry[], query: string): ApiNode[] {
-  const tokens = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
-  const groups = new Map<string, ApiNode & { children: ApiNode[] }>();
-  for (const endpoint of endpoints) {
-    if (
-      !tokens.every((token) =>
-        `${endpoint.controller} ${endpoint.method} ${endpoint.url} ${endpoint.rel} ${endpoint.methodName}`
-          .toLowerCase()
-          .includes(token),
-      )
-    )
-      continue;
-    const group = `${endpoint.path}:${endpoint.controller}`;
-    if (!groups.has(group)) groups.set(group, { id: group, label: endpoint.controller, children: [] });
-    groups
-      .get(group)!
-      .children.push({ id: JSON.stringify(endpoint), label: `${endpoint.method} ${endpoint.url}`, endpoint });
-  }
-  return [...groups.values()];
-}
-
 function Navigation() {
   const tx = useTx();
-  const { endpoints, loading, indexError, history, historyLoading, historyError } = useApiClient();
+  const { endpoints, loading, indexError, history, historyLoading, historyError, tabs, active } = useApiClient();
+  const projectName = useProject((state) => state.project?.name ?? tx("Project"));
   const [tab, setTab] = useState("endpoints");
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const groups = useMemo(() => endpointGroups(endpoints, query), [endpoints, query]);
+  const [selection, setSelection] = useState<{ activeKey?: string; keys: Set<string> }>({ keys: new Set() });
+  const [display, setDisplay] = useState<EndpointDisplay>(() => {
+    try {
+      return localStorage.getItem(DISPLAY_KEY) === "summary" ? "summary" : "path";
+    } catch {
+      return "path";
+    }
+  });
+  const groups = useMemo(() => endpointGroups(endpoints, query, projectName), [endpoints, query, projectName]);
+  const branches = useMemo(() => branchKeys(groups), [groups]);
+  const source = tabs.find((draft) => draft.id === active)?.source;
+  const activeKey = source && apiNodeKey(source);
+  const selected = selection.activeKey === activeKey ? selection.keys : new Set(activeKey ? [activeKey] : []);
   useEffect(() => {
     if (tab === "history") void refreshHistory();
   }, [tab]);
@@ -234,13 +233,66 @@ function Navigation() {
           { id: "history", label: "History" },
         ]}
         trailing={
-          <IconButton
-            icon="refresh"
-            title={tab === "endpoints" ? "Refresh API endpoints" : "Refresh request history"}
-            size="small"
-            disabled={tab === "endpoints" ? loading : historyLoading}
-            onClick={() => void (tab === "endpoints" ? refreshEndpoints() : refreshHistory())}
-          />
+          <span className={styles.navigationActions}>
+            {tab === "endpoints" && (
+              <>
+                <IconButton
+                  icon="expand-all"
+                  title="Expand All"
+                  size="small"
+                  disabled={!branches.length}
+                  onClick={() => setCollapsed(new Set())}
+                />
+                <IconButton
+                  icon="collapse-all"
+                  title="Collapse All"
+                  size="small"
+                  disabled={!branches.length || !!query}
+                  onClick={() => setCollapsed(new Set(branches))}
+                />
+                <IconButton
+                  icon="more"
+                  title="API display options"
+                  size="small"
+                  onClick={(event) =>
+                    showContextMenu(event, [
+                      {
+                        label: "Path and summary",
+                        checked: display === "path",
+                        run: () => {
+                          setDisplay("path");
+                          try {
+                            localStorage.setItem(DISPLAY_KEY, "path");
+                          } catch {
+                            /* preference only */
+                          }
+                        },
+                      },
+                      {
+                        label: "Summary only",
+                        checked: display === "summary",
+                        run: () => {
+                          setDisplay("summary");
+                          try {
+                            localStorage.setItem(DISPLAY_KEY, "summary");
+                          } catch {
+                            /* preference only */
+                          }
+                        },
+                      },
+                    ])
+                  }
+                />
+              </>
+            )}
+            <IconButton
+              icon="refresh"
+              title={tab === "endpoints" ? "Refresh API endpoints" : "Refresh request history"}
+              size="small"
+              disabled={tab === "endpoints" ? loading : historyLoading}
+              onClick={() => void (tab === "endpoints" ? refreshEndpoints() : refreshHistory())}
+            />
+          </span>
         }
       />
       <div className={styles.search}>
@@ -248,7 +300,7 @@ function Navigation() {
           aria-label="Search API requests"
           value={query}
           onChange={setQuery}
-          placeholder="Search API requests"
+          placeholder="Search name, path or controller"
         />
       </div>
       {(tab === "endpoints" ? indexError : historyError) && (
@@ -270,7 +322,7 @@ function Navigation() {
             getLabel={(node) => node.label}
             getChildren={(node) => ("children" in node ? node.children : undefined)}
             isExpandable={(node) => "children" in node}
-            expanded={new Set(groups.filter((group) => query || !collapsed.has(group.id)).map((group) => group.id))}
+            expanded={new Set(branches.filter((key) => query || !collapsed.has(key)))}
             onExpandedChange={(_next, node, isExpanded) =>
               setCollapsed((current) => {
                 const next = new Set(current);
@@ -281,7 +333,7 @@ function Navigation() {
             }
             selected={selected}
             onSelectionChange={(keys, node) => {
-              setSelected(keys);
+              setSelection({ activeKey, keys });
               if (node && "endpoint" in node) void openEndpoint(node.endpoint);
             }}
             onActivate={(node) => {
@@ -291,24 +343,37 @@ function Navigation() {
                   selection: { line: node.endpoint.line, col: node.endpoint.col },
                 });
             }}
-            renderNode={(node) =>
+            renderNode={(node, row) =>
               "endpoint" in node ? (
-                <span className={styles.endpoint}>
+                <span
+                  className={clsx(styles.endpoint, row.selected && styles.selectedEndpoint)}
+                  title={`${node.endpoint.method} ${node.endpoint.url}\n${node.endpoint.summary ?? node.endpoint.methodName}\n${node.endpoint.rel}`}
+                >
                   <span className={clsx(styles.methodBadge, styles[`method-${node.endpoint.method.toLowerCase()}`])}>
                     {node.endpoint.method}
                   </span>
-                  <span>{node.endpoint.url}</span>
+                  <span className={styles.endpointPath}>{endpointTitle(node.endpoint, display)}</span>
+                  {display === "path" && node.endpoint.summary && (
+                    <span className={styles.nodeDescription}>{node.endpoint.summary}</span>
+                  )}
                 </span>
               ) : (
-                <span className={styles.controller}>
-                  <Icon name="folder" size={14} />
-                  {node.label}
-                  <span className={styles.count}>{node.children.length}</span>
+                <span className={styles.controller} title={[node.label, node.detail].filter(Boolean).join(" · ")}>
+                  <Icon name={node.kind === "module" ? "module" : "class"} size={14} />
+                  <span className={styles.nodeLabel}>{node.label}</span>
+                  {node.kind === "controller" && node.detail && (
+                    <span className={styles.nodeDescription}>{node.detail}</span>
+                  )}
+                  <span className={styles.count}>{node.count}</span>
                 </span>
               )
             }
             aria-label="API endpoints"
             className={styles.endpointTree}
+            rowHeight={28}
+            indent={14}
+            horizontalScroll
+            multiSelect={false}
             empty={
               !loading ? (
                 <span className={styles.hint}>
@@ -595,6 +660,17 @@ export function ApiClientView() {
   const state = useApiClient();
   const [dialog, setDialog] = useState<{ environment: ApiEnvironment | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const view = useRef<HTMLDivElement>(null);
+  const [stacked, setStacked] = useState(false);
+  useEffect(() => {
+    const element = view.current;
+    if (!element) return;
+    const measure = () => setStacked(element.clientWidth < 700);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   const draft = state.tabs.find((item) => item.id === state.active);
   const environmentId = draft?.environmentId === undefined ? state.selectedEnvironment : draft.environmentId;
   const environment = state.environments.find((item) => item.id === environmentId);
@@ -633,7 +709,7 @@ export function ApiClientView() {
     }
   };
   return (
-    <div className={styles.view}>
+    <div ref={view} className={styles.view}>
       <div className={styles.toolbar}>
         <Select
           aria-label="API environment"
@@ -661,50 +737,63 @@ export function ApiClientView() {
           {state.storageError || error}
         </div>
       )}
-      <div className={styles.workspace}>
-        <Navigation />
-        <div className={styles.editor}>
-          {state.tabs.length > 0 && (
-            <Tabs
-              aria-label="API request tabs"
-              variant="compact"
-              activeId={state.active ?? ""}
-              onSelect={selectTab}
-              onClose={closeTab}
-              items={state.tabs.map((item) => ({
-                id: item.id,
-                label: item.name,
-                text: item.name,
-                icon: "file-http",
-                closable: true,
-                modified: state.running[item.id] !== undefined,
-              }))}
-            />
-          )}
-          {draft ? (
-            <SplitGroup orientation="vertical" id="api-client-request-response" className={styles.requestResponse}>
-              <SplitPanel defaultSize="50%" minSize="180px">
-                <RequestEditor key={draft.id} draft={draft} />
-              </SplitPanel>
-              <SplitHandle />
-              <SplitPanel minSize="110px">
-                <ResponseView key={draft.id} id={draft.id} />
-              </SplitPanel>
-            </SplitGroup>
-          ) : (
-            <EmptyState
-              title="Choose an endpoint or create a request"
-              actions={
-                <Button icon="plus" onClick={() => newRequest()}>
-                  New API request
-                </Button>
-              }
-            >
-              <T>Browse Spring APIs, switch environments, and inspect HTTP responses here.</T>
-            </EmptyState>
-          )}
-        </div>
-      </div>
+      <SplitGroup
+        orientation={stacked ? "vertical" : "horizontal"}
+        id="api-client-navigation"
+        className={styles.workspace}
+      >
+        <SplitPanel
+          defaultSize={stacked ? "180px" : "300px"}
+          minSize={stacked ? "120px" : "220px"}
+          maxSize={stacked ? "55%" : "65%"}
+        >
+          <Navigation />
+        </SplitPanel>
+        <SplitHandle aria-label="Resize API endpoint list" />
+        <SplitPanel minSize={stacked ? "180px" : "300px"}>
+          <div className={styles.editor}>
+            {state.tabs.length > 0 && (
+              <Tabs
+                aria-label="API request tabs"
+                variant="compact"
+                activeId={state.active ?? ""}
+                onSelect={selectTab}
+                onClose={closeTab}
+                items={state.tabs.map((item) => ({
+                  id: item.id,
+                  label: item.name,
+                  text: item.name,
+                  icon: "file-http",
+                  closable: true,
+                  modified: state.running[item.id] !== undefined,
+                }))}
+              />
+            )}
+            {draft ? (
+              <SplitGroup orientation="vertical" id="api-client-request-response" className={styles.requestResponse}>
+                <SplitPanel defaultSize="50%" minSize="180px">
+                  <RequestEditor key={draft.id} draft={draft} />
+                </SplitPanel>
+                <SplitHandle />
+                <SplitPanel minSize="110px">
+                  <ResponseView key={draft.id} id={draft.id} />
+                </SplitPanel>
+              </SplitGroup>
+            ) : (
+              <EmptyState
+                title="Choose an endpoint or create a request"
+                actions={
+                  <Button icon="plus" onClick={() => newRequest()}>
+                    New API request
+                  </Button>
+                }
+              >
+                <T>Browse Spring APIs, switch environments, and inspect HTTP responses here.</T>
+              </EmptyState>
+            )}
+          </div>
+        </SplitPanel>
+      </SplitGroup>
       {dialog && <EnvironmentDialog environment={dialog.environment} onClose={() => setDialog(null)} />}
     </div>
   );

@@ -35,11 +35,19 @@
 .navigation {
   display: flex;
   flex-direction: column;
-  flex: 0 0 240px;
+  height: 100%;
+  width: 100%;
   min-height: 0;
   min-width: 0;
-  border-right: 1px solid var(--border);
   overflow: hidden;
+}
+.navigationActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+.navigationActions > button {
+  flex: none;
 }
 .search {
   padding: 6px 8px;
@@ -53,21 +61,39 @@
   display: flex;
   gap: 6px;
   align-items: center;
-  min-width: 0;
-  overflow: hidden;
-  width: 100%;
+  flex: none;
+  width: max-content;
 }
-.endpoint > span:last-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
+.endpointPath,
+.nodeLabel,
+.nodeDescription {
+  flex: none;
   white-space: nowrap;
+}
+.endpointPath {
+  font-size: var(--fs-ui);
+}
+.nodeDescription {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  padding-left: 3px;
 }
 .methodBadge {
   flex: none;
   font-family: var(--font-mono);
-  font-size: var(--fs-tiny);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  padding: 0 4px;
+  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  background: color-mix(in srgb, currentColor 8%, transparent);
   color: var(--link);
-  min-width: 35px;
+  min-width: 43px;
+}
+.selectedEndpoint .methodBadge {
+  color: inherit;
 }
 .method-post {
   color: var(--success);
@@ -313,14 +339,4 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-@container (max-width: 700px) {
-  .workspace {
-    flex-direction: column;
-  }
-  .navigation {
-    flex: 0 0 180px;
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-  }
 }

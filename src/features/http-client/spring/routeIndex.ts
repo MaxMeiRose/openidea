@@ -53,6 +53,8 @@ async function scan(root: string): Promise<EndpointEntry[]> {
             url,
             controller: controller.name,
             methodName: endpoint.methodName,
+            ...(endpoint.summary ? { summary: endpoint.summary } : {}),
+            ...(controller.summary ? { controllerSummary: controller.summary } : {}),
             path: source.path,
             rel: source.path.slice(root.length + 1),
             line: at.line,

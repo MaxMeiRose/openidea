@@ -22,6 +22,7 @@ export interface QueryParam {
 export interface Endpoint {
   className: string;
   methodName: string;
+  summary?: string;
   /** Offset of the method name (gutter line). */
   offset: number;
   /** The method declaration, annotations included. */
@@ -43,6 +44,7 @@ export interface Endpoint {
 
 export interface Controller {
   name: string;
+  summary?: string;
   offset: number;
   /** The class declaration, annotations included. */
   range: { from: number; to: number };
@@ -267,13 +269,68 @@ function endpoint(cls: ClassDecl, method: ClassDecl["methods"][number], c: Const
   };
 }
 
-export function controllersOf(file: SourceFile): Controller[] {
+function annotatedSummary(annotations: Annotation[], constants: Constants, controller: boolean): string | undefined {
+  const kinds = controller
+    ? [
+        ["Tag", "name"],
+        ["Api", "tags"],
+        ["Api", "value"],
+      ]
+    : [
+        ["Operation", "summary"],
+        ["ApiOperation", "value"],
+      ];
+  for (const [name, argument] of kinds) {
+    const ann = annotations.find((item) => item.name === name);
+    const value = ann && constants.string(ann.args.get(argument!));
+    if (value?.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+/** Leading Javadoc/KDoc paragraph; tags and markup do not become interface names. */
+function documentedSummary(text: string | undefined, offset: number): string | undefined {
+  if (!text) return undefined;
+  const prefix = text.slice(Math.max(0, offset - 16_000), offset);
+  const from = prefix.lastIndexOf("/**");
+  if (from < 0) return undefined;
+  const end = prefix.indexOf("*/", from + 3);
+  if (end < 0 || prefix.slice(end + 2).trim()) return undefined;
+  const lines = prefix
+    .slice(from + 3, end)
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*\* ?/, "").trim());
+  const firstTag = lines.findIndex((line) => /^@\w/.test(line));
+  const value = (firstTag < 0 ? lines : lines.slice(0, firstTag))
+    .join("\n")
+    .trim()
+    .split(/\n\s*\n/)[0]
+    ?.replace(/\{@(?:link|linkplain|code)\s+([^}]+)\}/g, "$1")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return value || undefined;
+}
+
+export function controllersOf(file: SourceFile, source?: string): Controller[] {
   const constants = new Constants(file);
   const out: Controller[] = [];
   for (const cls of allClasses(file)) {
     if (!cls.annotations.some((a) => CONTROLLER.has(a.name))) continue;
-    const endpoints = cls.methods.map((m) => endpoint(cls, m, constants)).filter((e): e is Endpoint => !!e);
-    out.push({ name: cls.name, offset: cls.nameStart, range: { from: cls.start, to: cls.end }, endpoints });
+    const endpoints = cls.methods.flatMap((method) => {
+      const mapping = endpoint(cls, method, constants);
+      if (!mapping) return [];
+      const summary = annotatedSummary(method.annotations, constants, false) ?? documentedSummary(source, method.start);
+      return [{ ...mapping, ...(summary ? { summary } : {}) }];
+    });
+    const summary = annotatedSummary(cls.annotations, constants, true) ?? documentedSummary(source, cls.start);
+    out.push({
+      name: cls.name,
+      ...(summary ? { summary } : {}),
+      offset: cls.nameStart,
+      range: { from: cls.start, to: cls.end },
+      endpoints,
+    });
   }
   return out;
 }
@@ -282,7 +339,7 @@ export function controllersOf(file: SourceFile): Controller[] {
 export function springControllers(text: string): Controller[] {
   // Cheap guard: most files are not controllers.
   if (!/@(?:[\w.]+\.)?(?:Rest)?Controller\b/.test(text)) return [];
-  return controllersOf(parseSource(text));
+  return controllersOf(parseSource(text), text);
 }
 
 /** The controller and endpoint whose declaration holds `offset`. */

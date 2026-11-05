@@ -115,8 +115,11 @@ describe("HTTP port", () => {
     const session = (await startRun(app))!;
     runtime(session.id)!.console.append({ kind: "stdout", text: "Tomcat started on port 8085 (http)\n" });
     expect(useRun.getState().sessions[0]!.httpPort).toBe(8085);
+    runtime(session.id)!.console.append({ kind: "stdout", text: "Netty started on port 9090\n" });
+    expect(useRun.getState().sessions[0]!.serverPorts).toEqual([8085, 9090]);
     await startRun(app, session.id);
     expect(useRun.getState().sessions[0]!.httpPort).toBeUndefined();
+    expect(useRun.getState().sessions[0]!.serverPorts).toBeUndefined();
   });
 });
 

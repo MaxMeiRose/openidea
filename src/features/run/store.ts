@@ -54,7 +54,7 @@ import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
 import { recordRun } from "./services";
-import { startedPort } from "./serverPort";
+import { mergePorts, startedPorts } from "./serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
 import { openUrl } from "./navigate";
 import { tx } from "@/platform/i18n";
@@ -81,6 +81,7 @@ export interface RunSession {
   terminal?: boolean;
   /** The HTTP port the application's embedded web server reported it started on. */
   httpPort?: number;
+  serverPorts?: number[];
 }
 
 interface SessionRuntime {
@@ -596,6 +597,7 @@ export async function startRun(
       stdinClosed: false,
       stopped: false,
       httpPort: undefined,
+      serverPorts: undefined,
     };
     const updated = session;
     useRun.setState((s) => ({
@@ -629,16 +631,22 @@ export async function startRun(
   if (options.onLine) rt.lineListeners.push(options.onLine);
   let browserOpened = false;
   rt.lineListeners.push((line) => {
+    if (runtimes.get(sessionId)?.generation !== generation) return;
     if (config.kind === "tomcat" && /Server startup in/.test(line)) {
-      patchSession(sessionId, { httpPort: Number(config.params?.httpPort || "8080") });
+      const ports = mergePorts(getSession(sessionId)?.serverPorts, [Number(config.params?.httpPort || "8080")]);
+      patchSession(sessionId, { httpPort: ports[0], serverPorts: ports });
       if (!browserOpened && config.params?.openBrowser === "true") {
         browserOpened = true;
         void openUrl(tomcatBrowserUrl(config));
       }
     }
-    const port = startedPort(line);
-    if (port !== null && runtimes.get(sessionId)?.generation === generation && getSession(sessionId)?.httpPort !== port)
-      patchSession(sessionId, { httpPort: port });
+    const found = startedPorts(line);
+    const session = getSession(sessionId);
+    if (found.length && session && runtimes.get(sessionId)?.generation === generation) {
+      const ports = mergePorts(session.serverPorts, found);
+      if (ports.length !== session.serverPorts?.length)
+        patchSession(sessionId, { httpPort: ports[0], serverPorts: ports });
+    }
   });
   rt.onExit = options.onExit;
   try {

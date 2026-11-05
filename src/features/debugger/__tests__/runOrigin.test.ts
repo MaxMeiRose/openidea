@@ -12,6 +12,7 @@ import { registerDebugActions } from "../actions";
 import {
   adoptSession,
   appendConsole,
+  appendConsoleQueued,
   handleDebugEvent,
   publishContext,
   rerunSession,
@@ -51,6 +52,28 @@ it("does not republish service metadata when console output changes", () => {
   expect(summaries).toHaveLength(1);
   appendConsole(1, "stdout", "application output\n");
   expect(useDebugRunSessions.getState().serviceSessions).toBe(summaries);
+});
+
+it("publishes application ports from chunked debug output while ignoring debugger transport ports", () => {
+  adoptSession(1, { runConfig: config, adapter: "delve" });
+  appendConsole(1, "stdout", "Listening on :80");
+  expect(useDebugRunSessions.getState().serviceSessions[0]?.serverPorts).toBeUndefined();
+  appendConsole(1, "stdout", "80\n");
+  appendConsoleQueued(1, "stderr", "Tomcat started on port 8443 (https)\n");
+  appendConsole(1, "system", "flush output\n");
+  expect(useDebugRunSessions.getState().serviceSessions[0]?.serverPorts).toEqual([8080, 8443]);
+  const metadata = useDebugRunSessions.getState().serviceSessions;
+  appendConsole(1, "console", "Debugger listening on ws://127.0.0.1:9229/token\n");
+  expect(useDebugRunSessions.getState().serviceSessions).toBe(metadata);
+});
+
+it("reports a debug child's application ports under its configured service", () => {
+  adoptSession(1, { runConfig: config, adapter: "js-debug" });
+  adoptSession(2, { parent: 1, adapter: "js-debug" });
+  appendConsole(2, "stdout", "Server listening on port 3000\n");
+  expect(useDebugRunSessions.getState().serviceSessions).toMatchObject([{ id: 1, serverPorts: [3000] }]);
+  handleDebugEvent(2, { kind: "terminated" });
+  expect(useDebugRunSessions.getState().serviceSessions[0]?.serverPorts).toBeUndefined();
 });
 
 it("stops shared-process debugger roots without stopping their process until requested", async () => {

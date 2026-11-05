@@ -36,6 +36,7 @@ import { interpolateLog, logParts, suspends } from "./breakpoints/model";
 import { syncSpecial, useSpecialBreakpoints } from "./breakpoints/special";
 import { refreshExceptionFilters } from "./breakpoints/exceptions";
 import { missingAdapter } from "./missingAdapter";
+import { mergePorts, startedPorts } from "@/features/run/serverPort";
 
 export type SessionStatus = "starting" | "running" | "paused" | "terminated";
 
@@ -46,6 +47,7 @@ export interface DebugSession {
   runConfig?: RunConfig;
   startedAt?: number;
   startupError?: DebugServiceSession["startupError"];
+  serverPorts?: number[];
   adapter: string;
   parent: DebugSessionId | null;
   /** Launch configuration (root sessions), used by Rerun. */
@@ -249,6 +251,12 @@ export function publishContext() {
       if (session.parent != null || !session.runConfig) return [];
       const paused =
         isLive(session) && retained.some((child) => child.status === "paused" && rootOf(child).id === session.id);
+      const ports = mergePorts(
+        session.serverPorts,
+        retained
+          .filter((child) => child.id !== session.id && isLive(child) && rootOf(child).id === session.id)
+          .flatMap((child) => child.serverPorts ?? []),
+      );
       return [
         {
           id: session.id,
@@ -257,6 +265,7 @@ export function publishContext() {
           status: paused ? ("paused" as const) : session.status,
           processId: session.process,
           startupError: session.startupError,
+          serverPorts: ports.length ? ports : undefined,
           rerun: session.runConfig || session.launch ? () => void rerunSession(session.id) : null,
           stop: (options?: { stopProcess?: boolean }) => stopSession(session.id, options),
           show: () => {
@@ -301,19 +310,45 @@ export function publishContext() {
 
 // --- console -----------------------------------------------------------------
 
+function portsFromOutput(
+  session: DebugSession | undefined,
+  lines: ConsoleLine[],
+  text: string,
+): DebugSession | undefined {
+  if (!session || !isLive(session)) return session;
+  const changedLines = text.split("\n").length + 1;
+  const found = lines
+    .slice(-changedLines)
+    .flatMap((line) =>
+      ["stdout", "stderr", "console"].includes(line.category) && line.text.endsWith("\n")
+        ? startedPorts(line.text)
+        : [],
+    );
+  if (!found.length) return session;
+  const ports = mergePorts(session.serverPorts, found);
+  return ports.length === session.serverPorts?.length ? session : { ...session, serverPorts: ports };
+}
+
 export function appendConsole(session: DebugSessionId, category: string, raw: string) {
   if (!raw) return;
   flushConsoleOutput();
   const spans = ansiStream(session, category).parse(raw);
   const text = spans.map((sp) => sp.text).join("");
   if (!text) return;
+  let portsChanged = false;
   useDebug.setState((s) => {
     const prev = s.console[session] ?? [];
     const next = [...prev];
     appendConsoleLines(next, category, spans);
+    const updated = portsFromOutput(s.sessions[session], next, text);
+    portsChanged = updated !== s.sessions[session];
     trimConsole(next);
-    return { console: { ...s.console, [session]: next } };
+    return {
+      console: { ...s.console, [session]: next },
+      ...(portsChanged && updated ? { sessions: { ...s.sessions, [session]: updated } } : {}),
+    };
   });
+  if (portsChanged) publishContext();
 }
 
 /**
@@ -341,8 +376,10 @@ function flushConsoleOutput() {
   cancelOutputFlush();
   if (pendingOutput.length === 0) return;
   const chunks = pendingOutput.splice(0);
+  let portsChanged = false;
   useDebug.setState((s) => {
     const consoleBySession = { ...s.console };
+    let sessions = s.sessions;
     for (const { session, category, raw } of chunks) {
       if (!s.sessions[session]) continue;
       const spans = ansiStream(session, category).parse(raw);
@@ -351,11 +388,17 @@ function flushConsoleOutput() {
       const prev = consoleBySession[session] ?? [];
       const next = [...prev];
       appendConsoleLines(next, category, spans);
+      const updated = portsFromOutput(sessions[session], next, text);
+      if (updated && updated !== sessions[session]) {
+        sessions = { ...sessions, [session]: updated };
+        portsChanged = true;
+      }
       trimConsole(next);
       consoleBySession[session] = next;
     }
-    return { console: consoleBySession };
+    return { console: consoleBySession, ...(portsChanged ? { sessions } : {}) };
   });
+  if (portsChanged) publishContext();
 }
 
 /** Split styled output at real line breaks, retaining partial lines across events. */

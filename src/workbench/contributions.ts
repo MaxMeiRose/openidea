@@ -195,6 +195,8 @@ export interface ServiceTreeItem {
   icon: string;
   /** Grey text after the label (status, counts…). */
   detail?: string;
+  /** Ports reported by this execution's application startup output, while it is live. */
+  ports?: number[];
   /** Greyed label (stopped, not running). */
   dim?: boolean;
   /** Expanded the first time the node appears. */
@@ -1338,6 +1340,9 @@ export interface EndpointEntry {
   url: string;
   controller: string;
   methodName: string;
+  /** Human-readable API and controller descriptions, when supplied by source documentation. */
+  summary?: string;
+  controllerSummary?: string;
   path: string;
   rel: string;
   line: number;
@@ -1399,6 +1404,7 @@ export interface DebugServiceSession {
   startedAt: number;
   status: "starting" | "running" | "paused" | "terminated";
   processId: number | null;
+  serverPorts?: number[];
   rerun: (() => void) | null;
   stop: (options?: { stopProcess?: boolean }) => Promise<void>;
   show: () => void;

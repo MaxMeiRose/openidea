@@ -181,3 +181,82 @@ test("service dragging scrolls across virtual rows without losing source identit
     )
     .toEqual(["app-99", "portal"]);
 });
+
+test("service ports follow Run and Debug startup output and clear between executions", async ({ workbench: page }) => {
+  await configure(page);
+  const services = page.getByRole("region", { name: "Services", exact: true });
+  const row = page
+    .getByRole("tree", { name: "Services", exact: true })
+    .getByRole("treeitem", { name: /^gateway(?: |$)/ });
+  await row.click();
+  const id = await page.evaluate(async () => {
+    const storePath = "/src/features/run/store.ts";
+    const { useRun, startRun, runtime } = await import(storePath);
+    const config = useRun.getState().configs.find((config: { id: string }) => config.id === "gateway");
+    const session = await startRun(config);
+    useRun.setState({
+      sessions: useRun
+        .getState()
+        .sessions.map((item: { id: string }) =>
+          item.id === session.id ? { ...item, status: "running", stopped: false } : item,
+        ),
+    });
+    runtime(session.id).console.append({
+      kind: "stdout",
+      text: "Tomcat started on port(s): 8080 (http), 8443 (https)\n",
+    });
+    return session.id;
+  });
+  const badge = services.getByRole("status", { name: "Service ports", exact: true });
+  await expect(row).toContainText(":8080, :8443");
+  await expect(badge).toHaveText("Ports: 8080, 8443");
+  await page.evaluate(async (id) => {
+    const storePath = "/src/features/run/store.ts";
+    const { useRun } = await import(storePath);
+    useRun.setState({
+      sessions: useRun
+        .getState()
+        .sessions.map((item: { id: string }) => (item.id === id ? { ...item, status: "finished" } : item)),
+    });
+  }, id);
+  await expect(badge).toHaveCount(0);
+  await page.evaluate(async (id) => {
+    const storePath = "/src/features/run/store.ts";
+    const { useRun, startRun, runtime } = await import(storePath);
+    const config = useRun.getState().configs.find((config: { id: string }) => config.id === "gateway");
+    await startRun(config, id);
+    useRun.setState({
+      sessions: useRun
+        .getState()
+        .sessions.map((item: { id: string }) =>
+          item.id === id ? { ...item, status: "running", stopped: false } : item,
+        ),
+    });
+    runtime(id).console.append({ kind: "stdout", text: "[GIN-debug] Listening and serving HTTP on :9090\n" });
+  }, id);
+  await expect(badge).toHaveText("Ports: 9090");
+  await expect(row).not.toContainText("8080");
+  await page.evaluate(async (id) => {
+    const storePath = "/src/features/run/store.ts";
+    const debugPath = "/src/features/debugger/state.ts";
+    const { useRun } = await import(storePath);
+    const config = useRun.getState().configs.find((config: { id: string }) => config.id === "gateway");
+    useRun.setState({
+      sessions: useRun
+        .getState()
+        .sessions.map((item: { id: string }) => (item.id === id ? { ...item, status: "finished" } : item)),
+    });
+    const { adoptSession, appendConsole } = await import(debugPath);
+    adoptSession(777, { name: config.name, runConfig: config, startedAt: Date.now() + 1000 });
+    appendConsole(777, "stdout", "Netty started on port 9091\n");
+    appendConsole(777, "console", "Debugger listening on ws://127.0.0.1:9229/token\n");
+  }, id);
+  await expect(badge).toHaveText("Ports: 9091");
+  await expect(row).not.toContainText("9229");
+  await services.screenshot({ path: "/tmp/openidea-services-ports.png", animations: "disabled" });
+  await page.evaluate(async () => {
+    const debugPath = "/src/features/debugger/state.ts";
+    (await import(debugPath)).handleDebugEvent(777, { kind: "terminated" });
+  });
+  await expect(badge).toHaveCount(0);
+});

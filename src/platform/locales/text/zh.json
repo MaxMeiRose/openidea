@@ -5672,5 +5672,12 @@
   "Request URLs must not contain a fragment": "请求 URL 不能包含片段",
   "Write one header per line as Name: value": "每行填写一个请求头，格式为 Name: value",
   "Cannot restore the API Client workspace": "无法恢复 API 调试工作区",
-  "Check the path parameter syntax in the request URL": "请检查请求 URL 中的路径参数格式"
+  "Check the path parameter syntax in the request URL": "请检查请求 URL 中的路径参数格式",
+  "API display options": "接口显示方式",
+  "Path and summary": "路径与接口说明",
+  "Summary only": "仅接口说明",
+  "Search name, path or controller": "搜索名称、路径或 Controller",
+  "Resize API endpoint list": "调整接口列表宽度",
+  "Service ports": "服务端口",
+  "Ports": "端口"
 }
