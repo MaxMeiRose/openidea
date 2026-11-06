@@ -6,6 +6,7 @@
   "trailingComma": "all",
   "sortPackageJson": false,
   "ignorePatterns": [
+    "CLAUDE.md",
     "dist",
     "target",
     "src/bindings.ts",

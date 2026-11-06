@@ -74,7 +74,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
-        with: { version: 11 }
+        with: { version: 11.28.11 }
       - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - uses: dtolnay/rust-toolchain@stable
@@ -154,7 +154,7 @@ jobs:
             echo "::endgroup::"
           done
       - uses: pnpm/action-setup@v5
-        with: { version: 11 }
+        with: { version: 11.28.11 }
       - uses: actions/setup-node@v5
         with: { node-version: 22 }
       # Plugin web pages (`web-src/`, their own pnpm projects): typecheck and test.
@@ -196,7 +196,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
-        with: { version: 11 }
+        with: { version: 11.28.11 }
       - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
@@ -218,7 +218,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
-        with: { version: 11 }
+        with: { version: 11.28.11 }
       - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
