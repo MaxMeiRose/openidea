@@ -85,7 +85,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          cargo test --locked --release --timings -p openidea --test export_bindings
+          cargo test --locked --timings -p openidea --test export_bindings
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "generated=true" >> $env:GITHUB_OUTPUT
           git diff --exit-code src/bindings.ts
@@ -99,7 +99,7 @@ jobs:
         timeout-minutes: 45
         shell: pwsh
         run: |
-          cargo test --locked --release --timings -p ide-agent -p ide-http -p ide-run -p openidea --lib
+          cargo test --locked --timings -p ide-agent -p ide-http -p ide-run -p openidea --lib
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@v4
         if: always()
