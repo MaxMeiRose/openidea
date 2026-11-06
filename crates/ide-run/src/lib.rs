@@ -8,6 +8,7 @@ pub mod go;
 pub mod gradle_jvm;
 pub mod java_cmdline;
 pub mod junit;
+pub mod method;
 mod process;
 pub mod python_path;
 pub mod tomcat;

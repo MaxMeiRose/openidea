@@ -42,6 +42,7 @@ const KIND_LABELS: Record<string, string> = {
 export const KIND_OPTIONS = Object.entries(KIND_LABELS).map(([value, label]) => ({ value, label }));
 
 export function kindLabel(kind: string): string {
+  if (kind === "java-method") return "Method Test";
   const type = useRunConfigTypes.getState().types.get(kind);
   // A grouped type ("Tomcat Server › Local") is named by its group outside the Add menu.
   return type?.group ?? type?.label ?? KIND_LABELS[kind] ?? (kind ? kind[0]!.toUpperCase() + kind.slice(1) : "Other");
@@ -50,6 +51,8 @@ export function kindLabel(kind: string): string {
 export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
   if (config.isTest) return "check";
   switch (config.kind) {
+    case "java-method":
+      return "toolwindow-method-test";
     case "compound":
       return "gutter-run-all";
     case "program":

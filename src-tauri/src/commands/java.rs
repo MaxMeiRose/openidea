@@ -42,3 +42,25 @@ pub async fn java_build_workspace(
 ) -> IdeResult<ide_lsp::jdtls::JavaBuildStatus> {
     ide_host::ops::java::java_build_workspace(&state.host, window.label(), module).await
 }
+
+/// Creates a disposable local Maven method test; ordinary Run does not start a language server.
+#[tauri::command]
+#[specta::specta]
+pub async fn java_method_prepare(
+    window: Window,
+    state: State<'_, AppState>,
+    invocation: ide_run::method::MethodInvocation,
+    request: RequestId,
+) -> IdeResult<ide_run::method::PreparedMethodInvocation> {
+    ide_host::ops::java::method::prepare(&state.host, window.label(), invocation, request).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn java_method_result(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+) -> IdeResult<Option<ide_run::method::MethodInvocationResult>> {
+    ide_host::ops::java::method::result(&state.host, window.label(), &id)
+}

@@ -39,6 +39,8 @@ function withProperty(args: readonly string[], key: string, value: string): stri
 export function jdwpLaunch(config: RunConfig): RunConfig | null {
   if (config.kind === "tomcat") return { ...config, params: { ...config.params, tomcatDebug: "true" } };
   const args = config.args;
+  // Only the invocation JVM waits for the debugger; Maven and the bootstrap JVM keep running.
+  if (config.kind === "java-method") return { ...config, env: { ...config.env, OPENIDEA_METHOD_JDWP: JDWP_AGENT } };
   // A single source file (`java Hi.java`): the agent goes before the file.
   if (config.kind === "java-file") return { ...config, args: [JDWP_AGENT, ...args] };
   if (config.kind === "maven" || /(^|\/)mvnw?(\.cmd)?$/.test(config.command)) {

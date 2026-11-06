@@ -650,6 +650,16 @@ export const commands = {
 	javaDebugServer: (module: string) => typedError<number, IdeError>(__TAURI_INVOKE("java_debug_server", { module })),
 	/**  Incremental build of the jdtls workspace serving `module` (e.g. before HotSwap). */
 	javaBuildWorkspace: (module: string) => typedError<JavaBuildStatus, IdeError>(__TAURI_INVOKE("java_build_workspace", { module })),
+	/**  Creates a disposable local Maven method test; ordinary Run does not start a language server. */
+	javaMethodPrepare: (invocation: MethodInvocation, request: RequestId) => typedError<PreparedMethodInvocation_Serialize, IdeError>(__TAURI_INVOKE("java_method_prepare", { invocation, request })),
+	javaMethodResult: (id: string) => typedError<{
+	success: boolean,
+	valueJson: string | null,
+	durationMs: number | null,
+	error: string | null,
+	stackTrace: string | null,
+	mockCallsJson: string,
+} | null, IdeError>(__TAURI_INVOKE("java_method_result", { id })),
 	/**  Starts a session owned by this window: its events (and those of child sessions) go here only. */
 	debugStart: (config: LaunchConfig) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("debug_start", { config })),
 	debugSetBreakpoints: (path: string, breakpoints: Breakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_breakpoints", { path, breakpoints })),
@@ -4527,6 +4537,32 @@ export type MergeVersions = {
 	merged: string | null,
 };
 
+export type MethodInvocation = {
+	sourcePath: string,
+	className: string,
+	methodName: string,
+	parameterTypes: string[],
+	argumentsJson: string,
+	/**  `object` or `spring`. */
+	mode: string,
+	dependenciesJson: string,
+	propertiesJson: string,
+	configurationClasses: string[],
+	profiles: string[],
+	mavenProfiles: string[],
+	heapMb: number,
+	timeoutSeconds: number,
+};
+
+export type MethodInvocationResult = {
+	success: boolean,
+	valueJson: string | null,
+	durationMs: number | null,
+	error: string | null,
+	stackTrace: string | null,
+	mockCallsJson: string,
+};
+
 /**  Per-function totals (a recursive function's samples count once in `total`). */
 export type MethodStat = {
 	frame: number,
@@ -4865,6 +4901,18 @@ export type PrTimelineItem = {
 	/**  `None` for comments; the review state for reviews. */
 	reviewState: string | null,
 	url: string | null,
+};
+
+export type PreparedMethodInvocation = PreparedMethodInvocation_Serialize | PreparedMethodInvocation_Deserialize;
+
+export type PreparedMethodInvocation_Deserialize = {
+	id: string,
+	config: RunConfig_Deserialize,
+};
+
+export type PreparedMethodInvocation_Serialize = {
+	id: string,
+	config: RunConfig_Serialize,
 };
 
 /**  A request ready to send: variables substituted, includes read. */

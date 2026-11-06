@@ -294,6 +294,13 @@ describe("debugging build tool configurations", () => {
 
   const AGENT = /-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127\.0\.0\.1:0$/;
 
+  it("debugs only the method invocation JVM, leaving Maven and the bootstrap JVM unpaused", () => {
+    const launch = jdwpLaunch(cfg({ id: "method", kind: "java-method", command: "java", debugAdapter: "java-debug" }))!;
+    expect(launch.env.OPENIDEA_METHOD_JDWP).toMatch(AGENT);
+    expect(launch.env.JAVA_TOOL_OPTIONS).toBeUndefined();
+    expect(launch.env.MAVEN_OPTS).toBeUndefined();
+  });
+
   it.each([
     ["tomcat7:run"],
     ["org.apache.tomcat.maven:tomcat7-maven-plugin:2.2:run"],

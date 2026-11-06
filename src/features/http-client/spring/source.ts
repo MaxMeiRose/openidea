@@ -331,10 +331,12 @@ class Reader {
     let annotations: Annotation[] = [];
     let header: Tok[] = [];
     let declStart = -1;
+    let genericDepth = 0;
     const reset = () => {
       annotations = [];
       header = [];
       declStart = -1;
+      genericDepth = 0;
     };
     const flushField = (init: Expr | null) => {
       const ids = header.filter((t) => t.kind === "id");
@@ -481,12 +483,14 @@ class Reader {
         if (t.text === "{") reset();
         continue;
       }
-      if (t.kind === "p" && t.text === ",") {
+      if (t.kind === "p" && t.text === "," && genericDepth === 0) {
         // Enum constants / `int a, b;`.
         reset();
         i++;
         continue;
       }
+      if (t.kind === "p" && t.text === "<") genericDepth++;
+      if (t.kind === "p" && t.text === ">" && genericDepth > 0) genericDepth--;
       header.push(t);
       i++;
     }
