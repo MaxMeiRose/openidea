@@ -318,9 +318,12 @@ impl Cli for Replay {
         let mut frames =
             self.processes.lock().pop_front().ok_or_else(|| std::io::Error::other("no more recorded processes"))?;
         if let Some(Frame::Launch(recorded)) = frames.first() {
-            // The same flags (the recording passed `--model haiku`; ids differ).
+            // The same functional flags; thinking-display is optional and unsupported by old CLIs.
             let flags = |args: &[String]| {
-                args.iter().filter(|a| a.starts_with("--") && *a != "--model").cloned().collect::<Vec<_>>()
+                args.iter()
+                    .filter(|a| a.starts_with("--") && *a != "--model" && *a != "--thinking-display")
+                    .cloned()
+                    .collect::<Vec<_>>()
             };
             if flags(recorded) != flags(&launch.args) {
                 self.errors.lock().push(format!("launched with {:?}, recorded {recorded:?}", launch.args));
@@ -401,6 +404,135 @@ struct Replayed {
     session: String,
     cli: Arc<Replay>,
     _dirs: (tempfile::TempDir, tempfile::TempDir),
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn legacy_model_and_thinking_choices_reach_the_cli_without_get_settings() {
+    let reply = |id: &str, response: Value| {
+        Frame::Cli(json!({
+            "type": "control_response", "response": {"subtype": "success", "request_id": id, "response": response}
+        }))
+    };
+    let request = |id: &str, request: Value| {
+        Frame::Shim(json!({"type": "control_request", "request_id": id, "request": request}))
+    };
+    let frames = vec![
+        request("init", json!({"subtype": "initialize"})),
+        reply(
+            "init",
+            json!({"models": [
+                {"value": "default", "displayName": "Default"}, {"value": "opus", "displayName": "Opus"}
+            ]}),
+        ),
+        request("model", json!({"subtype": "set_model", "model": "opus"})),
+        reply("model", json!({})),
+        request("thinking", json!({"subtype": "set_max_thinking_tokens", "max_thinking_tokens": 8192})),
+        reply("thinking", json!({})),
+        request("reset", json!({"subtype": "set_max_thinking_tokens", "max_thinking_tokens": null})),
+        reply("reset", json!({})),
+    ];
+    let cli = Arc::new(Replay {
+        processes: Mutex::new(VecDeque::from([frames])),
+        sent: Arc::default(),
+        launched: Mutex::default(),
+        errors: Arc::default(),
+    });
+    let (dir, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let h = Harness::connect(cli.clone(), dir.path().into(), dir.path().join("pending"), cwd.path().into(), Vec::new())
+        .await;
+    let session =
+        tokio::time::timeout(Duration::from_secs(2), h.new_session()).await.expect("no unsupported get_settings wait");
+    for (option, value) in [(settings::MODEL, "opus"), (settings::THINKING, "8192"), (settings::THINKING, "default")] {
+        let r = h
+            .request("session/set_config_option", json!({"sessionId": session, "configId": option, "value": value}))
+            .await
+            .unwrap();
+        assert!(r["configOptions"].as_array().unwrap().iter().any(|o| o["id"] == option && o["currentValue"] == value));
+    }
+    assert!(cli.errors.lock().is_empty(), "{:?}", cli.errors.lock());
+    let sent = cli.sent.lock();
+    assert_eq!(sent[0][1]["request"]["model"], "opus");
+    assert_eq!(sent[0][2]["request"]["max_thinking_tokens"], 8192);
+    assert!(sent[0][3]["request"]["max_thinking_tokens"].is_null());
+    assert!(sent[0].iter().all(|m| m["type"] == "control_request"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discovery_returns_model_specific_effort_without_a_prompt_or_persistent_session() {
+    let mut frames = load_fixture("simple").remove(0);
+    frames.truncate(5);
+    frames.remove(0); // Recorded launch has session flags; discovery deliberately adds isolation flags.
+    let cli = Arc::new(Replay {
+        processes: Mutex::new(VecDeque::from([frames])),
+        sent: Arc::default(),
+        launched: Mutex::default(),
+        errors: Arc::default(),
+    });
+    let (dir, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let pending = dir.path().join("pending");
+    let h = Harness::connect(cli.clone(), dir.path().into(), pending.clone(), cwd.path().into(), Vec::new()).await;
+    let r = h.request("_openidea/config", json!({"model": "opus"})).await.unwrap();
+    let options = r["configOptions"].as_array().unwrap();
+    assert!(options.iter().any(|o| o["id"] == "model" && o["currentValue"] == "opus"));
+    assert!(options.iter().any(|o| o["id"] == "effort" && !o["options"].as_array().unwrap().is_empty()));
+    let args = cli.launched.lock();
+    for flag in cli::DISCOVERY_ARGS {
+        assert!(args[0].iter().any(|a| a == flag));
+    }
+    assert!(!pending.exists());
+    assert!(cli.errors.lock().is_empty());
+    assert!(cli.sent.lock()[0].iter().all(|m| m["type"] == "control_request"));
+}
+
+/// Metadata and control requests only; never sends a user prompt or calls a model.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a locally installed Claude Code"]
+async fn discover_installed_claude_without_a_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        program: super::super::newest_install("claude"),
+        args: cli::DISCOVERY_ARGS.iter().map(|a| (*a).into()).collect(),
+        env: Vec::new(),
+        config_dir: cli::config_dir(&[]),
+        pending_dir: dir.path().join("pending"),
+        cwd: dir.path().into(),
+    };
+    let shim = Shim::new(config, Arc::new(cli::Process), Arc::new(|_| {}));
+    let peer = super::super::serve(shim, Arc::new(ide_jsonrpc::NoopHandler));
+    let r: Value =
+        tokio::time::timeout(Duration::from_secs(30), peer.request("_openidea/config", json!({"model": "opus"}), None))
+            .await
+            .unwrap()
+            .unwrap();
+    let options = r["configOptions"].as_array().unwrap();
+    assert!(options.iter().any(|o| o["id"] == "model" && o["currentValue"] == "opus"));
+    assert!(options.iter().any(|o| o["category"] == "thought_level"));
+    let session: Value = peer.request("session/new", json!({"cwd": dir.path()}), None).await.unwrap();
+    let id = session["sessionId"].clone();
+    let _: Value = peer
+        .request("session/set_config_option", json!({"sessionId": id, "configId": "model", "value": "opus"}), None)
+        .await
+        .unwrap();
+    let thinking = options.iter().find(|o| o["category"] == "thought_level").unwrap();
+    let value =
+        if thinking["id"] == settings::THINKING { json!("8192") } else { thinking["options"][1]["value"].clone() };
+    let chosen: Value = peer
+        .request(
+            "session/set_config_option",
+            json!({"sessionId": id, "configId": thinking["id"], "value": value}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        chosen["configOptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| o["id"] == thinking["id"] && o["currentValue"] == value)
+    );
+    peer.kill();
+    assert!(!dir.path().join("pending").exists());
 }
 
 impl Replayed {

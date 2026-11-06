@@ -142,6 +142,18 @@ pub async fn rollback(host: &Host, window: &str, task: String, turns: u32) -> Id
     host.project(window)?.agents.rollback(&task, turns).await
 }
 
+/// Native Claude settings before its first task (no prompt, hooks or MCP).
+pub async fn configuration(
+    host: &Host,
+    window: &str,
+    provider: String,
+    model: Option<String>,
+    task: Option<String>,
+) -> IdeResult<Vec<ide_agent::AgentConfigOption>> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.configuration(&provider, model.as_deref(), task.as_deref()).await
+}
+
 /// What the agent reports about itself when it starts, without opening a session.
 pub async fn probe(host: &Host, window: &str, provider: String, refresh: bool) -> IdeResult<AgentProbe> {
     host.require_trust(window)?;
@@ -209,6 +221,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_fork", |c| async move { fork(&c.host, &c.window, c.arg("task")?, c.arg("turns")?).await });
     d.add("agent_rollback", |c| async move { rollback(&c.host, &c.window, c.arg("task")?, c.arg("turns")?).await });
     d.add("agent_probe", |c| async move { probe(&c.host, &c.window, c.arg("provider")?, c.arg("refresh")?).await });
+    d.add("agent_configuration", |c| async move {
+        configuration(&c.host, &c.window, c.arg("provider")?, c.arg("model")?, c.arg("task")?).await
+    });
     d.add("agent_cancel", |c| async move { cancel(&c.host, &c.window, c.arg("task")?, c.arg("subagent")?) });
     d.add("agent_respond", |c| async move {
         respond(&c.host, &c.window, c.arg("task")?, c.arg("permission")?, c.arg("option")?)

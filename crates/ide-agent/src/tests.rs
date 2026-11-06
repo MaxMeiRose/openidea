@@ -112,6 +112,10 @@ impl Handler for FakeAgent {
                 Ok(json!({"protocolVersion": 1, "agentCapabilities": {"loadSession": true,
                     "sessionCapabilities": {"fork": {}}, "_meta": {"openidea": {"rollback": true, "steer": true}}}}))
             }
+            "_openidea/config" => Ok(json!({"configOptions": [{
+                "id": "model", "category": "model", "type": "select", "currentValue": params.get("model").and_then(Value::as_str).unwrap_or("big"),
+                "options": [{"value": "big", "name": "Big"}, {"value": "small", "name": "Small"}]
+            }]})),
             "session/new" => Ok(json!({"sessionId": "s1",
                 "modes": {"currentModeId": "ask", "availableModes": [{"id": "ask", "name": "Ask"}, {"id": "code", "name": "Code"}]},
                 "configOptions": [{"id": "model", "category": "model", "type": "select", "currentValue": "big",
@@ -218,6 +222,62 @@ fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentMan
         tokio::runtime::Handle::current(),
         connector,
     )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_configuration_is_available_before_a_task_and_does_not_create_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager_at(tmp.path(), &tmp.path().join("models.json"), agent.clone());
+    let config = mgr.configuration("claude", None, None).await.unwrap();
+    assert_eq!(config[0].current.as_deref(), Some("big"));
+    assert_eq!(mgr.providers().into_iter().find(|p| p.id == "claude").unwrap().config, config);
+    let specific = mgr.configuration("claude", Some("small"), None).await.unwrap();
+    assert_eq!(specific[0].current.as_deref(), Some("small"));
+    assert_eq!(
+        mgr.providers().into_iter().find(|p| p.id == "claude").unwrap().config,
+        config,
+        "model-specific discovery keeps the default cache"
+    );
+    assert!(mgr.tasks.read().is_empty());
+    assert!(!agent.calls.lock().iter().any(|m| m == "session/new" || m == "session/prompt"));
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_restored_task_recovers_missing_choices_without_prompting() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent);
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    mgr.shutdown();
+    let old = mgr.task(&task.id).unwrap();
+    old.state.lock().task.config.clear();
+    old.persist();
+    let agent = Arc::new(FakeAgent::default());
+    let restored = manager(tmp.path(), agent.clone());
+    let before = restored.entries(&task.id, None).unwrap();
+    let config = restored.configuration("claude", None, Some(&task.id)).await.unwrap();
+    assert!(config.iter().any(|o| o.category.as_deref() == Some("model")));
+    restored.set_config(&task.id, "model", "small".into()).await.unwrap();
+    assert_eq!(restored.entries(&task.id, None).unwrap(), before);
+    assert!(!agent.calls.lock().iter().any(|m| m == "session/new" || m == "session/prompt"));
+    assert_eq!(restored.task(&task.id).unwrap().state.lock().task.model.as_deref(), Some("small"));
+    restored.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&restored, &task.id, AgentStatus::Ready).await;
+    assert!(agent.calls.lock().contains(&"session/set_config_option \"small\"".into()));
+    restored.shutdown();
 }
 
 #[tokio::test(flavor = "multi_thread")]

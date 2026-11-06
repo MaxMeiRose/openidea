@@ -20,6 +20,9 @@ pub(super) struct Settings {
     pub model: String,
     /// `default`, or an effort level.
     pub effort: String,
+    /// Older CLIs expose a thinking-token budget instead of per-model effort metadata.
+    pub legacy_thinking: bool,
+    pub thinking: String,
     pub mode: String,
     /// ACP `availableCommands`.
     pub commands: Vec<Value>,
@@ -28,6 +31,15 @@ pub(super) struct Settings {
 pub(super) const MODEL: &str = "model";
 pub(super) const MODE: &str = "mode";
 pub(super) const EFFORT: &str = "effort";
+pub(super) const THINKING: &str = "thinking_tokens";
+
+const THINKING_LEVELS: [(&str, &str); 5] = [
+    ("default", "Default"),
+    ("0", "Off"),
+    ("4096", "Low · 4,096 tokens"),
+    ("8192", "Medium · 8,192 tokens"),
+    ("16384", "High · 16,384 tokens"),
+];
 
 const MODES: [(&str, &str, &str); 5] = [
     ("default", "Default", "Ask before edits and commands"),
@@ -38,6 +50,12 @@ const MODES: [(&str, &str, &str); 5] = [
 ];
 
 impl Settings {
+    pub fn has_model_metadata(init: &Value) -> bool {
+        init.get("models").and_then(Value::as_array).is_some_and(|models| {
+            models.iter().any(|m| m.get("supportsEffort").is_some() || m.get("supportedEffortLevels").is_some())
+        })
+    }
+
     /// From the `initialize` response and `get_settings`' `applied` and `effective`.
     pub fn from_cli(init: &Value, settings: &Value) -> Self {
         let models: Vec<Model> = init
@@ -73,6 +91,8 @@ impl Settings {
             models,
             model: String::new(),
             effort: settings.pointer("/applied/effort").and_then(Value::as_str).unwrap_or("default").to_owned(),
+            legacy_thinking: !Self::has_model_metadata(init),
+            thinking: "default".into(),
             mode: init.get("current_permission_mode").and_then(Value::as_str).unwrap_or("default").to_owned(),
             commands: commands(init.get("commands"), &[]),
         };
@@ -140,6 +160,14 @@ impl Settings {
             out.push(json!({
                 "id": EFFORT, "name": "Effort", "category": "thought_level", "type": "select",
                 "currentValue": current, "options": values,
+            }));
+        }
+        if self.legacy_thinking && !self.models.is_empty() {
+            out.push(json!({
+                "id": THINKING, "name": "Thinking budget", "category": "thought_level", "type": "select",
+                "description": "This Claude Code version controls thinking with a token budget, not model effort.",
+                "currentValue": self.thinking,
+                "options": THINKING_LEVELS.iter().map(|(value, name)| json!({"value": value, "name": name})).collect::<Vec<_>>(),
             }));
         }
         Value::Array(out)
@@ -230,5 +258,26 @@ mod tests {
         assert_eq!(s.options().as_array().unwrap().len(), 2, "no effort option without levels");
         let cmds = commands(init().get("commands"), &["doctor".into()]);
         assert_eq!(cmds, vec![json!({"name": "review", "description": "Review", "input": {"hint": "[pr]"}})]);
+    }
+
+    #[test]
+    fn legacy_cli_offers_a_thinking_budget_without_inventing_effort_support() {
+        let init = json!({ "models": [
+            {"value": "default", "displayName": "Default (recommended)"},
+            {"value": "opus", "displayName": "Opus"}
+        ] });
+        assert!(!Settings::has_model_metadata(&init));
+        let mut s = Settings::from_cli(&init, &Value::Null);
+        assert_eq!(s.model, "default");
+        assert!(s.valid(MODEL, "opus"));
+        assert!(!s.valid(EFFORT, "high"));
+        assert!(s.valid(THINKING, "8192") && s.valid(THINKING, "0") && s.valid(THINKING, "default"));
+        assert!(!s.valid(THINKING, "-1"));
+        s.thinking = "8192".into();
+        s.set_model("opus");
+        assert_eq!(s.options()[2]["currentValue"], "8192");
+        // An explicit false from a new CLI is not an invitation to offer token budgets.
+        let modern = json!({"models": [{"value": "fast", "supportsEffort": false}]});
+        assert_eq!(Settings::from_cli(&modern, &Value::Null).options().as_array().unwrap().len(), 2);
     }
 }

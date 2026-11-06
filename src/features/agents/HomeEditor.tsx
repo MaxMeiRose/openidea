@@ -6,13 +6,14 @@ import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { useTx, useTxTemplate } from "@/platform/i18n";
 import { basename, useProject } from "@/platform/project";
-import { Icon, Select, T, type SelectOption } from "@/ui";
+import { Icon, IconButton, Select, T, type SelectOption } from "@/ui";
 import { defaultTaskProject } from "./project";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import { Composer } from "./Composer";
 import { SubmitButton } from "./SubmitButton";
 import { canSend, emptyDraft } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
+import { useClaudeConfig } from "./useClaudeConfig";
 import { providerIcon } from "./model";
 import { ADD_AGENT, providerOptions as agentOptions } from "./providerOptions";
 import { HOME, NO_COMMANDS, refreshProviders, startTask, updateDraft, useAgentCommands, useAgents } from "./store";
@@ -67,6 +68,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   }, [root, project?.workspace]);
 
   const provider = providers.find((p) => p.id === draft.provider) ?? providers[0];
+  const settings = useClaudeConfig(provider, draft.config.model, root);
   const probe = useProbe(provider?.installed ? provider.id : null, provider?.command);
   const agentCommands = useAgentCommands(provider?.id, null, provider?.commands ?? NO_COMMANDS);
   const providerOptions: SelectOption[] = agentOptions(providers, tx, providerIcon);
@@ -75,7 +77,11 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   const isolation = isGit ? draft.isolation : "local";
   const base = draft.base ?? current;
   const canStart =
-    canSend(composer) && !!provider?.installed && !starting && (!project?.workspace || repoState?.root === root);
+    canSend(composer) &&
+    !!provider?.installed &&
+    !starting &&
+    !settings.loading &&
+    (!project?.workspace || repoState?.root === root);
 
   const start = () => {
     if (!canStart) return;
@@ -85,7 +91,14 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setStarting(false));
   };
-  const setOption = (id: string, value: string) => updateDraft({ config: { ...draft.config, [id]: value } });
+  const setOption = (id: string, value: string) => {
+    const config = { ...draft.config, [id]: value };
+    // Each model has its own effort levels; let the new one start with its default.
+    if (settings.config.find((o) => o.id === id)?.category === "model") {
+      for (const o of settings.config.filter((o) => o.category === "thought_level")) delete config[o.id];
+    }
+    updateDraft({ config });
+  };
 
   return (
     <div className={clsx(styles.home, docked && styles.docked)}>
@@ -105,7 +118,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
           projectRoot={root}
           commands={agentCommands}
           history={history}
-          config={provider?.config ?? []}
+          config={settings.config}
           onConfig={setOption}
           onSubmit={start}
           disabled={!canStart}
@@ -120,7 +133,12 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
                   id === ADD_AGENT ? void executeAction("agents.addAgent") : updateDraft({ provider: id, config: {} })
                 }
               />
-              <ConfigPickers config={provider?.config ?? []} values={draft.config} onChange={setOption} />
+              <ConfigPickers
+                config={settings.config}
+                values={draft.config}
+                onChange={setOption}
+                disabled={settings.loading}
+              />
             </>
           }
           actions={
@@ -206,7 +224,20 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
               : [probe.name, probe.version, probe.protocol].filter(Boolean).join(" · ")}
           </p>
         )}
-        {(error || (provider && !provider.installed) || (provider && !provider.config.length)) && (
+        {settings.loading && (
+          <p className={styles.note}>
+            <T>Loading agent settings…</T>
+          </p>
+        )}
+        {settings.error && (
+          <p className={styles.warning} role="alert">
+            {settings.error}
+            <IconButton icon="refresh" title={tx("Retry")} size="small" onClick={settings.retry} />
+          </p>
+        )}
+        {(error ||
+          (provider && !provider.installed) ||
+          (provider && !settings.loading && !settings.error && !settings.config.length)) && (
           <p
             className={error || !provider?.installed ? styles.warning : styles.note}
             role={error ? "alert" : undefined}

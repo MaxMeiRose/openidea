@@ -123,6 +123,8 @@ export const commands = {
 	 *  or sign-in run). Remembered until `refresh`.
 	 */
 	agentProbe: (provider: string, refresh: boolean) => typedError<AgentProbe, IdeError>(__TAURI_INVOKE("agent_probe", { provider, refresh })),
+	/**  Discovers native Claude settings without sending a prompt or running hooks/MCP. */
+	agentConfiguration: (provider: string, model: string | null, task: string | null) => typedError<AgentConfigOption[], IdeError>(__TAURI_INVOKE("agent_configuration", { provider, model, task })),
 	/**  Stops the task's current turn, or with `subagent` only that subagent's work. */
 	agentCancel: (task: string, subagent: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_cancel", { task, subagent })),
 	/**  Answers a permission request; `option: null` cancels it. */

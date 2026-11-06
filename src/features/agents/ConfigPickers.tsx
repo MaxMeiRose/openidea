@@ -38,11 +38,13 @@ export function ConfigPickers({
   config,
   values,
   onChange,
+  disabled = false,
 }: {
   config: readonly AgentConfigOption[];
   /** Chosen values that override `current`, by option id. */
   values?: Record<string, string>;
   onChange: (option: string, value: string) => void;
+  disabled?: boolean;
 }) {
   const tx = useTx();
   const [open, setOpen] = useState(false);
@@ -60,7 +62,12 @@ export function ConfigPickers({
     <>
       {options.map((o) => (
         <span key={o.id} className={clsx(styles.configPicker, o.category !== "model" && styles.inlineSetting)}>
-          <ConfigPicker option={o} value={values?.[o.id] ?? o.current ?? null} onChange={onChange} />
+          <ConfigPicker
+            option={o}
+            value={values?.[o.id] ?? o.current ?? null}
+            onChange={onChange}
+            disabled={disabled}
+          />
         </span>
       ))}
       {secondary.length > 0 && (
@@ -88,7 +95,13 @@ export function ConfigPickers({
             {secondary.map((o) => (
               <div key={o.id} className={styles.settingsRow}>
                 <span className={styles.settingsLabel}>{tx(o.name)}</span>
-                <ConfigPicker option={o} value={values?.[o.id] ?? o.current ?? null} onChange={onChange} framed />
+                <ConfigPicker
+                  option={o}
+                  value={values?.[o.id] ?? o.current ?? null}
+                  onChange={onChange}
+                  framed
+                  disabled={disabled}
+                />
               </div>
             ))}
           </Popup>
@@ -103,11 +116,13 @@ function ConfigPicker({
   value,
   onChange,
   framed = false,
+  disabled = false,
 }: {
   option: AgentConfigOption;
   value: string | null;
   onChange: (option: string, value: string) => void;
   framed?: boolean;
+  disabled?: boolean;
 }) {
   const tx = useTx();
   return (
@@ -115,9 +130,11 @@ function ConfigPicker({
       variant={framed ? "framed" : "ghost"}
       aria-label={option.name}
       value={value}
+      disabled={disabled}
       placeholder={tx(option.name)}
       options={configPickerOptions(option).map((opt) => ({
         ...opt,
+        label: tx(opt.label),
         icon:
           option.category === "approval"
             ? opt.value === "bypass"
@@ -133,7 +150,7 @@ function ConfigPicker({
         option.category === "thought_level" && !framed
           ? (current) => (
               <span className={styles.pickerValue}>
-                <span className={styles.pickerName}>{option.name}</span>
+                <span className={styles.pickerName}>{tx(option.name)}</span>
                 {current?.label ?? tx("Default")}
               </span>
             )
