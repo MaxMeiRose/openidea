@@ -10,18 +10,29 @@ async function colors(button: Locator, variable: string) {
     const expected = getComputedStyle(probe).color;
     const primaryBackground = getComputedStyle(probe).backgroundColor;
     probe.remove();
+    const visibleVariant = (shape: Element) => {
+      for (let node: Element | null = shape; node && node !== element; node = node.parentElement) {
+        if (getComputedStyle(node).display === "none") return false;
+      }
+      return true;
+    };
     return {
       expected,
       primaryBackground,
       foreground: getComputedStyle(element).color,
       background: getComputedStyle(element).backgroundColor,
-      strokes: [...element.querySelectorAll("svg [stroke]")].map((shape) => getComputedStyle(shape).stroke),
+      strokes: [...element.querySelectorAll("svg [stroke]")]
+        .filter(visibleVariant)
+        .map((shape) => getComputedStyle(shape).stroke),
+      fills: [...element.querySelectorAll("svg > g > path[fill]")]
+        .filter(visibleVariant)
+        .map((shape) => getComputedStyle(shape).fill),
     };
   }, variable);
 }
 
 for (const theme of ["light", "dark"]) {
-  test(`API and Eureka sidebar icons inherit ${theme} selection colors`, async ({ workbench: page }) => {
+  test(`API and Eureka sidebar icons remain legible in ${theme} selection states`, async ({ workbench: page }) => {
     await page.evaluate(async (theme) => {
       const module = "/src/workbench/theme.ts";
       (await import(module)).useThemeOverride.setState({ theme });
@@ -41,12 +52,20 @@ for (const theme of ["light", "dark"]) {
       [api, "API Client"],
       [eureka, "Eureka"],
     ] as const) {
+      const idleColors = (result: Awaited<ReturnType<typeof colors>>) => {
+        if (name === "Eureka") {
+          return result.strokes.length > 0 && result.strokes.every((stroke) => stroke === result.expected);
+        }
+        const [globe, play] =
+          theme === "light" ? ["rgb(53, 116, 240)", "rgb(54, 150, 80)"] : ["rgb(84, 138, 247)", "rgb(87, 150, 92)"];
+        return result.strokes.join("|") === `${globe}|${play}` && result.fills.join("|") === play;
+      };
       await page.mouse.move(700, 300);
       await expect(button).toHaveAttribute("aria-pressed", "false");
       await expect
         .poll(async () => {
           const result = await colors(button, "--fg-icon");
-          return result.strokes.length > 0 && result.strokes.every((stroke) => stroke === result.expected);
+          return idleColors(result);
         })
         .toBe(true);
 
@@ -58,7 +77,9 @@ for (const theme of ["light", "dark"]) {
         .poll(async () => {
           const result = await colors(button, "--fg-button-primary");
           return (
-            result.foreground === "rgb(255, 255, 255)" && result.strokes.every((stroke) => stroke === result.expected)
+            result.foreground === "rgb(255, 255, 255)" &&
+            result.strokes.every((stroke) => stroke === result.expected) &&
+            result.fills.every((fill) => fill === result.expected)
           );
         })
         .toBe(true);
@@ -75,9 +96,7 @@ for (const theme of ["light", "dark"]) {
       await expect
         .poll(async () => {
           const result = await colors(button, "--fg-icon");
-          return (
-            result.strokes.every((stroke) => stroke === result.expected) && result.background !== selected.background
-          );
+          return idleColors(result) && result.background !== selected.background;
         })
         .toBe(true);
 
@@ -87,7 +106,7 @@ for (const theme of ["light", "dark"]) {
       await expect
         .poll(async () => {
           const result = await colors(button, "--fg-icon");
-          return result.strokes.every((stroke) => stroke === result.expected);
+          return idleColors(result);
         })
         .toBe(true);
     }

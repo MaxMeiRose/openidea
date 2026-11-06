@@ -86,9 +86,9 @@ describe("Icon", () => {
     expect(container.querySelector("svg")!.getAttribute("viewBox")).toBe("0 0 20 20");
   });
 
-  it.each(["toolwindow-api", "toolwindow-eureka"])("keeps %s monochrome at action and stripe sizes", (name) => {
+  it("keeps Eureka monochrome at action and stripe sizes", () => {
     for (const size of [16, 18, 20]) {
-      const { container, unmount } = render(<Icon name={name} size={size} />);
+      const { container, unmount } = render(<Icon name="toolwindow-eureka" size={size} />);
       const svg = container.querySelector("svg")!;
       expect(svg.getAttribute("viewBox")).toBe(size >= 18 ? "0 0 20 20" : "0 0 16 16");
       const strokes = [...svg.querySelectorAll("[stroke]")];
@@ -96,6 +96,16 @@ describe("Icon", () => {
       expect(strokes.every((shape) => shape.getAttribute("stroke") === "currentColor")).toBe(true);
       expect(svg.querySelectorAll("g")).toHaveLength(0);
       unmount();
+    }
+  });
+
+  it("shares the HTTP globe and play artwork between API actions, the stripe and the editor gutter", () => {
+    const withoutIds = (html: string) => html.replace(/\bm\d+-/g, "");
+    for (const size of [14, 16, 18, 20]) {
+      const stripe = iconMarkup("toolwindow-api", size)!;
+      const gutter = iconMarkup("gutter-api-request", size)!;
+      expect(withoutIds(stripe)).toBe(withoutIds(gutter));
+      for (const color of ["#3574F0", "#548AF7", "#369650", "#57965C"]) expect(stripe).toContain(color);
     }
   });
 

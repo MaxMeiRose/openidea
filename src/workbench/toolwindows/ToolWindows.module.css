@@ -277,6 +277,8 @@
   background: var(--bg-button-primary);
   color: var(--fg-button-primary);
   --icon-color: currentColor;
+  --api-icon-globe: currentColor;
+  --api-icon-play: currentColor;
 }
 .stripeButton:focus-visible {
   outline-offset: -2px;
