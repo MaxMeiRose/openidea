@@ -38,6 +38,7 @@ export function activate() {
       {
         id: "methodTest.open",
         title: "Test Java Method",
+        hidden: true,
         icon: "toolwindow-method-test",
         when: "projectOpen",
         run: ({ arg }) => {
