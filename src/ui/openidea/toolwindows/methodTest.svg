@@ -1,0 +1,6 @@
+<!-- OpenIDEA: test a method in an isolated runtime. -->
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M5 1.5H11M6 1.5V6L2.8 11.8C2.15 13 3 14.5 4.4 14.5H11.6C13 14.5 13.85 13 13.2 11.8L10 6V1.5M4.35 9H11.65" stroke="#6C707E" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="6" cy="11.5" r=".65" fill="#6C707E"/>
+<circle cx="9" cy="12" r=".65" fill="#6C707E"/>
+</svg>

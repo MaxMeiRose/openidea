@@ -2,7 +2,7 @@
 
 Open a local Maven project's Java Service or implementation file and click the test icon beside a public method. The editor context menu also offers **Test Java Method**. Interface declarations require a fully qualified implementation class; open the implementation file when it belongs to a different Maven module.
 
-Enter arguments as a JSON array in declaration order. DTOs, enums, arrays, `List<DTO>` and `Map<String, DTO>` use the declared Java types. Saved cases are local to the project and include arguments, dependency choices and environment settings.
+The Parameters view generates one field per declared parameter. Enter strings directly without quotes or array brackets; numbers and booleans have their own controls, while DTOs, arrays, `List<DTO>` and `Map<String, DTO>` use JSON fields. Reference parameters have an explicit `null` toggle. The optional JSON view edits the complete positional array. Long integers retain their exact digits; decimal inputs for `BigDecimal` are encoded as text to avoid JavaScript precision loss. Saved cases are local to the project and include arguments, dependency choices and environment settings.
 
 **Object** constructs the selected class and supplies configured constructor/field dependencies. It does not provide Spring transactions, property injection or other interceptors. **Spring** creates an `AnnotationConfigApplicationContext` with the target, explicit configuration classes and selected dependency classes. It invokes through the Spring proxy, including JDK interface proxies. Register the infrastructure configuration needed for transactions, persistence, caching or other framework behavior. Spring and Maven profiles are configured separately.
 

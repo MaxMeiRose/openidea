@@ -15,6 +15,7 @@ import {
 } from "./store";
 import { methodKey, methodLabel } from "./model";
 import styles from "./MethodTest.module.css";
+import { ArgumentsEditor } from "./ArgumentsEditor";
 
 const DEPENDENCY_EXAMPLE = JSON.stringify(
   {
@@ -194,12 +195,12 @@ export function MethodTestView() {
       />
       <div className={styles.content}>
         {tab === "arguments" && (
-          <>
-            <p className={styles.hint}>
-              <T>JSON array, in parameter order. Objects and collections are converted to the declared Java types.</T>
-            </p>
-            {jsonEditor("Method arguments", draft.argumentsJson, update("argumentsJson"))}
-          </>
+          <ArgumentsEditor
+            key={methodKey(draft.target)}
+            draft={draft}
+            disabled={running}
+            onChange={update("argumentsJson")}
+          />
         )}
         {tab === "dependencies" && (
           <>
