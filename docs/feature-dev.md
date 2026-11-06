@@ -20,11 +20,13 @@ Windows x64 包通过 IPC 生成一致性、相关 Rust 测试、前端类型检
 ```powershell
 pwsh -File scripts/windows/register-feature-dev-update.ps1
 pwsh -File scripts/windows/update-feature-dev.ps1 -CheckOnly
+pwsh -File scripts/windows/update-feature-dev.ps1 -DownloadOnly
 pwsh -File scripts/windows/update-feature-dev.ps1
 ```
 
 任务 `OpenIDEA FeatureDev Update` 在当前用户登录后每小时检查一次；电脑关闭或未登录时不会安装。
 软件运行中会延后，软件关闭后下载、校验 SHA-256、备份旧程序，再静默安装并核对程序哈希。
+已校验的安装包会复用；`-DownloadOnly` 可在软件运行时提前下载，随后关闭软件再安装。
 安装目录默认 `%LOCALAPPDATA%\OpenIDEA`；记录、下载缓存和程序备份在 `%LOCALAPPDATA%\OpenIDEA-FeatureDev`。
 不删除应用设置和项目数据。停止自动更新可运行 `Unregister-ScheduledTask -TaskName 'OpenIDEA FeatureDev Update' -Confirm:$false`。
 

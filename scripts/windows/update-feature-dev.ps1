@@ -4,7 +4,8 @@ param(
     [string]$InstallDirectory = "$env:LOCALAPPDATA\OpenIDEA",
     [string]$StateDirectory = "$env:LOCALAPPDATA\OpenIDEA-FeatureDev",
     [string]$Tag,
-    [switch]$CheckOnly
+    [switch]$CheckOnly,
+    [switch]$DownloadOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -38,7 +39,7 @@ function Test-AppRunning {
 try {
     $acquired = $mutex.WaitOne(0)
     if (!$acquired) { Write-UpdateLog 'Another update is running; skipped.'; exit 0 }
-    if (!$CheckOnly -and (Test-AppRunning)) {
+    if (!$CheckOnly -and !$DownloadOnly -and (Test-AppRunning)) {
         Write-UpdateLog 'OpenIDEA is running; installation deferred until the next check.'
         exit 0
     }
@@ -65,11 +66,14 @@ try {
         exit 0
     }
     if ($CheckOnly) { Write-UpdateLog "Available: $Tag ($($manifest.commit)); no installation requested."; exit 0 }
-    Invoke-Gh -Arguments @('release', 'download', $Tag, '--repo', $Repository, '--dir', $downloadDirectory, '--pattern', $manifest.installerName, '--clobber') | Out-Null
     $installer = Join-Path $downloadDirectory $manifest.installerName
+    if (!(Test-Path -LiteralPath $installer) -or (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne $manifest.installerSha256) {
+        Invoke-Gh -Arguments @('release', 'download', $Tag, '--repo', $Repository, '--dir', $downloadDirectory, '--pattern', $manifest.installerName, '--clobber') | Out-Null
+    }
     if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne $manifest.installerSha256) {
         throw 'Installer SHA-256 does not match the published build manifest'
     }
+    if ($DownloadOnly) { Write-UpdateLog "Downloaded and verified: $Tag; installer: $installer"; exit 0 }
     if (Test-AppRunning) { Write-UpdateLog 'OpenIDEA started during download; installation deferred.'; exit 0 }
     $backupDirectory = Join-Path (Join-Path $StateDirectory 'backups') (Get-Date -Format 'yyyyMMdd-HHmmss-fff')
     New-Item -ItemType Directory -Force -Path $backupDirectory | Out-Null

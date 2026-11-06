@@ -79,14 +79,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with: { key: feature-dev-windows-release, cache-on-failure: true }
       - run: pnpm install --frozen-lockfile
-      - name: Generate IPC bindings and test integration
+      - name: Generate IPC bindings
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           cargo test --locked --release -p openidea --test export_bindings
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git diff --exit-code src/bindings.ts
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          exit $LASTEXITCODE
+      - name: Test Rust integration
+        shell: pwsh
+        run: |
           cargo test --locked --release -p ide-agent -p ide-http -p ide-run -p openidea --lib
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@v4
