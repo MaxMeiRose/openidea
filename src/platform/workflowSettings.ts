@@ -5,6 +5,7 @@
  */
 import { useProject } from "./project";
 import { DEFAULT_REMOTE, validateRemote, type RemoteSettings } from "./remoteSettings";
+import type { CommitAiProvider } from "./commitAiSettings";
 
 export type UpdateMethod = "merge" | "rebase";
 export type IncomingCheck = "auto" | "always" | "never";
@@ -50,6 +51,10 @@ export interface CommitSettingsValid {
   bodyLimit: number;
   showRightMargin: boolean;
   wrapAtMargin: boolean;
+  aiProvider: CommitAiProvider;
+  aiCodexModel: string;
+  aiClaudeModel: string;
+  aiPrompt: string;
 }
 
 export interface VcsSettingsValid {
@@ -215,6 +220,10 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       bodyLimit: 72,
       showRightMargin: true,
       wrapAtMargin: false,
+      aiProvider: "codex",
+      aiCodexModel: "",
+      aiClaudeModel: "",
+      aiPrompt: "",
     },
     confirmation: {
       onCreate: "ask",
@@ -342,6 +351,10 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       bodyLimit: num(c.bodyLimit, d.commit.bodyLimit, L.messageLimit, true),
       showRightMargin: bool(c.showRightMargin, d.commit.showRightMargin),
       wrapAtMargin: bool(c.wrapAtMargin, d.commit.wrapAtMargin),
+      aiProvider: oneOf(c.aiProvider, ["codex", "claude"] as const, d.commit.aiProvider),
+      aiCodexModel: text(c.aiCodexModel, d.commit.aiCodexModel).trim(),
+      aiClaudeModel: text(c.aiClaudeModel, d.commit.aiClaudeModel).trim(),
+      aiPrompt: text(c.aiPrompt, d.commit.aiPrompt),
     },
     confirmation: {
       onCreate: oneOf(conf.onCreate, confirm, d.confirmation.onCreate),

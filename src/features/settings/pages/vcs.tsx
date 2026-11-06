@@ -8,7 +8,14 @@ import { useEffect, useId, useState } from "react";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { WORKFLOW_LIMITS, type IssueLinkValid } from "@/platform/workflowSettings";
-import { Button, Icon, Input, type SelectOption, T } from "@/ui";
+import { Button, Icon, IconButton, Input, Select, type SelectOption, T } from "@/ui";
+import {
+  COMMIT_AI_PROVIDERS,
+  commitAiModelKey,
+  effectiveCommitAiPrompt,
+  type CommitAiProvider,
+} from "@/platform/commitAiSettings";
+import { commitAiModelOptions, useCommitAiModels } from "@/platform/commitAiModels";
 import { Row, SettingSelect } from "../components/Form";
 import { useSetting } from "../components/context";
 import type { PageSpec } from "./spec";
@@ -284,6 +291,74 @@ function CommitChecks() {
   );
 }
 
+function CommitAiSettings() {
+  const [provider, setProvider] = useSetting<CommitAiProvider>("vcs.commit.aiProvider");
+  const selectedProvider = provider === "claude" ? "claude" : "codex";
+  const [model, setModel] = useSetting<string>(commitAiModelKey(selectedProvider));
+  const [prompt, setPrompt] = useSetting<string>("vcs.commit.aiPrompt");
+  const repo = useProject((state) => state.project?.root ?? null);
+  const catalog = useCommitAiModels(selectedProvider, repo);
+  const id = useId();
+  return (
+    <>
+      <Row label="Commit AI provider" hint="Uses your installed and signed-in Codex or Claude Code CLI.">
+        <Select
+          aria-label={tx("Commit AI provider")}
+          value={selectedProvider}
+          options={COMMIT_AI_PROVIDERS}
+          onChange={setProvider}
+        />
+      </Row>
+      <Row label="Commit AI model">
+        <div className={styles.commitAiModels}>
+          <Select
+            aria-label={tx("Commit AI model")}
+            value={model ?? ""}
+            options={commitAiModelOptions(catalog.models, model ?? "")}
+            onChange={setModel}
+            searchable
+          />
+          <IconButton
+            icon="refresh"
+            title="Refresh AI models"
+            disabled={catalog.loading || !repo}
+            onClick={catalog.refresh}
+          />
+          {catalog.loading && (
+            <span className={styles.inlineHint}>
+              <T>Loading models…</T>
+            </span>
+          )}
+        </div>
+      </Row>
+      {catalog.error && (
+        <div className={styles.inlineHint} role="alert">
+          {catalog.error}
+        </div>
+      )}
+      <Row
+        label="Commit message prompt"
+        htmlFor={id}
+        stacked
+        hint="The prompt applies to AI commit messages. Selected changes and the interface language are supplied automatically."
+      >
+        <textarea
+          id={id}
+          className={styles.commitAiPrompt}
+          aria-label={tx("Commit message prompt")}
+          rows={9}
+          maxLength={16_000}
+          value={effectiveCommitAiPrompt(prompt ?? "")}
+          onChange={(event) => setPrompt(event.target.value)}
+        />
+      </Row>
+      <Button onClick={() => setPrompt("")}>
+        <T>Restore default prompt</T>
+      </Button>
+    </>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Issue Navigation
 
@@ -360,7 +435,17 @@ export const VCS_PAGES: PageSpec[] = [
     title: "Commit",
     order: 1,
     projectScope: true,
-    keywords: ["commit checks", "commit message", "modal commit", "commit dialog"],
+    keywords: [
+      "commit checks",
+      "commit message",
+      "modal commit",
+      "commit dialog",
+      "AI",
+      "Codex",
+      "Claude Code",
+      "prompt",
+      "model",
+    ],
     sections: [
       {
         options: [
@@ -371,6 +456,17 @@ export const VCS_PAGES: PageSpec[] = [
             hint: "When off, Local Changes and Stash are tabs of the Git tool window and Commit opens a dialog.",
           },
           { kind: "toggle", key: "vcs.commit.clearInitialMessage", label: "Clear initial commit message" },
+        ],
+      },
+      {
+        title: "AI Commit Message",
+        options: [
+          {
+            kind: "custom",
+            label: "Commit AI provider",
+            keywords: ["Commit AI model", "Commit message prompt", "Restore default prompt"],
+            component: CommitAiSettings,
+          },
         ],
       },
       {

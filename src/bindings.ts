@@ -152,6 +152,8 @@ export const commands = {
 	 *  or sign-in run). Remembered until `refresh`.
 	 */
 	agentProbe: (provider: string, refresh: boolean) => typedError<AgentProbe, IdeError>(__TAURI_INVOKE("agent_probe", { provider, refresh })),
+	agentModels: (provider: string, repo: IpcPath, refresh: boolean, request: RequestId) => typedError<AgentConfigValue[], IdeError>(__TAURI_INVOKE("agent_models", { provider, repo, refresh, request })),
+	agentGenerateCommitMessage: (provider: string, repo: IpcPath, model: string | null, prompt: string, request: RequestId) => typedError<string, IdeError>(__TAURI_INVOKE("agent_generate_commit_message", { provider, repo, model, prompt, request })),
 	/**  Stops the task's current turn, or with `subagent` only that subagent's work. */
 	agentCancel: (task: string, subagent: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_cancel", { task, subagent })),
 	/**  Answers a permission request; `option: null` cancels it. */
@@ -2265,6 +2267,11 @@ export type CommitSettings = {
 	bodyLimit?: number,
 	showRightMargin?: boolean,
 	wrapAtMargin?: boolean,
+	aiProvider?: string,
+	aiCodexModel?: string,
+	aiClaudeModel?: string,
+	/**  Empty uses the UI's localized default commit-message prompt. */
+	aiPrompt?: string,
 };
 
 export type Commit_Deserialize = {

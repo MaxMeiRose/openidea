@@ -166,6 +166,32 @@
 .commitActions > button {
   flex: none;
 }
+.aiBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+}
+.aiModel {
+  flex: 1;
+  min-width: 90px;
+}
+.aiGenerate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+}
+.aiHint {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.aiError {
+  max-height: 64px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
 .commitActions > .pushButton {
   flex: 0 1 auto;
   min-width: 0;

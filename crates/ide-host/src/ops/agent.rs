@@ -5,8 +5,8 @@ use crate::Host;
 use crate::rpc::Dispatcher;
 use ide_agent::registry::{AgentRegistry, RegistryPaths};
 use ide_agent::{
-    AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask,
-    NewAgentTask,
+    AgentChange, AgentCommand, AgentConfigValue, AgentEntry, AgentEvent, AgentProbe, AgentPrompt, AgentProvider,
+    AgentQueued, AgentTask, NewAgentTask,
 };
 use ide_core::error::ErrorKind;
 use ide_core::{IdeError, IdeEvent, IdeResult, IpcPath, RequestId, SharedSink, TaskId};
@@ -233,6 +233,51 @@ pub async fn probe(host: &Host, window: &str, provider: String, refresh: bool) -
     host.project(window)?.agents.probe(&provider, refresh).await
 }
 
+pub async fn models(
+    host: &Host,
+    window: &str,
+    provider: String,
+    repo: IpcPath,
+    refresh: bool,
+    request: RequestId,
+) -> IdeResult<Vec<AgentConfigValue>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let root = project.root.clone();
+    let repos = project.repos();
+    let cancel = host.begin_request(request);
+    let result = async {
+        let cwd = host.blocking(move || validate_commit_root(&root, &repos, &repo.0)).await?;
+        project.agents.models(&provider, &cwd, refresh, &cancel).await
+    }
+    .await;
+    host.end_request(request);
+    result
+}
+
+pub async fn generate_commit_message(
+    host: &Host,
+    window: &str,
+    provider: String,
+    repo: IpcPath,
+    model: Option<String>,
+    prompt: String,
+    request: RequestId,
+) -> IdeResult<String> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let root = project.root.clone();
+    let repos = project.repos();
+    let cancel = host.begin_request(request);
+    let result = async {
+        let cwd = host.blocking(move || validate_commit_root(&root, &repos, &repo.0)).await?;
+        project.agents.generate_commit_message(&provider, &cwd, model.as_deref(), &prompt, &cancel).await
+    }
+    .await;
+    host.end_request(request);
+    result
+}
+
 /// Stops the task's current turn, or with `subagent` only that subagent's work.
 pub fn cancel(host: &Host, window: &str, task: String, subagent: Option<String>) -> IdeResult<()> {
     host.project(window)?.agents.cancel(&task, subagent)
@@ -296,6 +341,21 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_fork", |c| async move { fork(&c.host, &c.window, c.arg("task")?, c.arg("turns")?).await });
     d.add("agent_rollback", |c| async move { rollback(&c.host, &c.window, c.arg("task")?, c.arg("turns")?).await });
     d.add("agent_probe", |c| async move { probe(&c.host, &c.window, c.arg("provider")?, c.arg("refresh")?).await });
+    d.add("agent_models", |c| async move {
+        models(&c.host, &c.window, c.arg("provider")?, c.arg("repo")?, c.arg("refresh")?, c.arg("request")?).await
+    });
+    d.add("agent_generate_commit_message", |c| async move {
+        generate_commit_message(
+            &c.host,
+            &c.window,
+            c.arg("provider")?,
+            c.arg("repo")?,
+            c.arg("model")?,
+            c.arg("prompt")?,
+            c.arg("request")?,
+        )
+        .await
+    });
     d.add("agent_cancel", |c| async move { cancel(&c.host, &c.window, c.arg("task")?, c.arg("subagent")?) });
     d.add("agent_respond", |c| async move {
         respond(&c.host, &c.window, c.arg("task")?, c.arg("permission")?, c.arg("option")?)
@@ -308,6 +368,21 @@ pub(crate) fn register(d: &mut Dispatcher) {
     );
     d.add("agent_changes", |c| async move { changes(&c.host, &c.window, c.arg("task")?).await });
     d.add("agent_base_text", |c| async move { base_text(&c.host, &c.window, c.arg("task")?, c.arg("path")?).await });
+}
+
+fn validate_commit_root(
+    root: &std::path::Path,
+    repos: &ide_vcs::Repos,
+    requested: &std::path::Path,
+) -> IdeResult<std::path::PathBuf> {
+    if !requested.is_absolute() {
+        return Err(IdeError::invalid("Choose an absolute repository root"));
+    }
+    let requested = dunce::canonicalize(requested)?;
+    if requested == dunce::canonicalize(root)? || repos.at_root(&requested).is_some() {
+        return Ok(requested);
+    }
+    Err(IdeError::invalid("AI commit messages require the window project or one of its Git repositories"))
 }
 
 fn validate_project_root(root: &std::path::Path, requested: Option<&std::path::Path>) -> IdeResult<std::path::PathBuf> {
@@ -330,6 +405,26 @@ fn validate_project_root(root: &std::path::Path, requested: Option<&std::path::P
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commit_ai_accepts_discovered_git_roots_and_rejects_other_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("workspace");
+        let repo = root.join("frontend");
+        let child = repo.join("src");
+        let outside = tmp.path().join("outside");
+        for dir in [&root, &repo, &child, &outside] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        ide_vcs::init(&repo).unwrap();
+        ide_vcs::init(&outside).unwrap();
+        let repos = ide_vcs::Repos::discover(&root, &|_| false).unwrap();
+        assert_eq!(validate_commit_root(&root, &repos, &root).unwrap(), dunce::canonicalize(&root).unwrap());
+        assert_eq!(validate_commit_root(&root, &repos, &repo).unwrap(), dunce::canonicalize(&repo).unwrap());
+        for rejected in [child, outside, "relative".into()] {
+            assert!(validate_commit_root(&root, &repos, &rejected).is_err(), "{rejected:?}");
+        }
+    }
 
     #[test]
     fn an_agent_installs_once_at_a_time() {

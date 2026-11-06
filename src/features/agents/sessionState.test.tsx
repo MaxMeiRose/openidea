@@ -176,6 +176,35 @@ describe("a pending permission request in the conversation", () => {
 });
 
 describe("session state across tasks and hosts", () => {
+  it("keeps a visible run badge and updates it after execution ends", () => {
+    const view = render(<SessionEditor input={input("A")} />);
+    const badge = screen.getByRole("status", { name: "Agent run status" });
+    act(() =>
+      useAgents.setState((state) => ({ tasks: new Map(state.tasks).set("A", { ...task("A"), status: "running" }) })),
+    );
+    expect(badge).toHaveTextContent("Running");
+    expect(badge).toHaveAttribute("data-state", "running");
+    expect(badge).toHaveAttribute("title", "Running");
+    act(() =>
+      useAgents.setState((state) => ({ tasks: new Map(state.tasks).set("A", { ...task("A"), status: "ready" }) })),
+    );
+    expect(badge).toHaveTextContent("Run finished");
+    expect(badge).toHaveAttribute("data-state", "finished");
+    expect(badge).toHaveAttribute("title", "Run finished");
+    act(() =>
+      useAgents.setState((state) => ({ tasks: new Map(state.tasks).set("A", { ...task("A"), status: "failed" }) })),
+    );
+    expect(badge).toHaveTextContent("Failed");
+    expect(badge).not.toHaveTextContent("Run finished");
+    view.unmount();
+  });
+
+  it("keeps a fresh, unstarted task in Ready rather than marking it finished", () => {
+    useAgents.setState({ entries: new Map([["A", []]]) });
+    render(<SessionEditor input={input("A")} />);
+    expect(screen.getByRole("status", { name: "Agent run status" })).toHaveTextContent("Ready");
+  });
+
   it("keeps approval controls available while reading a subagent and reviewing changes", async () => {
     backend.changes = [{ path: "/project/a.ts", relPath: "a.ts", kind: "modified", added: 1, removed: 0 }];
     backend.entries.set("A", [

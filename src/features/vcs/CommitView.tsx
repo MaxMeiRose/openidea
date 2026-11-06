@@ -50,6 +50,8 @@ import {
 } from "./changes";
 import { applyStash, commitChanges, deleteFiles, dropStash, showUnstashDialog, stashChanges } from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
+import { CommitAiControls } from "./CommitAiControls";
+import { useCommitAi } from "./commitAi";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
 import { moveToChangelist } from "./changelistsUi";
 import {
@@ -376,7 +378,7 @@ function ChangesPanel() {
             <ChangesTree mode="commit" />
           </SplitPanel>
           <SplitHandle />
-          <SplitPanel defaultSize="38%" minSize="120px">
+          <SplitPanel defaultSize="38%" minSize="240px">
             <CommitPanel included={included} />
           </SplitPanel>
         </SplitGroup>
@@ -774,8 +776,9 @@ export function useCommitRunner(included: number, onCommitted?: () => void): Com
   const merging = useVcs((s) => s.branch?.operation === "merge");
   const [emptyError, setEmptyError] = useState(false);
   const [busy, setBusy] = useState(false);
+  const generating = useCommitAi((state) => state.request !== null);
   const run = async (push: boolean) => {
-    if (busy) return;
+    if (busy || useCommitAi.getState().request !== null) return;
     // IDEA keeps Commit enabled and reports an empty message at the field.
     if (!useCommit.getState().message.trim() && !useCommit.getState().amend) {
       setEmptyError(true);
@@ -796,7 +799,7 @@ export function useCommitRunner(included: number, onCommitted?: () => void): Com
     busy,
     emptyError,
     clearEmptyError: () => setEmptyError(false),
-    canCommit: (included > 0 || amend || merging) && !busy,
+    canCommit: (included > 0 || amend || merging) && !busy && !generating,
     run,
   };
 }
@@ -872,6 +875,7 @@ export function CommitMessageField({ included, runner }: { included: number; run
           </span>
         )}
       </div>
+      <CommitAiControls included={included} busy={runner.busy} />
       <textarea
         ref={ref}
         className={clsx(styles.message, !showMargin && styles.noMargin, emptyError && styles.messageError)}

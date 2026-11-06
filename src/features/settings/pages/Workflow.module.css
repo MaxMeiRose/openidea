@@ -3,6 +3,23 @@
   flex-direction: column;
   padding-left: 20px;
 }
+.commitAiModels {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.commitAiPrompt {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-input);
+  color: var(--fg);
+  font: inherit;
+  line-height: 1.5;
+}
 .matched {
   background: color-mix(in srgb, var(--warning) 8%, transparent);
 }

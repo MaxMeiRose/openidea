@@ -8,6 +8,7 @@
 //! next prompt when the agent supports `session/load`.
 
 mod acp;
+mod commit_message;
 mod config;
 mod conversation;
 mod model;
@@ -97,6 +98,9 @@ struct Shared {
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
     probes: Mutex<HashMap<String, AgentProbe>>,
+    model_cache: Mutex<HashMap<(String, PathBuf), ModelCatalog>>,
+    model_request: AtomicU64,
+    completion_cancel: ide_core::CancellationToken,
     /// [`IDLE_RELEASE`], in milliseconds (shorter in tests).
     idle_release_ms: AtomicU64,
 }
@@ -109,6 +113,12 @@ struct Known {
     /// By project root: skills and custom commands differ per project.
     #[serde(default, rename = "projectCommands")]
     commands: HashMap<String, Vec<AgentCommand>>,
+}
+
+#[derive(Default)]
+struct ModelCatalog {
+    revision: u64,
+    values: Option<Vec<AgentConfigValue>>,
 }
 
 impl Shared {
@@ -278,6 +288,9 @@ impl AgentManager {
             known: Mutex::new(known),
             providers,
             probes: Mutex::new(HashMap::new()),
+            model_cache: Mutex::new(HashMap::new()),
+            model_request: AtomicU64::new(0),
+            completion_cancel: ide_core::CancellationToken::new(),
             idle_release_ms: AtomicU64::new(IDLE_RELEASE.as_millis() as u64),
         });
         let mut tasks = HashMap::new();
@@ -334,8 +347,59 @@ impl AgentManager {
             let new = specs.iter().find(|p| &p.id == id);
             matches!((old, new), (Some(a), Some(b)) if a.command == b.command && a.args == b.args && a.env == b.env)
         });
+        if *prev != specs {
+            self.shared.model_cache.lock().clear();
+        }
         *prev = specs;
         list
+    }
+
+    /// Model choices without opening or modifying a visible agent task.
+    pub async fn models(
+        &self,
+        provider: &str,
+        cwd: &Path,
+        refresh: bool,
+        cancel: &ide_core::CancellationToken,
+    ) -> IdeResult<Vec<AgentConfigValue>> {
+        if cancel.is_cancelled() || self.shared.completion_cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let key = (provider.to_owned(), cwd.to_path_buf());
+        if !refresh && let Some(values) = self.shared.model_cache.lock().get(&key).and_then(|c| c.values.clone()) {
+            return Ok(values);
+        }
+        let spec = self.shared.spec(provider).ok_or_else(|| IdeError::invalid(format!("unknown agent {provider}")))?;
+        let revision = self.shared.model_request.fetch_add(1, Ordering::Relaxed) + 1;
+        self.shared.model_cache.lock().entry(key.clone()).or_default().revision = revision;
+        let values = tokio::select! {
+            biased;
+            _ = self.shared.completion_cancel.cancelled() => return Err(IdeError::cancelled()),
+            result = commit_message::models(&spec, cwd, cancel) => result?,
+        };
+        if let Some(cached) = self.shared.model_cache.lock().get_mut(&key)
+            && cached.revision == revision
+        {
+            cached.values = Some(values.clone());
+        }
+        Ok(values)
+    }
+
+    /// A tool-free commit-message request, independent of conversations and their models.
+    pub async fn generate_commit_message(
+        &self,
+        provider: &str,
+        cwd: &Path,
+        model: Option<&str>,
+        input: &str,
+        cancel: &ide_core::CancellationToken,
+    ) -> IdeResult<String> {
+        let spec = self.shared.spec(provider).ok_or_else(|| IdeError::invalid(format!("unknown agent {provider}")))?;
+        tokio::select! {
+            biased;
+            _ = self.shared.completion_cancel.cancelled() => Err(IdeError::cancelled()),
+            result = commit_message::generate(&spec, cwd, model, input, cancel) => result,
+        }
     }
 
     /// Overrides built-in `id`'s command with `command` (the driver and arguments stay
@@ -360,6 +424,7 @@ impl AgentManager {
         let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref());
         *self.shared.providers.write() = specs;
         self.shared.probes.lock().clear();
+        self.shared.model_cache.lock().clear();
         self.shared.emit(AgentEvent::Providers);
     }
 
@@ -888,6 +953,7 @@ impl AgentManager {
 
     /// Stops every agent (project closed).
     pub fn shutdown(&self) {
+        self.shared.completion_cancel.cancel();
         for task in self.tasks.read().values() {
             task.kill();
             // What arrived after the last save (a subagent's late updates).

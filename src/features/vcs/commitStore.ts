@@ -1,9 +1,10 @@
 /** Commit tool window state shared with actions (selection, message draft). */
 import { create } from "zustand";
 import { call, commands } from "@/platform/ipc";
-import type { CheckState } from "./changes";
+import { groupOf, type CheckState } from "./changes";
 import type { CommitProblem } from "./commitChecks";
-import { currentRepo, useVcs } from "./store";
+import { currentRepoRoot, useVcs } from "./store";
+import { rootOf, stripSlash } from "./model";
 
 interface CommitState {
   message: string;
@@ -133,6 +134,75 @@ export function rememberMessage(message: string) {
 
 /** The message typed before Amend replaced it, and the amended commit's message. */
 let amendData: { before: string; amend: string } | null = null;
+let amendLoad = 0;
+let amendSelection: {
+  root: string | null;
+  repo: string;
+  before: Map<string, CheckState>;
+  hunks: Map<string, Set<string>>;
+  applied: Map<string, CheckState>;
+} | null = null;
+
+/** New changes join Amend; an explicit exclusion is kept until the repository changes. */
+export function synchronizeAmendChecks() {
+  if (!useCommit.getState().amend) return;
+  const repo = currentRepoRoot();
+  if (!repo) return;
+  const { root, status, roots } = useVcs.getState();
+  const { checks, excludedHunks } = useCommit.getState();
+  const reset = !amendSelection || amendSelection.root !== root || amendSelection.repo !== repo;
+  if (!amendSelection || amendSelection.root !== root) {
+    amendSelection = {
+      root,
+      repo,
+      before: new Map(checks),
+      hunks: new Map([...excludedHunks].map(([path, keys]) => [path, new Set(keys)])),
+      applied: new Map(),
+    };
+  }
+  amendSelection.repo = repo;
+  const next = new Map(checks);
+  const hunks = new Map(excludedHunks);
+  for (const file of status) {
+    if (!reset && next.has(file.path)) continue;
+    const group = groupOf(file);
+    const include =
+      stripSlash(file.path) !== repo &&
+      rootOf(file.path, roots.length ? roots : [repo]) === repo &&
+      (group === "changes" || group === "unversioned");
+    const value: CheckState = include ? "all" : "none";
+    next.set(file.path, value);
+    amendSelection.applied.set(file.path, value);
+    if (include) hunks.delete(file.path);
+  }
+  if (
+    next.size !== checks.size ||
+    [...next].some(([path, value]) => checks.get(path) !== value) ||
+    hunks.size !== excludedHunks.size
+  ) {
+    useCommit.setState({ checks: next, excludedHunks: hunks });
+  }
+}
+
+function restoreAmendSelection() {
+  const saved = amendSelection;
+  amendSelection = null;
+  if (!saved || saved.root !== useVcs.getState().root) return;
+  const { checks, excludedHunks } = useCommit.getState();
+  const next = new Map(checks);
+  const hunks = new Map(excludedHunks);
+  const live = new Set(useVcs.getState().status.map((file) => file.path));
+  for (const [path, applied] of saved.applied) {
+    if (!live.has(path) || checks.get(path) !== applied) continue;
+    const before = saved.before.get(path);
+    if (before === undefined) next.delete(path);
+    else next.set(path, before);
+    const keys = saved.hunks.get(path);
+    if (keys) hunks.set(path, new Set(keys));
+    else hunks.delete(path);
+  }
+  useCommit.setState({ checks: next, excludedHunks: hunks });
+}
 
 /**
  * Amend checkbox, as in IDEA: checking it replaces the message
@@ -140,17 +210,24 @@ let amendData: { before: string; amend: string } | null = null;
  * Amend is unchecked again, unless the amend message was edited meanwhile).
  */
 export async function setAmend(on: boolean) {
+  const wasOn = useCommit.getState().amend;
+  const request = ++amendLoad;
+  const repo = currentRepoRoot();
+  const draft = useCommit.getState().message;
   useCommit.setState({ amend: on });
   if (!on) {
+    restoreAmendSelection();
     const data = amendData;
     amendData = null;
     if (data && useCommit.getState().message === data.amend) useCommit.setState({ message: data.before });
     return;
   }
+  if (!wasOn || !amendData) amendData = { before: draft, amend: "" };
+  synchronizeAmendChecks();
   let last: string | undefined;
   try {
     const [head] = await call(
-      commands.vcsLog(currentRepo(), {
+      commands.vcsLog(repo, {
         branch: "HEAD",
         path: null,
         author: null,
@@ -164,16 +241,24 @@ export async function setAmend(on: boolean) {
   } catch {
     // No commits yet.
   }
-  const before = useCommit.getState().message;
-  if (!last || !useCommit.getState().amend || before.trim() === last.trim()) return;
-  rememberMessage(before);
-  amendData = { before, amend: last };
+  if (
+    !last ||
+    request !== amendLoad ||
+    repo !== currentRepoRoot() ||
+    !useCommit.getState().amend ||
+    useCommit.getState().message !== draft
+  )
+    return;
+  rememberMessage(amendData?.before ?? draft);
+  amendData = { before: amendData?.before ?? draft, amend: last };
   useCommit.setState((s) => ({ message: last, focusTick: s.focusTick + 1 }));
 }
 
 /** After a commit: nothing to restore. */
 export function forgetAmendDraft() {
+  amendLoad++;
   amendData = null;
+  amendSelection = null;
 }
 
 /** The message a commit left in the field (not typed since). */
@@ -260,7 +345,7 @@ export function installPreparedMessage(): () => void {
   return useVcs.subscribe((s, prev) => {
     if (s.root !== prev.root) {
       // Another repository: nothing typed or ticked for the previous one carries over (Amend least of all).
-      amendData = null;
+      forgetAmendDraft();
       keptMessage = null;
       useCommit.setState({
         message: "",
@@ -276,6 +361,11 @@ export function installPreparedMessage(): () => void {
       else void loadTemplate();
       return;
     }
+    if (s.repo !== prev.repo && useCommit.getState().amend) {
+      void setAmend(true);
+      return;
+    }
+    if (s.status !== prev.status) synchronizeAmendChecks();
     const now = op(s);
     if (now !== op(prev) && PREPARED_MESSAGE_OPS.has(now ?? "")) void load();
   });

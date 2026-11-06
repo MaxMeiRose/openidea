@@ -40,6 +40,38 @@ async function seedAndDock(page: Page) {
   await page.locator("span[title='Repro task']").first().waitFor();
 }
 
+test("keeps the agent run status visible and changes it when execution ends", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await page.getByRole("tree", { name: "Project" }).waitFor();
+  await seedAndDock(page);
+  await page.evaluate(async () => {
+    const storePath = "/src/features/agents/store.ts";
+    const { useAgents } = await import(storePath);
+    useAgents.setState((state: { tasks: Map<string, typeof TASK> }) => ({
+      tasks: new Map(state.tasks).set("t1", {
+        ...state.tasks.get("t1"),
+        status: "running",
+        model: "a-very-long-model-name-that-must-not-hide-the-run-status",
+      }),
+    }));
+  });
+  const badge = page.getByRole("status", { name: "Agent run status" });
+  await expect(badge).toHaveText("Running");
+  await expect(badge).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("agent-running.png"), animations: "disabled" });
+  await page.evaluate(async () => {
+    const storePath = "/src/features/agents/store.ts";
+    const { useAgents } = await import(storePath);
+    useAgents.setState((state: { tasks: Map<string, typeof TASK> }) => ({
+      tasks: new Map(state.tasks).set("t1", { ...state.tasks.get("t1"), status: "ready" }),
+      entries: new Map([["t1", [{ type: "agent", text: "The requested work is complete." }]]]),
+    }));
+  });
+  await expect(badge).toHaveText("Run finished");
+  await expect(badge).toHaveAttribute("data-state", "finished");
+  await page.screenshot({ path: testInfo.outputPath("agent-finished.png"), animations: "disabled" });
+});
+
 test("keeps the current conversation docked when dragged onto an editor", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("tree", { name: "Project" }).waitFor();

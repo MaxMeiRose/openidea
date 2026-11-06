@@ -35,7 +35,7 @@ import {
 } from "@/ui";
 import { useTx, tx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
-import { TaskStatusIcon } from "./AgentsView";
+import { TaskRunStatus } from "./TaskRunStatus";
 import { Composer } from "./Composer";
 import { SubmitButton } from "./SubmitButton";
 import { canSend, costLabel, emptyDraft, limitLabel, retryParts, usageLabel, workTime } from "./composerModel";
@@ -57,7 +57,6 @@ import {
   findSubagent,
   isBusy,
   providerIcon,
-  statusLabel,
   subagentStatusLabel,
   subagentTitle,
   subagentWorking,
@@ -254,7 +253,7 @@ function Header({
         showContextMenu(e, taskMenu([task]));
       }}
     >
-      <TaskStatusIcon status={task.status} />
+      <TaskRunStatus task={task} entries={entries} />
       {!docked && (
         <span className={styles.title} title={task.title}>
           {task.title}
@@ -273,8 +272,6 @@ function Header({
               {head ? ` · ${head}` : ""}
             </>
           )}
-          {" · "}
-          <T>{statusLabel(task.status)}</T>
           {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
         </span>
       </span>
@@ -1496,12 +1493,14 @@ function ChangesPane({
   onHide: () => void;
 }) {
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const entries = useAgents((state) => state.entries.get(task.id) ?? null);
   const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
   const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
   return (
     <aside className={styles.changes} aria-label={tx("Changes")}>
       <div className={styles.changesHeader}>
         {docked && <IconButton icon="arrow-left" title="Back to conversation" size="small" onClick={onHide} />}
+        {docked && <TaskRunStatus task={task} entries={entries} />}
         <span className={styles.changesTitle}>
           <T>Changes</T>
         </span>

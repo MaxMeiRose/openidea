@@ -7,7 +7,13 @@ import { notifications } from "@/workbench/contributions";
 import { commitRepos, groupOf, planCommit, remainingOverrides, renamedFromPath } from "./changes";
 import { useChangelists, withListDefaults } from "./changelists";
 import { runCommitChecks } from "./commitChecks";
-import { forgetAmendDraft, keepMessageAfterCommit, rememberMessage, useCommit } from "./commitStore";
+import {
+  forgetAmendDraft,
+  keepMessageAfterCommit,
+  rememberMessage,
+  synchronizeAmendChecks,
+  useCommit,
+} from "./commitStore";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { notifyFileOperation } from "@/platform/fileOps";
 import { confirmDialog, openDialog } from "./dialogs";
@@ -36,6 +42,7 @@ export async function commitChanges(): Promise<string | undefined> {
   }
   await saveAll();
   await refreshNow();
+  synchronizeAmendChecks();
   const status = useVcs.getState().status;
   const checks = withListDefaults(
     status,

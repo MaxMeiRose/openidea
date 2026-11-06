@@ -3,8 +3,8 @@
 use crate::state::AppState;
 use ide_agent::registry::AgentRegistry;
 use ide_agent::{
-    AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask,
-    NewAgentTask,
+    AgentChange, AgentCommand, AgentConfigValue, AgentEntry, AgentEvent, AgentProbe, AgentPrompt, AgentProvider,
+    AgentQueued, AgentTask, NewAgentTask,
 };
 use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_host::ops::agent;
@@ -137,6 +137,33 @@ pub async fn agent_prompt(
     now: bool,
 ) -> IdeResult<()> {
     agent::prompt(&state.host, window.label(), task, prompt, now).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_models(
+    window: Window,
+    state: State<'_, AppState>,
+    provider: String,
+    repo: IpcPath,
+    refresh: bool,
+    request: RequestId,
+) -> IdeResult<Vec<AgentConfigValue>> {
+    agent::models(&state.host, window.label(), provider, repo, refresh, request).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_generate_commit_message(
+    window: Window,
+    state: State<'_, AppState>,
+    provider: String,
+    repo: IpcPath,
+    model: Option<String>,
+    prompt: String,
+    request: RequestId,
+) -> IdeResult<String> {
+    agent::generate_commit_message(&state.host, window.label(), provider, repo, model, prompt, request).await
 }
 
 /// Drops a queued message and returns it (to edit it).

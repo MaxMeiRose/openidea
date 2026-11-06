@@ -61,6 +61,47 @@
 .header > * {
   flex: none;
 }
+.runStatus {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  justify-content: center;
+  position: relative;
+  width: 24px;
+  height: 24px;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  color: var(--fg-subtle);
+}
+.runStatusLabel {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.runStatus > span:first-child {
+  display: flex;
+}
+.runStatus[data-state="running"],
+.runStatus[data-state="starting"] {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.runStatus[data-state="finished"] {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 35%, var(--border));
+}
+.runStatus[data-state="needsInput"],
+.runStatus[data-state="limited"] {
+  color: var(--warning);
+}
+.runStatus[data-state="failed"] {
+  color: var(--danger);
+}
 /* Shrinks ahead of the meters. */
 .title {
   flex: 0 1000 auto;

@@ -113,6 +113,11 @@ pub struct CommitSettings {
     pub body_limit: u32,
     pub show_right_margin: bool,
     pub wrap_at_margin: bool,
+    pub ai_provider: String,
+    pub ai_codex_model: String,
+    pub ai_claude_model: String,
+    /// Empty uses the UI's localized default commit-message prompt.
+    pub ai_prompt: String,
 }
 
 impl Default for CommitSettings {
@@ -132,6 +137,10 @@ impl Default for CommitSettings {
             body_limit: 72,
             show_right_margin: true,
             wrap_at_margin: false,
+            ai_provider: "codex".into(),
+            ai_codex_model: String::new(),
+            ai_claude_model: String::new(),
+            ai_prompt: String::new(),
         }
     }
 }
