@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import type { AgentConfigValue } from "@/bindings";
-import { call, commands, nextRequestId } from "./ipc";
+import { call, commands, isTauri, nextRequestId } from "./ipc";
 import type { CommitAiProvider } from "./commitAiSettings";
 
 /** Model discovery is shared by the commit panel and the staged settings form. */
 export function useCommitAiModels(provider: CommitAiProvider, repo: string | null) {
+  const available = isTauri() && !!repo;
   const [revision, setRevision] = useState(0);
   const key = useMemo(() => ({ provider, repo, revision }), [provider, repo, revision]);
   const [result, setResult] = useState<{
@@ -13,7 +14,7 @@ export function useCommitAiModels(provider: CommitAiProvider, repo: string | nul
     error: string | null;
   } | null>(null);
   useEffect(() => {
-    if (!key.repo) return;
+    if (!available || !key.repo) return;
     let live = true;
     const request = nextRequestId();
     void call(commands.agentModels(key.provider, key.repo, key.revision > 0, request))
@@ -23,11 +24,11 @@ export function useCommitAiModels(provider: CommitAiProvider, repo: string | nul
       live = false;
       void commands.cancelRequest(request).catch(() => undefined);
     };
-  }, [key]);
+  }, [key, available]);
   return {
     models: result?.key === key ? result.models : [],
     error: result?.key === key ? result.error : null,
-    loading: !!repo && result?.key !== key,
+    loading: available && result?.key !== key,
     refresh: () => setRevision((value) => value + 1),
   };
 }
