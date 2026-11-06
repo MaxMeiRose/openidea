@@ -25,8 +25,8 @@ import { useConsoleSelection } from "./useConsoleSelection";
 import { useConsoleSelectAll } from "./useConsoleSelectAll";
 import { hostBinding, formatBinding, hasPrimaryModifier, registerKeyClaim } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
-import { ConsoleFindBar } from "./FindBar";
-import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions } from "./find";
+import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
+import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions } from "@/ui/consoleFind";
 
 const ROW = 20;
 
@@ -350,7 +350,7 @@ export function ConsoleView({
   // The bar owns Escape / Enter / F3 / ⌘G while it is focused; keep the IDE keymap out.
   useEffect(() => {
     if (!findOpen) return;
-    return registerKeyClaim((e) => !!(e.target as Element | null)?.closest?.("[data-run-find]"));
+    return registerKeyClaim((e) => !!(e.target as Element | null)?.closest?.("[data-console-find]"));
   }, [findOpen]);
 
   // A new query (or option) starts from the viewport, not from the top of the output.

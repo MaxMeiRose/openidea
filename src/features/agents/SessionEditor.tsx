@@ -1,8 +1,17 @@
 /** An agent task as an editor tab: the conversation, a composer and the task's changed files. */
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import {
+  Fragment,
+  startTransition,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import clsx from "clsx";
 import { useShallow } from "zustand/react/shallow";
-import type { AgentChange, AgentEntry, AgentImage, AgentRetry, AgentTask, AgentUsage } from "@/bindings";
+import type { AgentChange, AgentEntry, AgentImage, AgentLimit, AgentRetry, AgentTask, AgentUsage } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { basename, relativeDir, useProject } from "@/platform/project";
@@ -29,7 +38,7 @@ import { isImeKey } from "@/platform/ime";
 import { TaskStatusIcon } from "./AgentsView";
 import { Composer } from "./Composer";
 import { SubmitButton } from "./SubmitButton";
-import { canSend, emptyDraft, retryParts, usageLabel, workTime } from "./composerModel";
+import { canSend, costLabel, emptyDraft, limitLabel, retryParts, usageLabel, workTime } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import {
   findRanges,
@@ -100,14 +109,17 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
     useShallow((s) => path.map((sub, i) => findSubagent(s.entries.get(entriesKey(id, path[i - 1] ?? null)), sub))),
   );
   useEffect(() => {
-    void loadEntries(id).catch(() => undefined);
+    // Loaded entries are kept current by the task's events: reopening the tab needn't fetch them again.
+    if (!useAgents.getState().entries.has(id)) void loadEntries(id).catch(() => undefined);
     void refreshChanges(id);
   }, [id]);
   useEffect(() => {
     if (!docked || !changesOpen) return markVisible(id);
   }, [id, docked, changesOpen]);
   useEffect(() => {
-    if (view) void loadEntries(id, view).catch(() => undefined);
+    if (view && !useAgents.getState().entries.has(entriesKey(id, view))) {
+      void loadEntries(id, view).catch(() => undefined);
+    }
   }, [id, view]);
   const openSubagent = (sub: string) => setPath((p) => [...p, sub]);
   const [finding, setFinding] = useState(false);
@@ -299,17 +311,41 @@ function Header({
   );
 }
 
-/** Context use (when the agent reports it) and the time spent on the task. */
+/**
+ * Context use, usage limits and cost (when the agent reports them) and the time spent on
+ * the task, each as Settings › Tools › Agents › Chat allows.
+ */
 function Meters({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
   const tx = useTx();
+  const show = useProject((s) => s.settings?.agents);
   const busy = isBusy(task.status);
   const now = useNow(busy ? 1000 : 60_000);
-  const usage = task.usage;
-  const work = entries ? workTime(entries, busy ? now : null) : 0;
+  const usage = show?.showContextUsage !== false ? task.usage : null;
+  const reported = useAgents((s) => s.limits.get(task.provider));
+  const limits = show?.showUsageLimits !== false ? (reported ?? []) : [];
+  const cost = show?.showCost === true ? task.usage?.cost : null;
+  const work = show?.showWorkTime !== false && entries ? workTime(entries, busy ? now : null) : 0;
   return (
     <span className={styles.meters}>
       {usage && <Usage usage={usage} />}
+      {limits.map((l) => (
+        <Limit key={l.window} limit={l} now={now} />
+      ))}
+      {cost && <span title={tx("What the session has cost so far, as the agent reports it")}>{costLabel(cost)}</span>}
       {work >= 1000 && <span title={tx("Time the agent spent on this task")}>{formatDuration(work)}</span>}
+    </span>
+  );
+}
+
+/** A usage-limit window: "5h 19%", when it resets in the tooltip. */
+function Limit({ limit, now }: { limit: AgentLimit; now: number }) {
+  const label = limitLabel(limit, now);
+  return (
+    <span className={styles.meter} title={label.detail} aria-label={label.detail}>
+      <span className={styles.usageBar} aria-hidden>
+        <span style={{ width: `${label.percent}%` }} />
+      </span>
+      {label.short}
     </span>
   );
 }
@@ -400,6 +436,9 @@ interface StreamProps {
   onCloseFind: () => void;
 }
 
+/** Entries rendered at a time when a conversation opens at its end. */
+const ENTRY_BATCH = 40;
+
 function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
   useSelectionBoundary(ref);
@@ -407,6 +446,13 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   const positions = useAgents.getState().scrollPositions;
   const position = useRef(positions.get(key) ?? { top: 0, stick: true });
   const restored = useRef(false);
+  // Opened at the end, the last entries come first and the earlier ones follow in batches:
+  // reopening a long conversation paints at once. A kept offset needs them all.
+  const [shown, setShown] = useState(() => (positions.get(key)?.stick === false ? Infinity : ENTRY_BATCH));
+  const start = finding || !entries ? 0 : Math.max(0, entries.length - shown);
+  useEffect(() => {
+    if (start > 0) startTransition(() => setShown((n) => n + ENTRY_BATCH));
+  }, [start]);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || entries === null) return;
@@ -430,7 +476,13 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
   // Forks and undo apply to the task's own turns, not a subagent's conversation.
   const turns = useMemo(() => (entries && !subagent ? turnNumbers(entries) : null), [entries, subagent]);
-  const items = useMemo(() => (entries ? groupToolCalls(entries, task.provider) : null), [entries, task.provider]);
+  const items = useMemo(
+    () =>
+      entries
+        ? groupToolCalls(entries.slice(start), task.provider).map((item) => ({ ...item, index: item.index + start }))
+        : null,
+    [entries, task.provider, start],
+  );
   return (
     <div className={styles.streamArea}>
       {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
@@ -1330,11 +1382,7 @@ function SessionComposer({
         toolbar={<ConfigPickers config={task.config} onChange={setOption} />}
         actions={
           <>
-            {busy && (
-              <Button size="small" icon="stop" onClick={() => void cancelTask(task.id)}>
-                Stop
-              </Button>
-            )}
+            {busy && <IconButton icon="stop" title="Stop" size="small" onClick={() => void cancelTask(task.id)} />}
             <SubmitButton
               label={busy ? "Queue" : "Send"}
               pending={sending}
@@ -1493,7 +1541,7 @@ function ChangesPane({
             onActivate={(c) => void openChangeDiff(task, c.path)}
             renderNode={(c) => (
               <span className={styles.change} title={c.relPath}>
-                <Icon name={fileIconName(basename(c.path))} size={16} />
+                <Icon name={fileIconName(basename(c.path), c.path)} size={16} />
                 <span className={styles.changeName} style={{ color: KIND_COLOR[c.kind] }}>
                   {basename(c.path)}
                 </span>

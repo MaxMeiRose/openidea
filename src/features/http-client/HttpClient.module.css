@@ -20,9 +20,6 @@
   background: transparent;
   color: var(--fg-icon);
 }
-.runMarker:hover {
-  background: var(--bg-hover);
-}
 
 /* Toolbar panel above `.http` files. */
 .toolbar {

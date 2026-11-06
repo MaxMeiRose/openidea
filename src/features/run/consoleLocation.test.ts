@@ -113,6 +113,7 @@ it("routes debug preparation and the final adapter session to the same service c
 });
 
 it("Rerun in an explicitly opened Run window preserves that console destination", async () => {
+  useRun.setState({ configs: [{ ...config, showOnStdout: true }] });
   const session = (await startRun({ ...config, showOnStdout: true }))!;
   useRun.setState({ sessions: [{ ...session, status: "finished", exitCode: 0 }] });
   const menu = runServiceProvider.menu!({ key: "run:config:app", label: "app", icon: "run" });
@@ -131,6 +132,7 @@ it("Rerun in an explicitly opened Run window preserves that console destination"
 });
 
 it("starting again from Services resets an explicitly opened Run destination", async () => {
+  useRun.setState({ configs: [{ ...config, showOnStdout: true }] });
   const session = (await startRun({ ...config, showOnStdout: true }))!;
   useRun.setState({ sessions: [{ ...session, status: "finished", exitCode: 0 }] });
   runtime(session.id)!.consoleInRun = true;

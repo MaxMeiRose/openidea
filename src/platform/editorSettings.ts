@@ -153,6 +153,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     tabOutOfPair: true,
     reformatOnPaste: "indentEachLine",
     smartIndent: true,
+    insertDocStub: true,
     backspaceUnindent: "autoindent",
   },
   codeEditing: {

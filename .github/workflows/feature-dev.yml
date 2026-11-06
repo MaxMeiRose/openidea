@@ -1,0 +1,141 @@
+name: Feature dev delivery
+
+on:
+  push:
+    branches: [feature-dev]
+  schedule:
+    # 10:17 China time. Scheduled workflows run from the default branch.
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: feature-dev-delivery
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  sync:
+    if: github.repository == 'MaxMeiRose/openidea' && github.event_name != 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.merge.outputs.changed }}
+      sha: ${{ steps.merge.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: feature-dev
+          fetch-depth: 0
+      - name: Merge original upstream into feature-dev
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add original https://github.com/l0ng-ai/openidea.git
+          git fetch original main --no-tags
+          before=$(git rev-parse HEAD)
+          if ! git merge --no-ff --no-edit original/main; then
+            echo "::error::Upstream merge has conflicts. Resolve them locally on feature-dev and push; the branch was not updated."
+            git diff --name-only --diff-filter=U >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          after=$(git rev-parse HEAD)
+          echo "sha=$after" >> "$GITHUB_OUTPUT"
+          if [ "$before" = "$after" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git push origin HEAD:feature-dev
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Upstream: $(git rev-parse original/main); feature-dev: $after" >> "$GITHUB_STEP_SUMMARY"
+
+  windows:
+    needs: sync
+    if: >-
+      always() && github.repository == 'MaxMeiRose/openidea' &&
+      (github.event_name == 'push' ||
+       (needs.sync.result == 'success' &&
+        (needs.sync.outputs.changed == 'true' || github.event_name == 'workflow_dispatch')))
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.sync.outputs.sha || github.sha }}
+      - uses: pnpm/action-setup@v5
+        with: { version: 11 }
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: pnpm }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { key: feature-dev-windows-release, cache-on-failure: true }
+      - run: pnpm install --frozen-lockfile
+      - name: Generate IPC bindings and test integration
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          cargo test --locked --release -p openidea --test export_bindings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code src/bindings.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --release -p ide-agent -p ide-http -p ide-run -p openidea --lib
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: generated-bindings
+          path: src/bindings.ts
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - name: Build Windows installer for the fork channel
+        shell: pwsh
+        run: |
+          # Keep the installed identity. Updates are delivered by the local task,
+          # so the official in-app updater must not overwrite the fork.
+          $config = @{
+            bundle = @{ createUpdaterArtifacts = $false; windows = @{ nsis = @{ installMode = 'currentUser' } } }
+            plugins = @{ updater = @{ endpoints = @() } }
+          }
+          $configPath = Join-Path $env:RUNNER_TEMP 'feature-dev-tauri.json'
+          $config | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $configPath -Encoding utf8
+          pnpm tauri build --bundles nsis --config $configPath
+          exit $LASTEXITCODE
+      - name: Publish tested Windows prerelease
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $commit = (git rev-parse HEAD).Trim()
+          $tag = "feature-dev-$($commit.Substring(0, 12))-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $installers = @(Get-ChildItem -LiteralPath target/release/bundle/nsis -Filter '*x64-setup.exe')
+          if ($installers.Count -ne 1) { throw 'Expected exactly one x64 NSIS installer' }
+          $installer = $installers[0]
+          $manifestPath = Join-Path $env:RUNNER_TEMP 'build-info.json'
+          @{
+            schema = 1
+            repository = $env:GITHUB_REPOSITORY
+            branch = 'feature-dev'
+            commit = $commit
+            tag = $tag
+            version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+            platform = 'windows-x86_64'
+            installerName = $installer.Name
+            installerSha256 = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            executableSha256 = (Get-FileHash -LiteralPath target/release/openidea.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+            runUrl = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          } | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding utf8
+          $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          "Windows x64 build of feature-dev at $commit. IPC generation, Rust integration tests, frontend typecheck, lint and tests passed. Install with the local feature-dev update task." |
+            Set-Content -LiteralPath $notesPath -Encoding utf8
+          gh release create $tag $installer.FullName $manifestPath --repo $env:GITHUB_REPOSITORY --target $commit --prerelease --latest=false --title "OpenIDEA feature-dev $($commit.Substring(0, 12))" --notes-file $notesPath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "Release: https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$tag" >> $env:GITHUB_STEP_SUMMARY

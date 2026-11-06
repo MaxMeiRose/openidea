@@ -8,6 +8,7 @@ const agentCreate = vi.fn();
 const vcsBranches = vi.fn();
 const vcsBranchInfo = vi.fn();
 const findFiles = vi.fn();
+const findDirs = vi.fn();
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -21,6 +22,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       vcsBranchInfo: (root: string | null) => vcsBranchInfo(root),
       vcsBranches: (root: string | null) => vcsBranches(root),
       findFiles: (query: string, limit: number) => findFiles(query, limit),
+      findDirs: (query: string, limit: number) => findDirs(query, limit),
     },
   };
 });
@@ -44,6 +46,15 @@ const claude: AgentProvider = {
   installed: true,
   config: [],
   source: { kind: "builtin" },
+  program: "claude",
+  args: [],
+  defaultProgram: "claude",
+  defaultArgs: [],
+  loginHint: null,
+  commandOverridden: false,
+  commandEditable: true,
+  commandReadOnlyReason: null,
+  env: {},
   // Offered by the agent's last session in this project.
   commands: [command("compact", "Free up context")],
 };
@@ -59,6 +70,7 @@ beforeEach(() => {
     );
   agentCommands.mockReset();
   findFiles.mockReset().mockResolvedValue({ status: "ok", data: [] });
+  findDirs.mockReset().mockResolvedValue({ status: "ok", data: [] });
   agentCreate.mockReset().mockResolvedValue({ status: "error", error: { kind: "invalid", message: "stop here" } });
   useAgents.setState({
     providers: [claude],
