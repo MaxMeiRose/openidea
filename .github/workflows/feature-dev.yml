@@ -96,6 +96,8 @@ jobs:
           path: src/bindings.ts
       - run: pnpm typecheck
       - run: pnpm lint
+      - run: pnpm format:check
+      - run: pnpm knip
       - run: pnpm test
       - name: Build Windows installer for the fork channel
         shell: pwsh
