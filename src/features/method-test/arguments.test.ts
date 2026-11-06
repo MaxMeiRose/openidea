@@ -1,9 +1,20 @@
 import { expect, it } from "vitest";
 import { argumentError, argumentKind, argumentLiterals, packArguments } from "./arguments";
+import { argumentDefault } from "./model";
 it("uses scalar controls for Java scalars and JSON controls for objects/collections", () => {
   expect(["String", "java.lang.String", "long", "boolean", "String[]", "List<User>", "User"].map(argumentKind)).toEqual(
     ["text", "text", "number", "boolean", "json", "json", "json"],
   );
+});
+it("matches defaults to the displayed scalar and collection controls", () => {
+  expect(["String", "OffsetDateTime", "long", "boolean", "List", "String..."].map(argumentDefault)).toEqual([
+    "",
+    "",
+    0,
+    false,
+    [],
+    [],
+  ]);
 });
 it("preserves exact long literals and escaped commas while editing another argument", () => {
   const values = argumentLiterals('["hello, \\"quoted\\"",9007199254740993,{"a":[1,2]}]', 3);

@@ -1,5 +1,5 @@
 import type { MethodInvocation } from "@/bindings";
-import { argumentError, argumentLiterals } from "./arguments";
+import { argumentError, argumentKind, argumentLiterals } from "./arguments";
 import { parseSource, tokenize, type ClassDecl, type SourceFile } from "@/features/http-client/spring/source";
 
 export interface MethodTarget {
@@ -74,16 +74,10 @@ export const methodLabel = (target: MethodTarget) =>
 export function argumentDefault(type: string): unknown {
   const container = type.replace(/<.*>/, "").split(".").pop();
   if (/\[\]$|\.\.\.$/.test(type) || ["List", "Set", "Collection", "Iterable"].includes(container ?? "")) return [];
-  const simple = type.split(".").pop();
-  if (
-    /^(?:byte|short|int|long|float|double|Byte|Short|Integer|Long|Float|Double|BigDecimal|BigInteger)$/.test(
-      simple ?? "",
-    )
-  )
-    return 0;
-  if (simple === "boolean" || simple === "Boolean") return false;
-  if (["String", "char", "Character", "UUID", "LocalDate", "LocalDateTime", "Instant"].includes(simple ?? ""))
-    return "";
+  const kind = argumentKind(type);
+  if (kind === "number") return 0;
+  if (kind === "boolean") return false;
+  if (kind === "text" || kind === "character") return "";
   return {};
 }
 
