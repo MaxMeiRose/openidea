@@ -76,8 +76,20 @@ jobs:
       - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with: { key: feature-dev-windows-release-complete-v2 }
+        id: toolchain
+      - uses: actions/cache/restore@v4
+        id: debug-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+          key: openidea-debug-v1-windows-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+      - uses: actions/cache/restore@v4
+        id: release-cache
+        with:
+          path: target/release
+          key: openidea-release-v1-windows-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
       - run: pnpm install --frozen-lockfile
       - name: Generate IPC bindings
         id: bindings
@@ -90,6 +102,14 @@ jobs:
           "generated=true" >> $env:GITHUB_OUTPUT
           git diff --exit-code src/bindings.ts
           exit $LASTEXITCODE
+      - uses: actions/cache/save@v4
+        if: always() && steps.bindings.outputs.generated == 'true' && steps.debug-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+          key: ${{ steps.debug-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v4
         if: always() && steps.bindings.outputs.generated == 'true'
         with:
@@ -113,6 +133,7 @@ jobs:
       - run: pnpm knip
       - run: pnpm test
       - name: Build Windows installer for the fork channel
+        id: package
         shell: pwsh
         run: |
           # Keep the installed identity. Updates are delivered by the local task,
@@ -124,7 +145,13 @@ jobs:
           $configPath = Join-Path $env:RUNNER_TEMP 'feature-dev-tauri.json'
           $config | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $configPath -Encoding utf8
           pnpm tauri build --bundles nsis --config $configPath
-          exit $LASTEXITCODE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "built=true" >> $env:GITHUB_OUTPUT
+      - uses: actions/cache/save@v4
+        if: always() && steps.package.outputs.built == 'true' && steps.release-cache.outputs.cache-hit != 'true'
+        with:
+          path: target/release
+          key: ${{ steps.release-cache.outputs.cache-primary-key }}
       - name: Publish tested Windows prerelease
         shell: pwsh
         run: |

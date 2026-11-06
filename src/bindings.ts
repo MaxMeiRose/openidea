@@ -3521,6 +3521,7 @@ export type EurekaService_Serialize = {
 };
 
 export type EurekaStatus = "UP" | "DOWN";
+
 /**  Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`). */
 export type EventKind = "file-opened" | "file-saved" | "editor-focused" | "action-performed" | "vcs-changed" | "scheduled";
 
