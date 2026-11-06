@@ -64,15 +64,8 @@ export function isPartiallyStaged(fs: FileStatus): boolean {
   );
 }
 
-export function initialCheck(fs: FileStatus): CheckState {
-  const g = groupOf(fs);
-  // Unversioned files and unresolved conflicts are opt-in, as in IDEA.
-  if (g !== "changes") return "none";
-  return isPartiallyStaged(fs) ? "staged" : "all";
-}
-
 export function checkOf(fs: FileStatus, checks: ReadonlyMap<string, CheckState>): CheckState {
-  return checks.get(fs.path) ?? initialCheck(fs);
+  return checks.get(fs.path) ?? "none";
 }
 
 /** Aggregate checkbox state for a set of files. */
@@ -383,9 +376,8 @@ export function planCommit(status: readonly FileStatus[], checks: ReadonlyMap<st
 
 /**
  * Inclusion overrides kept after a commit (same shape for `checks` and `excludedHunks`):
- * the committed changes start over, since they either left the tree or only some of
- * their blocks went in. The changes the user left out keep their override, so they stay
- * excluded instead of falling back to "included" in the next commit.
+ * the committed changes start unchecked, since they either left the tree or only some of
+ * their blocks went in. Other files keep the inclusion state the user chose.
  */
 export function remainingOverrides<T>(
   overrides: ReadonlyMap<string, T>,

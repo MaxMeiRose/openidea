@@ -101,8 +101,7 @@ export function moveFiles(state: ChangelistState, rels: readonly string[], id: s
 }
 
 /**
- * Like IDEA, only the active list's changes are included in a commit by default:
- * files of other lists without an explicit checkbox state start excluded.
+ * Files outside the active list stay excluded unless explicitly checked.
  */
 export function withListDefaults(
   status: readonly FileStatus[],

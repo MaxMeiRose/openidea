@@ -130,11 +130,11 @@ describe("change list model", () => {
     expect(buildChangeTree([], "/r", false, initialChangelists())).toEqual([]);
   });
 
-  it("includes only the active list in a commit by default", () => {
+  it("keeps every list unchecked by default and respects explicit inclusion", () => {
     const { state, feature } = twoLists();
     const checks = withListDefaults(status, "/r", state, new Map());
     expect(checks.get("/r/src/b.ts")).toBe("none");
-    expect(planCommit(status, checks).included.map((f) => f.relPath)).toEqual(["src/a.ts", "README.md"]);
+    expect(planCommit(status, checks).included).toEqual([]);
     // An explicit checkbox wins.
     const explicit = withListDefaults(status, "/r", state, new Map([["/r/src/b.ts", "all" as const]]));
     expect(explicit.get("/r/src/b.ts")).toBe("all");

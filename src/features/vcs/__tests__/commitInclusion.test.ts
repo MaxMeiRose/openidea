@@ -20,6 +20,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 });
 
 import type { FileStatus } from "@/bindings";
+import { checkOf } from "../changes";
 import { commitChanges } from "../changeOps";
 import { useCommit } from "../commitStore";
 import { useVcs } from "../store";
@@ -51,10 +52,48 @@ describe("changes left out of a commit (#1539)", () => {
     useCommit.setState({
       message: "Commit 5 of 20",
       amend: false,
-      checks: new Map(excluded.map((f) => [f.path, "none" as const])),
+      checks: new Map(files.map((f, index) => [f.path, index < 5 ? ("all" as const) : ("none" as const)])),
       excludedHunks: new Map([[files[5]!.path, new Set(["h1"])]]),
       checkProblems: [],
     });
+  });
+
+  it("leaves every new change unchecked until explicitly included", () => {
+    const checks = new Map();
+    expect(files.map((file) => checkOf(file, checks))).toEqual(files.map(() => "none"));
+    expect(checkOf({ ...files[0]!, staged: "modified" }, checks)).toBe("none");
+  });
+
+  it("does not include another repository when committing one explicitly checked file", async () => {
+    const other: FileStatus = { ...files[1]!, path: "/other/src/f1.ts" };
+    useVcs.setState({ roots: ["/p", "/other"], status: [files[0]!, other] });
+    useCommit.setState({ checks: new Map([[files[0]!.path, "all"]]) });
+
+    expect(await commitChanges()).toBe("commit1");
+    expect(stage.mock.calls.flatMap(([paths]) => paths)).toEqual([files[0]!.path]);
+    expect(checkOf(files[0]!, useCommit.getState().checks)).toBe("none");
+    expect(checkOf(other, useCommit.getState().checks)).toBe("none");
+  });
+
+  it("keeps another repository's staged changes untouched", async () => {
+    const other: FileStatus = { ...files[1]!, path: "/other/src/f1.ts", staged: "modified", unstaged: null };
+    useVcs.setState({ roots: ["/p", "/other"], status: [files[0]!, other] });
+    useCommit.setState({ checks: new Map([[files[0]!.path, "all"]]) });
+
+    expect(await commitChanges()).toBe("commit1");
+    expect(unstage).not.toHaveBeenCalled();
+    expect(checkOf(other, useCommit.getState().checks)).toBe("none");
+  });
+
+  it("unstages unchecked files only in the repository being committed", async () => {
+    const same: FileStatus = { ...files[1]!, staged: "modified", unstaged: null };
+    const other: FileStatus = { ...same, path: "/other/src/f1.ts" };
+    useVcs.setState({ roots: ["/p", "/other"], status: [files[0]!, same, other] });
+    useCommit.setState({ checks: new Map([[files[0]!.path, "all"]]) });
+
+    expect(await commitChanges()).toBe("commit1");
+    expect(unstage.mock.calls).toEqual([[[same.path]]]);
+    expect(checkOf(other, useCommit.getState().checks)).toBe("none");
   });
 
   it("keeps the 15 excluded files excluded instead of checking them again", async () => {

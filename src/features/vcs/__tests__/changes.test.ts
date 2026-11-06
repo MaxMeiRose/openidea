@@ -6,7 +6,6 @@ import {
   checkOf,
   commitRepos,
   ignoreTargets,
-  initialCheck,
   hunkIncluded,
   groupFileNodes,
   planCommit,
@@ -190,15 +189,15 @@ describe("ignore targets", () => {
 });
 
 describe("commit inclusion", () => {
-  it("defaults: tracked changes included, partial files keep their staged part, unversioned excluded", () => {
-    expect(initialCheck(status[0]!)).toBe("all");
-    expect(initialCheck(status[1]!)).toBe("staged");
-    expect(initialCheck(status[4]!)).toBe("none");
-    expect(initialCheck(status[5]!)).toBe("none");
+  it("defaults to unchecked for tracked, staged, unversioned and conflicted changes", () => {
+    expect(status.map((file) => checkOf(file, new Map()))).toEqual(status.map(() => "none"));
   });
 
   it("plans staging so the index holds exactly the checked changes", () => {
     const checks = new Map<string, CheckState>([
+      [status[0]!.path, "all"],
+      [status[1]!.path, "staged"],
+      [status[2]!.path, "all"],
       ["/r/README.md", "none"],
       ["/r/notes.txt", "all"],
     ]);
@@ -214,7 +213,11 @@ describe("commit inclusion", () => {
   });
 
   it("aggregates checkbox state for groups", () => {
-    const checks = new Map<string, CheckState>();
+    const checks = new Map<string, CheckState>([
+      [status[0]!.path, "all"],
+      [status[1]!.path, "staged"],
+      [status[3]!.path, "all"],
+    ]);
     expect(aggregateCheck([status[0]!, status[3]!], checks)).toMatchObject({ checked: true, indeterminate: false });
     expect(aggregateCheck([status[0]!, status[4]!], checks)).toMatchObject({ checked: false, indeterminate: true });
     expect(aggregateCheck([status[1]!], checks)).toMatchObject({ checked: false, indeterminate: true });
@@ -223,7 +226,7 @@ describe("commit inclusion", () => {
   it("keeps the changes left out of a commit excluded after it", () => {
     const files = Array.from({ length: 20 }, (_, i) => fs(`src/f${i}.kt`, null, "modified"));
     const leftOut = files.slice(5);
-    const checks = new Map<string, CheckState>(leftOut.map((f) => [f.path, "none"]));
+    const checks = new Map<string, CheckState>(files.map((f, i) => [f.path, i < 5 ? "all" : "none"]));
     const plan = planCommit(files, checks);
     expect(plan.included).toHaveLength(5);
 

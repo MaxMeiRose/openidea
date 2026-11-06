@@ -72,11 +72,14 @@ export async function commitChanges(): Promise<string | undefined> {
   const partial = await partialCommitFiles(plan.partial);
   // Like IDEA, every repository with included changes gets a commit with the same message.
   const roots = useVcs.getState().roots;
-  const repos = commitRepos(plan.included, roots, currentRepo());
+  const selectedRepo = currentRepo();
+  const repos = commitRepos(plan.included, roots, selectedRepo);
+  // Leave staging in repositories outside this commit untouched.
+  const unstage = plan.unstage.filter((path) => repos.includes(rootOf(path, roots) ?? selectedRepo));
   const id = await runOp(
     amend ? "Amend commit" : "Commit",
     async () => {
-      if (plan.unstage.length) await call(commands.vcsUnstage(plan.unstage));
+      if (unstage.length) await call(commands.vcsUnstage(unstage));
       const stage = [...plan.stage, ...partial.whole];
       if (stage.length) await call(commands.vcsStage(stage));
       let id = "";

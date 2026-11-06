@@ -58,8 +58,7 @@ test("changes left out of a commit stay unchecked (#1539)", async ({ workbench: 
   const panel = page.getByRole("region", { name: "Commit", exact: true });
   const changes = panel.getByRole("tree", { name: "Changes" });
 
-  // Uncheck everything, then pick the 5 files to commit.
-  await changes.getByRole("checkbox", { name: "Include Changes in commit" }).click();
+  // Pick only the 5 files to commit; everything starts unchecked.
   for (const name of NAMES.slice(0, 5)) {
     await changes.getByRole("checkbox", { name: `Include ${name.split("/").pop()} in commit` }).click();
   }
