@@ -573,6 +573,14 @@ impl AgentManager {
         }
         {
             let mut s = task.state.lock();
+            if target.category.as_deref() == Some("model") && s.task.provider == "claude" {
+                let invalid = s.wanted.iter().find(|c| c.id == "effort").is_some_and(|choice| {
+                    !s.task.config.iter().any(|o| o.id == choice.id && o.values.iter().any(|v| v.value == choice.value))
+                });
+                if invalid {
+                    s.wanted.retain(|c| c.id != "effort");
+                }
+            }
             s.wanted.retain(|c| c.id != option);
             s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: value.clone() });
             if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {

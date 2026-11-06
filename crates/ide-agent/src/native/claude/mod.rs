@@ -695,13 +695,22 @@ impl Session {
             _ => return Err(format!("no setting {option}")),
         };
         proc.control(request).await?;
-        let mut st = self.st.lock();
-        match option {
-            settings::MODE => st.settings.mode = value.to_owned(),
-            settings::MODEL => st.settings.set_model(value),
-            settings::EFFORT => st.settings.effort = value.to_owned(),
-            settings::THINKING => st.settings.thinking = value.to_owned(),
-            _ => unreachable!(),
+        let reset_effort = {
+            let mut st = self.st.lock();
+            let before = st.settings.effort.clone();
+            match option {
+                settings::MODE => st.settings.mode = value.to_owned(),
+                settings::MODEL => st.settings.set_model(value),
+                settings::EFFORT => st.settings.effort = value.to_owned(),
+                settings::THINKING => st.settings.thinking = value.to_owned(),
+                _ => unreachable!(),
+            }
+            option == settings::MODEL && before != "default" && st.settings.effort == "default"
+        };
+        if reset_effort {
+            // Reset the CLI's flag override too, not only the dropdown's displayed value.
+            proc.control(json!({ "subtype": "apply_flag_settings", "settings": { "effortLevel": null } })).await?;
+            self.st.lock().chosen.retain(|(id, _)| id != settings::EFFORT);
         }
         Ok(())
     }

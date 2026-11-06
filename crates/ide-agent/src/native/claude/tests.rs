@@ -458,6 +458,57 @@ async fn legacy_model_and_thinking_choices_reach_the_cli_without_get_settings() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn switching_models_clears_an_unsupported_effort_in_the_cli() {
+    let request = |id: &str, request: Value| {
+        Frame::Shim(json!({"type": "control_request", "request_id": id, "request": request}))
+    };
+    let reply = |id: &str, response: Value| {
+        Frame::Cli(
+            json!({"type": "control_response", "response": {"subtype": "success", "request_id": id, "response": response}}),
+        )
+    };
+    let frames = vec![
+        request("init", json!({"subtype": "initialize"})),
+        reply(
+            "init",
+            json!({"models": [
+                {"value": "default", "supportsEffort": true, "supportedEffortLevels": ["low", "high"]},
+                {"value": "fast", "supportsEffort": false}
+            ]}),
+        ),
+        request("settings", json!({"subtype": "get_settings"})),
+        reply("settings", json!({"applied": {"model": "default"}})),
+        request("effort", json!({"subtype": "apply_flag_settings", "settings": {"effortLevel": "high"}})),
+        reply("effort", json!({})),
+        request("model", json!({"subtype": "set_model", "model": "fast"})),
+        reply("model", json!({})),
+        request("clear", json!({"subtype": "apply_flag_settings", "settings": {"effortLevel": null}})),
+        reply("clear", json!({})),
+    ];
+    let cli = Arc::new(Replay {
+        processes: Mutex::new(VecDeque::from([frames])),
+        sent: Arc::default(),
+        launched: Mutex::default(),
+        errors: Arc::default(),
+    });
+    let (dir, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let h = Harness::connect(cli.clone(), dir.path().into(), dir.path().join("p"), cwd.path().into(), Vec::new()).await;
+    let session = h.new_session().await;
+    h.request("session/set_config_option", json!({"sessionId": session, "configId": "effort", "value": "high"}))
+        .await
+        .unwrap();
+    let r = h
+        .request("session/set_config_option", json!({"sessionId": session, "configId": "model", "value": "fast"}))
+        .await
+        .unwrap();
+    assert!(!r["configOptions"].as_array().unwrap().iter().any(|o| o["id"] == "effort"));
+    assert!(cli.errors.lock().is_empty(), "{:?}", cli.errors.lock());
+    let sent = cli.sent.lock();
+    assert_eq!(sent[0][3]["request"]["model"], "fast");
+    assert_eq!(sent[0][4]["request"]["settings"], json!({"effortLevel": null}));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn discovery_returns_model_specific_effort_without_a_prompt_or_persistent_session() {
     let mut frames = load_fixture("simple").remove(0);
     frames.truncate(5);
