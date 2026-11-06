@@ -3,8 +3,6 @@
   "Run finished": "运行完成",
   "AI generation supports one repository. Uncheck changes from other repositories.": "AI 生成仅支持当前单个仓库，请取消勾选其他仓库的变更。",
   "Selected changes changed during generation. Generate the message again.": "生成过程中已勾选变更发生了变化，请重新生成提交信息。",
-  "Codex": "Codex",
-  "Claude Code": "Claude Code",
   "CLI default": "CLI 默认模型",
   "Commit AI provider": "提交 AI 工具",
   "Commit AI model": "提交 AI 模型",
