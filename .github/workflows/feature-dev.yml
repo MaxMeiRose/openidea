@@ -77,7 +77,7 @@ jobs:
         with: { node-version: 22, cache: pnpm }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with: { key: feature-dev-windows-release, cache-on-failure: true }
+        with: { key: feature-dev-windows-release-complete-v2 }
       - run: pnpm install --frozen-lockfile
       - name: Generate IPC bindings
         id: bindings
