@@ -160,6 +160,13 @@ async fn capture(mut reader: impl AsyncRead + Unpin, limit: usize) -> std::io::R
     Ok((String::from_utf8_lossy(&stored).into_owned(), truncated))
 }
 
+async fn send_input(mut stdin: tokio::process::ChildStdin, input: &str) -> std::io::Result<()> {
+    stdin.write_all(input.as_bytes()).await?;
+    // Pipe shutdown alone does not send EOF on Windows; closing the handle does.
+    drop(stdin);
+    Ok(())
+}
+
 pub(crate) async fn generate(
     spec: &ProviderSpec,
     cwd: &Path,
@@ -178,13 +185,10 @@ pub(crate) async fn generate(
     let run = async {
         let mut owned = start(spec, cwd, &args).await?;
         let child = owned.0.as_mut().unwrap();
-        let mut stdin = child.stdin.take().unwrap();
+        let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
-        let write = async {
-            stdin.write_all(input.as_bytes()).await?;
-            stdin.shutdown().await
-        };
+        let write = send_input(stdin, input);
         let ((stdout, truncated), (stderr, _), _) =
             tokio::try_join!(capture(stdout, OUTPUT_LIMIT), capture(stderr, 64 << 10), write,).map_err(failure)?;
         let status = owned.0.as_mut().unwrap().wait().await.map_err(failure)?;
@@ -407,6 +411,27 @@ async fn claude_models(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_input_reader_receives_eof_after_the_prompt() {
+        let mut command = Command::new("git");
+        ide_core::process::prepare(command.as_std_mut());
+        let mut child = command
+            .args(["hash-object", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        send_input(stdin, "hello\n").await.unwrap();
+        let (output, _) = tokio::time::timeout(Duration::from_secs(3), capture(child.stdout.take().unwrap(), 100))
+            .await
+            .expect("CLI input must receive EOF")
+            .unwrap();
+        assert_eq!(output.trim(), "ce013625030ba8dba906f756967f9e9ca394464a");
+        assert!(child.wait().await.unwrap().success());
+    }
 
     async fn native_smoke(id: &str) {
         let spec = crate::provider::load(None).into_iter().find(|spec| spec.id == id).unwrap();
