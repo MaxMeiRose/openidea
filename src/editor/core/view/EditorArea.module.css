@@ -21,6 +21,7 @@
 }
 .tabs {
   flex: none;
+  padding-right: 0;
   border-bottom: 1px solid var(--border-editor-tabs, var(--border));
 }
 .content {
@@ -55,13 +56,14 @@
 /* Tabs' trailing slot may shrink to 0; keep the action buttons whole. */
 .tabs > :has(> .tabActions) {
   flex: none;
+  margin-left: auto;
 }
 .tabActions {
   flex: none;
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 0 6px 0 8px;
+  padding: 0 0 0 8px;
 }
 .pin {
   color: var(--fg-muted);
