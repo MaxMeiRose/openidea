@@ -59,7 +59,7 @@ jobs:
   windows:
     needs: sync
     if: >-
-      always() && github.repository == 'MaxMeiRose/openidea' &&
+      !cancelled() && github.repository == 'MaxMeiRose/openidea' &&
       (github.event_name == 'push' ||
        (needs.sync.result == 'success' &&
         (needs.sync.outputs.changed == 'true' || github.event_name == 'workflow_dispatch')))
@@ -80,23 +80,31 @@ jobs:
         with: { key: feature-dev-windows-release, cache-on-failure: true }
       - run: pnpm install --frozen-lockfile
       - name: Generate IPC bindings
+        timeout-minutes: 45
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          cargo test --locked --release -p openidea --test export_bindings
+          cargo test --locked --release --timings -p openidea --test export_bindings
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git diff --exit-code src/bindings.ts
-          exit $LASTEXITCODE
-      - name: Test Rust integration
-        shell: pwsh
-        run: |
-          cargo test --locked --release -p ide-agent -p ide-http -p ide-run -p openidea --lib
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: generated-bindings
           path: src/bindings.ts
+      - name: Test Rust integration
+        timeout-minutes: 45
+        shell: pwsh
+        run: |
+          cargo test --locked --release --timings -p ide-agent -p ide-http -p ide-run -p openidea --lib
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cargo-timings
+          path: target/cargo-timings/
+          if-no-files-found: ignore
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm format:check
