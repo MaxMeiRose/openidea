@@ -139,6 +139,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_probe,
         agent::agent_models,
         agent::agent_generate_commit_message,
+        agent::agent_configuration,
         agent::agent_cancel,
         agent::agent_stop_background,
         agent::agent_respond,

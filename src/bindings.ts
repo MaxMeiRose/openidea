@@ -189,6 +189,8 @@ export const commands = {
 	agentProbe: (provider: string, refresh: boolean) => typedError<AgentProbe, IdeError>(__TAURI_INVOKE("agent_probe", { provider, refresh })),
 	agentModels: (provider: string, repo: IpcPath, refresh: boolean, request: RequestId) => typedError<AgentConfigValue[], IdeError>(__TAURI_INVOKE("agent_models", { provider, repo, refresh, request })),
 	agentGenerateCommitMessage: (provider: string, repo: IpcPath, model: string | null, prompt: string, request: RequestId) => typedError<string, IdeError>(__TAURI_INVOKE("agent_generate_commit_message", { provider, repo, model, prompt, request })),
+	/**  Discovers native Claude settings without sending a prompt or running hooks/MCP. */
+	agentConfiguration: (provider: string, model: string | null, task: string | null) => typedError<AgentConfigOption[], IdeError>(__TAURI_INVOKE("agent_configuration", { provider, model, task })),
 	/**  Stops the task's current turn, or with `subagent` only that subagent's work. */
 	agentCancel: (task: string, subagent: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_cancel", { task, subagent })),
 	/**  Stops one of the task's background tasks. */

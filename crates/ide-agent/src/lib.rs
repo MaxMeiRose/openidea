@@ -973,6 +973,14 @@ impl AgentManager {
             if !model_options {
                 s.task.config.retain(|o| o.category.as_deref() != Some("thought_level"));
             }
+            if target.category.as_deref() == Some("model") && s.task.provider == "claude" {
+                let invalid = s.wanted.iter().find(|c| c.id == "effort").is_some_and(|choice| {
+                    !s.task.config.iter().any(|o| o.id == choice.id && o.values.iter().any(|v| v.value == choice.value))
+                });
+                if invalid {
+                    s.wanted.retain(|c| c.id != "effort");
+                }
+            }
             s.wanted.retain(|c| c.id != option);
             s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: value.clone() });
             if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
@@ -1125,6 +1133,80 @@ impl AgentManager {
         self.shared.emit(AgentEvent::Truncated { task: id.to_owned(), length: cut as u32 });
         task.emit_task();
         Ok(first)
+    }
+
+    /// Native Claude's settings before its first task. Its discovery process receives no
+    /// prompt and explicitly disables hooks, MCP servers and transcript persistence.
+    pub async fn configuration(
+        &self,
+        provider: &str,
+        model: Option<&str>,
+        task: Option<&str>,
+    ) -> IdeResult<Vec<AgentConfigOption>> {
+        let task = task.map(|id| self.task(id)).transpose()?;
+        let (cwd, expected_model) = if let Some(task) = &task {
+            let connected = task.live.lock().as_ref().is_some_and(|live| !live.peer.is_closed());
+            let state = task.state.lock();
+            if state.task.provider != provider {
+                return Err(IdeError::invalid("agent does not match this task"));
+            }
+            if state.busy || connected {
+                return Ok(state.task.config.clone());
+            }
+            (state.task.cwd.0.clone(), model_of(&state.task.config))
+        } else {
+            (self.shared.paths.project_root.clone(), None)
+        };
+        let spec = self.shared.spec(provider).ok_or_else(|| IdeError::invalid(format!("unknown agent {provider}")))?;
+        if spec.driver != provider::Driver::Claude {
+            return Ok(self.shared.known_config(provider));
+        }
+        let stderr: Arc<Mutex<Vec<String>>> = Arc::default();
+        let lines = stderr.clone();
+        let peer = (self.shared.connector)(
+            &spec,
+            &cwd,
+            Arc::new(ide_jsonrpc::NoopHandler),
+            Box::new(move |line| lines.lock().push(line)),
+        )
+        .map_err(|e| IdeError::internal(format!("Couldn't start {}: {e}", spec.name)))?;
+        let result = tokio::time::timeout(PROBE_TIMEOUT, async {
+            peer.request::<_, Value>("initialize", acp::initialize_params(&client_info()), None).await?;
+            peer.request::<_, Value>("_openidea/config", json!({"model": model}), None).await
+        })
+        .await;
+        peer.kill();
+        let reply =
+            result.map_err(|_| IdeError::internal("Claude Code settings discovery timed out"))?.map_err(|e| {
+                IdeError::internal(match stderr.lock().last() {
+                    Some(line) => format!("{e}: {line}"),
+                    None => e.to_string(),
+                })
+            })?;
+        let mut options = config::options_of(&reply);
+        if let Some(task) = task {
+            let connected = task.live.lock().as_ref().is_some_and(|live| !live.peer.is_closed());
+            let mut state = task.state.lock();
+            // A prompt may have started while the metadata process was initializing.
+            if state.busy || connected || model_of(&state.task.config) != expected_model {
+                return Ok(state.task.config.clone());
+            }
+            for choice in &state.wanted {
+                if let Some(option) =
+                    options.iter_mut().find(|o| o.id == choice.id && o.values.iter().any(|v| v.value == choice.value))
+                {
+                    option.current = Some(choice.value.clone());
+                }
+            }
+            state.task.config = options.clone();
+            state.task.model = model_of(&options).or(state.task.model.take());
+            drop(state);
+            task.persist();
+            task.emit_task();
+        } else if !options.is_empty() && model.is_none() {
+            self.shared.remember(provider, Some(&options), None, model_of(&options).as_deref());
+        }
+        Ok(options)
     }
 
     /// What `provider` reports about itself, from `initialize` alone: no session is opened,

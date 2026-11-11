@@ -2,10 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { sendKeyAction } from "./Composer";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { AgentCommand, AgentProvider } from "@/bindings";
+import type { AgentCommand, AgentConfigOption, AgentProvider } from "@/bindings";
 
 const agentCommands = vi.fn();
 const agentCreate = vi.fn();
+const agentConfiguration = vi.fn();
 const vcsBranches = vi.fn();
 const vcsBranchInfo = vi.fn();
 const findFiles = vi.fn();
@@ -22,6 +23,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       agentCommands: (provider: string, task: string | null) => agentCommands(provider, task),
       agentCreate: (request: unknown) => agentCreate(request),
       clipboardImage: () => clipboardImage(),
+      agentConfiguration: (provider: string, model: string | null) => agentConfiguration(provider, model),
       vcsBranchInfo: (root: string | null) => vcsBranchInfo(root),
       vcsBranches: (root: string | null) => vcsBranches(root),
       findFiles: (query: string, limit: number) => findFiles(query, limit),
@@ -79,6 +81,7 @@ beforeEach(() => {
       Promise.resolve({ status: "ok", data: { head: root === "/project-b" ? "b-main" : "a-main" } }),
     );
   agentCommands.mockReset();
+  agentConfiguration.mockReset().mockResolvedValue({ status: "ok", data: [] });
   findFiles.mockReset().mockResolvedValue({ status: "ok", data: [] });
   findDirs.mockReset().mockResolvedValue({ status: "ok", data: [] });
   clipboardImage.mockReset().mockResolvedValue({ status: "ok", data: "data:image/png;base64,iVBORw0KGgo=" });
@@ -138,6 +141,63 @@ describe("New Task composer commands", () => {
     expect((await screen.findByRole("listbox", { name: "Commands" })).textContent).toBe("Commands/compact");
   });
 
+  it("discovers Claude models before the first task, refreshes model effort and sends the chosen values", async () => {
+    const model: AgentConfigOption = {
+      id: "model",
+      name: "Model",
+      category: "model",
+      description: null,
+      via: "option",
+      current: "default",
+      values: ["default", "opus", "haiku"].map((value) => ({ value, name: value, description: null })),
+    };
+    const effort: AgentConfigOption = {
+      id: "effort",
+      name: "Effort",
+      category: "thought_level",
+      description: null,
+      via: "option",
+      current: "default",
+      values: ["default", "high", "max"].map((value) => ({ value, name: value, description: null })),
+    };
+    agentCommands.mockResolvedValue({ status: "ok", data: [] });
+    agentConfiguration.mockImplementation((_provider: string, chosen: string | null) =>
+      Promise.resolve({
+        status: "ok",
+        data: [{ ...model, current: chosen ?? "default" }, ...(chosen === "opus" ? [effort] : [])],
+      }),
+    );
+    render(<HomeEditor />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Model" })).toBeEnabled());
+    expect(agentConfiguration).toHaveBeenCalledWith("claude", null);
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    fireEvent.click(screen.getByRole("option", { name: "opus" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Model" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    fireEvent.change(screen.getByRole("slider", { name: "Effort" }), { target: { value: "2" } });
+    expect(useAgents.getState().draft.thoughtLevels?.opus).toEqual({ effort: "max" });
+    // Switching away clears a level unavailable on the next model.
+    fireEvent.click(screen.getByRole("option", { name: "haiku" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Model" })).toBeEnabled());
+    expect(screen.queryByRole("slider", { name: "Effort" })).toBeNull();
+    expect(useAgents.getState().draft.config).toEqual({ model: "haiku" });
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    fireEvent.click(screen.getByRole("option", { name: "opus" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Model" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    expect(screen.getByRole("slider", { name: "Effort" })).toHaveValue("2");
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "test task" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(agentCreate).toHaveBeenCalled());
+    expect(agentCreate.mock.calls[0]![0].config).toEqual(
+      expect.arrayContaining([
+        { id: "model", value: "opus" },
+        { id: "effort", value: "max" },
+      ]),
+    );
+  });
+
   it("names the icon-only Start action and disables it while starting", async () => {
     agentCommands.mockResolvedValue({ status: "ok", data: [] });
     let finish!: (value: unknown) => void;
@@ -148,7 +208,7 @@ describe("New Task composer commands", () => {
     expect(start).toHaveAttribute("data-tooltip", "Start");
     expect(start).toBeDisabled();
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Do the task" } });
-    expect(start).toBeEnabled();
+    await waitFor(() => expect(start).toBeEnabled());
     fireEvent.click(start);
     const starting = screen.getByRole("button", { name: "Starting…" });
     expect(starting).toBeDisabled();

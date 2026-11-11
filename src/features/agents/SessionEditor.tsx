@@ -74,6 +74,7 @@ import {
   workTime,
 } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
+import { useClaudeConfig } from "./useClaudeConfig";
 import {
   groupToolCalls,
   toolGroupLabel,
@@ -2644,6 +2645,13 @@ function SessionComposer({
   const [sending, setSending] = useState(false);
   const agentCommands = useAgentCommands(task.provider, task.id, task.commands);
   const busy = isBusy(task.status);
+  const provider = useAgents((s) => s.providers.find((p) => p.id === task.provider));
+  const settings = useClaudeConfig(
+    provider && { ...provider, config: task.config },
+    task.config.find((o) => o.category === "model")?.current ?? undefined,
+    task.cwd,
+    { task: task.id, active: !busy && task.status !== "archived" },
+  );
   // ↑ recalls this conversation's messages, newest first.
   const history = useMemo(
     () => (entries ?? []).flatMap((e) => (e.type === "user" && e.text ? [e.text] : [])).reverse(),
@@ -2718,7 +2726,7 @@ function SessionComposer({
         onConfig={setOption}
         onSubmit={send}
         disabled={task.status === "archived"}
-        toolbar={<ConfigPickers config={task.config} onChange={setOption} />}
+        toolbar={<ConfigPickers config={task.config} onChange={setOption} disabled={settings.loading} />}
         actions={
           <>
             {busy && <IconButton icon="stop" title="Stop" onClick={() => void cancelTask(task.id)} />}
@@ -2732,6 +2740,14 @@ function SessionComposer({
           </>
         }
       />
+      {settings.error && (
+        <div className={styles.banner} role="alert">
+          <span className={styles.bannerText}>{settings.error}</span>
+          <Button size="small" onClick={settings.retry}>
+            Retry
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

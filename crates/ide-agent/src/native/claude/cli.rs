@@ -17,9 +17,17 @@ pub(super) const BASE_ARGS: &[&str] = &[
     "--permission-prompt-tool",
     "stdio",
     "--include-partial-messages",
-    "--thinking-display",
-    "summarized",
     "--allow-dangerously-skip-permissions",
+];
+
+/// A metadata-only process: no prompt, transcript, hooks or user MCP servers.
+pub(super) const DISCOVERY_ARGS: &[&str] = &[
+    "--no-session-persistence",
+    "--strict-mcp-config",
+    "--mcp-config",
+    "{\"mcpServers\":{}}",
+    "--settings",
+    "{\"disableAllHooks\":true}",
 ];
 
 /// How a session's process starts.

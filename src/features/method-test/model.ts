@@ -1,4 +1,5 @@
 import type { MethodInvocation } from "@/bindings";
+import { argumentError, argumentKind, argumentLiterals } from "./arguments";
 import { parseSource, tokenize, type ClassDecl, type SourceFile } from "@/features/http-client/spring/source";
 
 export interface MethodTarget {
@@ -70,18 +71,13 @@ export const methodKey = (target: MethodTarget) =>
 export const methodLabel = (target: MethodTarget) =>
   `${target.className}#${target.methodName}(${target.parameterTypes.join(", ")})`;
 
-function argument(type: string): unknown {
-  if (/\[\]$|^(?:[\w.]+\.)?(?:List|Set|Collection|Iterable)</.test(type)) return [];
-  const simple = type.split(".").pop();
-  if (
-    /^(?:byte|short|int|long|float|double|Byte|Short|Integer|Long|Float|Double|BigDecimal|BigInteger)$/.test(
-      simple ?? "",
-    )
-  )
-    return 0;
-  if (simple === "boolean" || simple === "Boolean") return false;
-  if (["String", "char", "Character", "UUID", "LocalDate", "LocalDateTime", "Instant"].includes(simple ?? ""))
-    return "";
+export function argumentDefault(type: string): unknown {
+  const container = type.replace(/<.*>/, "").split(".").pop();
+  if (/\[\]$|\.\.\.$/.test(type) || ["List", "Set", "Collection", "Iterable"].includes(container ?? "")) return [];
+  const kind = argumentKind(type);
+  if (kind === "number") return 0;
+  if (kind === "boolean") return false;
+  if (kind === "text" || kind === "character") return "";
   return {};
 }
 
@@ -111,7 +107,7 @@ export function newDraft(target: MethodTarget): MethodDraft {
     implementationClass: target.needsImplementation ? "" : target.className,
     mode: "object",
     argumentsJson: JSON.stringify(
-      target.parameters.map((parameter) => argument(parameter.type)),
+      target.parameters.map((parameter) => argumentDefault(parameter.type)),
       null,
       2,
     ),
@@ -136,6 +132,11 @@ export function invocation(draft: MethodDraft): MethodInvocation {
   const args: unknown = JSON.parse(draft.argumentsJson);
   if (!Array.isArray(args) || args.length !== draft.target.parameters.length)
     throw new Error("Arguments must be a JSON array with one value per parameter");
+  const literals = argumentLiterals(draft.argumentsJson, draft.target.parameters.length)!;
+  for (const [index, parameter] of draft.target.parameters.entries()) {
+    const error = argumentError(parameter.type, literals[index]!);
+    if (error) throw new Error(`${parameter.name}: ${error}`);
+  }
   if (!draft.implementationClass.trim()) throw new Error("Enter the fully qualified implementation class");
   jsonObject(draft.dependenciesJson, "Dependencies");
   jsonObject(draft.propertiesJson, "Properties");

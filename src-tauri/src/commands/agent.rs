@@ -286,6 +286,19 @@ pub async fn agent_rollback(
     agent::rollback(&state.host, window.label(), task, turns).await
 }
 
+/// Discovers native Claude settings without sending a prompt or running hooks/MCP.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_configuration(
+    window: Window,
+    state: State<'_, AppState>,
+    provider: String,
+    model: Option<String>,
+    task: Option<String>,
+) -> IdeResult<Vec<ide_agent::AgentConfigOption>> {
+    agent::configuration(&state.host, window.label(), provider, model, task).await
+}
+
 /// What the agent reports about itself when it starts (no session: no MCP servers, hooks
 /// or sign-in run). Remembered until `refresh`.
 #[tauri::command]

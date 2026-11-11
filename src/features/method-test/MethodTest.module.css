@@ -184,9 +184,48 @@
   height: 18px;
   border: 0;
   background: transparent;
+  color: var(--fg-icon);
   cursor: pointer;
   border-radius: 3px;
 }
 .marker:hover {
   background: var(--bg-hover);
+}
+.arguments {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+.parameterList {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.parameter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.parameterHeading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: var(--fs-ui);
+}
+.parameterHeading > span:first-child {
+  font-weight: 600;
+}
+.parameterHeading > code {
+  color: var(--fg-muted);
+  font-size: var(--fs-ui);
+  overflow-wrap: anywhere;
+}
+.parameterJson {
+  flex: none;
+  min-height: 100px;
+  height: 120px;
 }

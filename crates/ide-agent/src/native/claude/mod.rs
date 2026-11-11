@@ -233,6 +233,10 @@ impl Proc {
     }
 
     async fn control(&self, request: Value) -> Result<Value, String> {
+        self.control_with_timeout(request, CONTROL_TIMEOUT).await
+    }
+
+    async fn control_with_timeout(&self, request: Value, timeout: Duration) -> Result<Value, String> {
         let id = format!("req_{}", self.next.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = oneshot::channel();
         self.pending.lock().insert(id.clone(), tx);
@@ -240,7 +244,7 @@ impl Proc {
             self.pending.lock().remove(&id);
             return Err("Claude Code is not running".into());
         }
-        match tokio::time::timeout(CONTROL_TIMEOUT, rx).await {
+        match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(r)) => r,
             Ok(Err(_)) => Err("Claude Code exited".into()),
             Err(_) => {
@@ -403,6 +407,38 @@ impl Shim {
                     "agentInfo": { "name": "claude", "title": "Claude Code", "version": self.version() },
                     "authMethods": [],
                 }))
+            }
+            "_openidea/config" => {
+                // Discover choices without creating a task or running project hooks/MCP.
+                let config = Config {
+                    program: self.config.program.clone(),
+                    args: self
+                        .config
+                        .args
+                        .iter()
+                        .cloned()
+                        .chain(cli::DISCOVERY_ARGS.iter().map(|s| (*s).into()))
+                        .collect(),
+                    env: self.config.env.clone(),
+                    config_dir: self.config.config_dir.clone(),
+                    pending_dir: self.config.pending_dir.clone(),
+                    cwd: self.config.cwd.clone(),
+                };
+                let discovery = Shim::new(config, self.cli.clone(), self.on_stderr.clone());
+                let id = new_uuid(false);
+                let session =
+                    discovery.add_session(&id, self.config.cwd.clone(), Start::New { id: id.clone() }, false, None);
+                let result = rt.block_on(session.ensure());
+                session.stop();
+                result.map_err(internal)?;
+                let mut settings = session.st.lock().settings.clone();
+                if let Some(model) = params.get("model").and_then(Value::as_str) {
+                    if !settings.valid(settings::MODEL, model) {
+                        return Err(invalid(format!("model has no value {model}")));
+                    }
+                    settings.set_model(model);
+                }
+                Ok(json!({ "configOptions": settings.options() }))
             }
             "session/new" => {
                 let id = new_uuid(false);
@@ -713,9 +749,21 @@ impl Session {
                 session.on_exit(&reader_proc);
             }
         });
-        // Stop ends the turn only: the client stops background tasks one by one.
-        let init = proc.control(json!({ "subtype": "initialize", "perTaskStopAffordance": true })).await?;
-        let applied = proc.control(json!({ "subtype": "get_settings" })).await.unwrap_or_default();
+        let init = match proc.control(json!({ "subtype": "initialize", "perTaskStopAffordance": true })).await {
+            Ok(init) => init,
+            Err(e) => {
+                proc.kill.cancel();
+                return Err(e);
+            }
+        };
+        // Older CLIs silently ignore unknown requests; don't stall every session for 60s.
+        let applied = if Settings::has_model_metadata(&init) {
+            proc.control_with_timeout(json!({ "subtype": "get_settings" }), Duration::from_secs(3))
+                .await
+                .unwrap_or_default()
+        } else {
+            Value::Null
+        };
         let chosen = {
             let mut st = self.st.lock();
             st.settings = Settings::from_cli(&init, &applied);
@@ -739,14 +787,33 @@ impl Session {
                 let level = if value == "default" { Value::Null } else { json!(value) };
                 json!({ "subtype": "apply_flag_settings", "settings": { "effortLevel": level } })
             }
+            settings::THINKING => {
+                let tokens = if value == "default" {
+                    Value::Null
+                } else {
+                    json!(value.parse::<u32>().map_err(|_| "invalid thinking budget")?)
+                };
+                json!({ "subtype": "set_max_thinking_tokens", "max_thinking_tokens": tokens })
+            }
             _ => return Err(format!("no setting {option}")),
         };
         proc.control(request).await?;
-        let mut st = self.st.lock();
-        match option {
-            settings::MODE => st.settings.mode = value.to_owned(),
-            settings::MODEL => st.settings.set_model(value),
-            _ => st.settings.effort = value.to_owned(),
+        let reset_effort = {
+            let mut st = self.st.lock();
+            let before = st.settings.effort.clone();
+            match option {
+                settings::MODE => st.settings.mode = value.to_owned(),
+                settings::MODEL => st.settings.set_model(value),
+                settings::EFFORT => st.settings.effort = value.to_owned(),
+                settings::THINKING => st.settings.thinking = value.to_owned(),
+                _ => unreachable!(),
+            }
+            option == settings::MODEL && before != "default" && st.settings.effort == "default"
+        };
+        if reset_effort {
+            // Reset the CLI's flag override too, not only the dropdown's displayed value.
+            proc.control(json!({ "subtype": "apply_flag_settings", "settings": { "effortLevel": null } })).await?;
+            self.st.lock().chosen.retain(|(id, _)| id != settings::EFFORT);
         }
         Ok(())
     }

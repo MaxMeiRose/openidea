@@ -8,10 +8,10 @@ interface MethodTestWindow extends Window {
 }
 const SOURCE = `package demo;
 @Service public class OrderService {
-  public Order find(long id) { return null; }
+  public Order find(String id) { return null; }
   public int count() { return 0; }
 }`;
-async function openService(page: Page) {
+async function openService(page: Page, source = SOURCE) {
   await page.evaluate(async (source) => {
     const bindings = "/src/bindings.ts";
     const backend = "/src/editor/core/backend.ts";
@@ -57,7 +57,7 @@ async function openService(page: Page) {
     (await import(backend)).docBackend().files.set(path, source);
     (await import(layout)).setToolWindowSize("right", 650);
     await (await import(workbench)).editorService().openFile(path, { focus: true });
-  }, SOURCE);
+  }, source);
   const button = page.locator('.cm-openidea-gutter-method-test button[aria-label*="#find("]');
   await expect(button).toBeVisible();
   await button.click();
@@ -69,15 +69,15 @@ test("Service method form preserves cases, passes Spring options, and reuses the
   workbench: page,
 }) => {
   const panel = await openService(page);
-  const args = panel.getByRole("textbox", { name: "Method arguments", exact: true });
-  await expect(args).toHaveValue("[\n  0\n]");
-  await args.fill("[7]");
+  const args = panel.getByRole("textbox", { name: "Argument id", exact: true });
+  await expect(args).toHaveValue("");
+  await args.fill("sku-7");
   await panel.getByRole("textbox", { name: "Method case name" }).fill("Found order");
   await panel.getByRole("button", { name: "Save method case", exact: true }).click();
-  await args.fill("[99]");
+  await args.fill("changed");
   await panel.getByRole("button", { name: "Saved method cases", exact: true }).click();
   await page.getByRole("option", { name: /^Found order/ }).click();
-  await expect(args).toHaveValue("[7]");
+  await expect(args).toHaveValue("sku-7");
   await panel.getByRole("button", { name: "Execution mode", exact: true }).click();
   await page.getByRole("option", { name: "Spring · selected beans", exact: true }).click();
   await panel.getByRole("tab", { name: "Spring", exact: true }).click();
@@ -90,8 +90,8 @@ test("Service method form preserves cases, passes Spring options, and reuses the
   expect(input).toMatchObject({
     className: "demo.OrderService",
     methodName: "find",
-    parameterTypes: ["long"],
-    argumentsJson: "[7]",
+    parameterTypes: ["String"],
+    argumentsJson: '["sku-7"]',
     mode: "spring",
     profiles: ["dev"],
     configurationClasses: ["demo.TestConfig"],
@@ -129,4 +129,74 @@ test("Stop cancels preparation and ignores its late response", async ({ workbenc
       return (await import(path)).useRun.getState().sessions.length;
     }),
   ).toBe(0);
+});
+
+test("method JSON fields accept pointer focus and keyboard input after leaving a Vim editor", async ({
+  workbench: page,
+}) => {
+  const panel = await openService(page);
+  await page.evaluate(async () => {
+    const path = "/src/platform/actions.ts";
+    await (await import(path)).executeAction("vim.toggle");
+  });
+  const editor = page.locator(".cm-editor .cm-content").first();
+  await editor.click();
+  await panel
+    .getByRole("tablist", { name: "Argument input mode" })
+    .getByRole("tab", { name: "JSON", exact: true })
+    .click();
+  const args = panel.getByRole("textbox", { name: "Method arguments", exact: true });
+  await args.click();
+  await expect(args).toBeFocused();
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.type('["sku-1"]');
+  await expect(args).toHaveValue('["sku-1"]');
+  await panel.getByRole("tab", { name: "Dependencies", exact: true }).click();
+  const dependencies = panel.getByRole("textbox", { name: "Method dependencies", exact: true });
+  await dependencies.click();
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.type('{"repository":{"kind":"mock"}}');
+  await expect(dependencies).toHaveValue('{"repository":{"kind":"mock"}}');
+});
+
+test("typed arguments keep strings, long integers, booleans and collection values distinct", async ({
+  workbench: page,
+}) => {
+  const panel = await openService(
+    page,
+    `package demo;
+import java.util.List;
+@Service public class OrderService {
+ public Object find(String productId, long count, boolean enabled, Payload body, List<Payload> items) {return null;}
+}
+class Payload { public String name; }`,
+  );
+  await panel.getByRole("textbox", { name: "Argument productId", exact: true }).fill('sku-"7",[]');
+  const count = panel.getByRole("textbox", { name: "Argument count", exact: true });
+  await count.click();
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.type("-42");
+  await expect(count).toHaveValue("-42");
+  await count.fill("9007199254740993");
+  await panel.getByRole("checkbox", { name: "Argument enabled", exact: true }).check();
+  await panel.getByRole("textbox", { name: "Argument body", exact: true }).fill('{"name":"sample"}');
+  await panel.getByRole("textbox", { name: "Argument items", exact: true }).fill('[{"name":"one"}]');
+  await panel.screenshot({ path: "/tmp/openidea-method-typed-parameters.png", animations: "disabled" });
+  await panel
+    .getByRole("tablist", { name: "Argument input mode" })
+    .getByRole("tab", { name: "JSON", exact: true })
+    .click();
+  const json = panel.getByRole("textbox", { name: "Method arguments", exact: true });
+  await expect(json).toHaveValue('["sku-\\"7\\",[]",9007199254740993,true,{"name":"sample"},[{"name":"one"}]]');
+  await panel
+    .getByRole("tablist", { name: "Argument input mode" })
+    .getByRole("tab", { name: "Parameters", exact: true })
+    .click();
+  await expect(count).toHaveValue("9007199254740993");
+  await panel.getByRole("checkbox", { name: "Null argument productId", exact: true }).check();
+  await expect(panel.getByRole("textbox", { name: "Argument productId", exact: true })).toBeDisabled();
+  await panel.getByRole("button", { name: "Run method", exact: true }).click();
+  expect((await page.evaluate(() => (window as MethodTestWindow).__methodInput))?.argumentsJson).toBe(
+    '[null,9007199254740993,true,{"name":"sample"},[{"name":"one"}]]',
+  );
 });

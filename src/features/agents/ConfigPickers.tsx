@@ -51,11 +51,13 @@ export function ConfigPickers({
   config,
   values,
   onChange,
+  disabled = false,
 }: {
   config: readonly AgentConfigOption[];
   /** Chosen values that override `current`, by option id. */
   values?: Record<string, string>;
   onChange: (option: string, value: string) => void;
+  disabled?: boolean;
 }) {
   const tx = useTx();
   const [open, setOpen] = useState(false);
@@ -82,6 +84,7 @@ export function ConfigPickers({
               effort={effort}
               effortValue={valueOf(effort)}
               onChange={onChange}
+              disabled={disabled}
             />
           ) : o === mode && allowAll ? (
             <ModePicker
@@ -90,9 +93,10 @@ export function ConfigPickers({
               allowAll={allowAll}
               allowAllValue={valueOf(allowAll)}
               onChange={onChange}
+              disabled={disabled}
             />
           ) : (
-            <ConfigPicker option={o} value={valueOf(o)} onChange={onChange} />
+            <ConfigPicker option={o} value={valueOf(o)} onChange={onChange} disabled={disabled} />
           )}
         </span>
       ))}
@@ -106,6 +110,7 @@ export function ConfigPickers({
             aria-haspopup="dialog"
             aria-expanded={open}
             size="small"
+            disabled={disabled}
             onClick={() => setOpen((v) => !v)}
           />
           <Popup
@@ -121,7 +126,7 @@ export function ConfigPickers({
             {secondary.map((o) => (
               <div key={o.id} className={styles.settingsRow}>
                 <span className={styles.settingsLabel}>{tx(o.name)}</span>
-                <ConfigPicker option={o} value={valueOf(o)} onChange={onChange} framed />
+                <ConfigPicker option={o} value={valueOf(o)} onChange={onChange} disabled={disabled} framed />
               </div>
             ))}
           </Popup>
@@ -136,11 +141,13 @@ function ConfigPicker({
   value,
   onChange,
   framed = false,
+  disabled = false,
 }: {
   option: AgentConfigOption;
   value: string | null;
   onChange: (option: string, value: string) => void;
   framed?: boolean;
+  disabled?: boolean;
 }) {
   const tx = useTx();
   const toggle = switchValues(option);
@@ -148,6 +155,7 @@ function ConfigPicker({
     return (
       <Toggle
         checked={value === toggle.on}
+        disabled={disabled}
         aria-label={tx(option.name)}
         label={framed ? undefined : tx(option.name)}
         onChange={(checked) => onChange(option.id, checked ? toggle.on : toggle.off)}
@@ -159,9 +167,11 @@ function ConfigPicker({
       variant={framed ? "framed" : "ghost"}
       aria-label={option.name}
       value={value}
+      disabled={disabled}
       placeholder={tx(option.name)}
       options={configPickerOptions(option).map((opt) => ({
         ...opt,
+        label: tx(opt.label),
         icon:
           option.category === "approval"
             ? opt.value === "bypass"
@@ -177,7 +187,7 @@ function ConfigPicker({
         option.category === "thought_level" && !framed
           ? (current) => (
               <span className={styles.pickerValue}>
-                <span className={styles.pickerName}>{option.name}</span>
+                <span className={styles.pickerName}>{tx(option.name)}</span>
                 {current?.label ?? tx("Default")}
               </span>
             )
@@ -194,12 +204,14 @@ function ModelEffortPicker({
   effort,
   effortValue,
   onChange,
+  disabled = false,
 }: {
   model: AgentConfigOption;
   modelValue: string | null;
   effort: AgentConfigOption;
   effortValue: string | null;
   onChange: (option: string, value: string) => void;
+  disabled?: boolean;
 }) {
   const tx = useTx();
   const [open, setOpen] = useState(false);
@@ -214,6 +226,7 @@ function ModelEffortPicker({
         type="button"
         className={styles.chip}
         aria-label={tx(model.name)}
+        disabled={disabled}
         aria-haspopup="dialog"
         aria-expanded={open}
         title={summary}
@@ -246,7 +259,12 @@ function ModelEffortPicker({
             <span className={styles.settingsLabel}>{tx(effort.name)}</span>
             <span className={styles.effortValue}>{effortName}</span>
           </div>
-          <EffortSlider option={effort} value={effortValue} onChange={(v) => onChange(effort.id, v)} />
+          <EffortSlider
+            option={effort}
+            value={effortValue}
+            onChange={(v) => onChange(effort.id, v)}
+            disabled={disabled}
+          />
         </div>
         <SelectListbox
           aria-label={tx(model.name)}
@@ -254,7 +272,7 @@ function ModelEffortPicker({
           options={configPickerOptions(model)}
           searchable
           listClassName={styles.modelList}
-          onChoose={(v) => onChange(model.id, v)}
+          onChoose={(v) => !disabled && onChange(model.id, v)}
         />
       </Popup>
     </>
@@ -266,10 +284,12 @@ function EffortSlider({
   option,
   value,
   onChange,
+  disabled = false,
 }: {
   option: AgentConfigOption;
   value: string | null;
   onChange: (value: string) => void;
+  disabled?: boolean;
 }) {
   const tx = useTx();
   const steps = option.values;
@@ -283,6 +303,7 @@ function EffortSlider({
     <div className={styles.effortSlider}>
       <input
         type="range"
+        disabled={disabled}
         min={0}
         max={last}
         step={1}
@@ -312,12 +333,14 @@ function ModePicker({
   allowAll,
   allowAllValue,
   onChange,
+  disabled = false,
 }: {
   mode: AgentConfigOption;
   modeValue: string | null;
   allowAll: AgentConfigOption;
   allowAllValue: string | null;
   onChange: (option: string, value: string) => void;
+  disabled?: boolean;
 }) {
   const tx = useTx();
   const [open, setOpen] = useState(false);
@@ -333,6 +356,7 @@ function ModePicker({
         type="button"
         className={styles.chip}
         aria-label={tx(mode.name)}
+        disabled={disabled}
         aria-haspopup="dialog"
         aria-expanded={open}
         title={summary}
@@ -374,6 +398,7 @@ function ModePicker({
           <span title={allowAll.description ?? undefined}>{tx(allowAll.name)}</span>
           <Toggle
             checked={on}
+            disabled={disabled}
             aria-label={tx(allowAll.name)}
             onChange={(checked) => onChange(allowAll.id, checked ? toggle.on : toggle.off)}
           />

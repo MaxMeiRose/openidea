@@ -209,7 +209,7 @@ const ICONS = {
   "toolwindow-database": "openidea/toolwindows/database",
   "toolwindow-agents": "openidea/toolwindows/agents",
   "toolwindow-api": "openidea/toolwindows/api",
-  "toolwindow-method-test": "nodes/test",
+  "toolwindow-method-test": "openidea/toolwindows/methodTest",
   "toolwindow-eureka": "openidea/toolwindows/eureka",
   "toolwindow-graphql": "openidea/toolwindows/graphql",
   // Coding agents (logos via Paseo)
