@@ -8,7 +8,17 @@ import { confirmChecked, showError } from "@/workbench/messages";
 import { ContextMenuHost, FILES_DRAG, dragSession, hideContextMenu } from "@/ui";
 import { AgentsHeaderActions, AgentsLocationActions, AgentsView } from "./AgentsView";
 import { SESSION_KIND } from "./model";
-import { archiveTask, unarchiveTask, deleteTask, dockTask, openTask, setSessionLocation, useAgents } from "./store";
+import {
+  archiveTask,
+  unarchiveTask,
+  deleteTask,
+  dockTask,
+  importExternalSession,
+  openTask,
+  refreshExternalSessions,
+  setSessionLocation,
+  useAgents,
+} from "./store";
 import { taskActions, taskMenu, useAgentsHeaderMenu } from "./taskActions";
 import { sendPaths } from "./references";
 import styles from "./Agents.module.css";
@@ -39,6 +49,8 @@ vi.mock("./store", async (original) => ({
   archiveTask: vi.fn(async () => {}),
   unarchiveTask: vi.fn(async () => {}),
   deleteTask: vi.fn(async () => {}),
+  importExternalSession: vi.fn(async () => {}),
+  refreshExternalSessions: vi.fn(async () => {}),
   dockTask: vi.fn(),
   setSessionLocation: vi.fn(),
 }));
@@ -109,6 +121,8 @@ beforeEach(() => {
     homeOpen: false,
     sessionLocation: "editor",
     sessionsOpen: false,
+    external: [],
+    externalError: null,
   });
   dispose = registerActions(taskActions);
 });
@@ -167,6 +181,26 @@ describe("Agents selection", () => {
 });
 
 describe("Agents docked view", () => {
+  it("imports an external session from history while keeping the docked conversation mounted", async () => {
+    useAgents.setState({
+      docked: "one",
+      external: [
+        { provider: "codex", sessionId: "terminal-session", title: "Terminal work", cwd: "/project", updatedMs: 0 },
+      ],
+    });
+    setup();
+    const session = screen.getByTestId("docked-session");
+    expect(refreshExternalSessions).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
+    expect(refreshExternalSessions).toHaveBeenCalledOnce();
+    const history = screen.getByRole("dialog", { name: "Agent sessions" });
+    expect(within(history).getByText("Sessions from other apps")).toBeVisible();
+    expect(within(history).getByText("Terminal work")).toBeVisible();
+    await act(async () => fireEvent.click(within(history).getByRole("button", { name: "Import" })));
+    expect(importExternalSession).toHaveBeenCalledWith("codex", "terminal-session");
+    expect(screen.getByTestId("docked-session")).toBe(session);
+  });
+
   it("searches and filters history without closing or remounting the active conversation", () => {
     useAgents.setState({
       docked: "one",

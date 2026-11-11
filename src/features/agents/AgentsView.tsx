@@ -19,12 +19,24 @@ import {
   startPointerDrag,
   type TabItem,
 } from "@/ui";
-import { HOME_KIND, SESSION_KIND, TASK_DRAG, age, branchLabel, groupTasks, sessionKey, type TaskGroup } from "./model";
+import {
+  HOME_KIND,
+  SESSION_KIND,
+  TASK_DRAG,
+  age,
+  branchLabel,
+  groupTasks,
+  providerIcon,
+  sessionKey,
+  type TaskGroup,
+} from "./model";
 import {
   HOME,
   closeDockedTab,
+  importExternalSession,
   isRelocatingAgentTab,
   openHome,
+  refreshExternalSessions,
   selectDockedTab,
   setSessionLocation,
   useAgents,
@@ -129,6 +141,19 @@ export function AgentsView() {
   const searchRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "needsInput" | "running" | "archived">("all");
+  const external = useAgents((s) => s.external);
+  const externalError = useAgents((s) => s.externalError);
+  const [importing, setImporting] = useState<string | null>(null);
+  // Sessions started elsewhere (a terminal, another editor) list on demand (#312).
+  useEffect(() => {
+    if (historyOpen) void refreshExternalSessions();
+  }, [historyOpen]);
+  const importSession = (provider: string, sessionId: string) => {
+    setImporting(`${provider}:${sessionId}`);
+    void importExternalSession(provider, sessionId)
+      .catch(() => {})
+      .finally(() => setImporting(null));
+  };
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["g:archived"]));
   const [selected, setSelected] = useState<Set<string>>(() => {
     const task = docked ?? sessionTask(maybeEditorService()?.activeInput?.());
@@ -441,6 +466,37 @@ export function AgentsView() {
                 />
               </div>
               {taskList}
+              {(external.length > 0 || externalError) && (
+                <>
+                  <div className={styles.historyTitle}>
+                    <T>Sessions from other apps</T>
+                  </div>
+                  {externalError ? (
+                    <div className={styles.empty}>{externalError}</div>
+                  ) : (
+                    <div className={styles.external}>
+                      {external.map((s) => {
+                        const key = `${s.provider}:${s.sessionId}`;
+                        return (
+                          <div key={key} className={styles.row} title={s.cwd ?? s.sessionId}>
+                            <Icon name={providerIcon(s.provider)} size={16} label={providerName(s.provider)} />
+                            <span className={styles.title}>{s.title}</span>
+                            <span className={styles.age}>{age(s.updatedMs ?? 0)}</span>
+                            <button
+                              type="button"
+                              className={styles.link}
+                              disabled={importing === key}
+                              onClick={() => importSession(s.provider, s.sessionId)}
+                            >
+                              <T>Import</T>
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           </div>
         )}

@@ -1065,5 +1065,6 @@
   "Cannot save method cases": "Cannot save method cases",
   "Accept: application/json": "Accept: application/json",
   "/api/example": "/api/example",
-  "Conversation location": "Conversation location"
+  "Conversation location": "Conversation location",
+  "Highlight occurrences of selected text": "Highlight occurrences of selected text"
 }
