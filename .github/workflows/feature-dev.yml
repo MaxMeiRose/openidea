@@ -21,7 +21,7 @@ env:
 
 jobs:
   sync:
-    if: github.repository == 'MaxMeiRose/openidea' && github.event_name != 'push'
+    if: github.repository == 'MaxMeiRose/openidea' && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.merge.outputs.changed }}
@@ -60,9 +60,8 @@ jobs:
     needs: sync
     if: >-
       !cancelled() && github.repository == 'MaxMeiRose/openidea' &&
-      (github.event_name == 'push' ||
-       (needs.sync.result == 'success' &&
-        (needs.sync.outputs.changed == 'true' || github.event_name == 'workflow_dispatch')))
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
+       (needs.sync.result == 'success' && needs.sync.outputs.changed == 'true'))
     runs-on: windows-latest
     timeout-minutes: 120
     env:
