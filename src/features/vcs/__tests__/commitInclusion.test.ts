@@ -72,7 +72,9 @@ describe("changes left out of a commit (#1539)", () => {
     useCommit.setState({ checks: new Map([[files[0]!.path, "all"]]) });
 
     expect(await commitChanges()).toBe("commit1");
-    expect(stage.mock.calls.flatMap(([paths]) => paths)).toEqual([files[0]!.path]);
+    expect(commit.mock.calls[0]?.[0]).toBe("/p");
+    expect(commit.mock.calls[0]?.[2].stage).toEqual([files[0]!.path]);
+    expect(stage).not.toHaveBeenCalled();
     expect(checkOf(files[0]!, useCommit.getState().checks)).toBe("none");
     expect(checkOf(other, useCommit.getState().checks)).toBe("none");
   });
@@ -87,14 +89,15 @@ describe("changes left out of a commit (#1539)", () => {
     expect(checkOf(other, useCommit.getState().checks)).toBe("none");
   });
 
-  it("unstages unchecked files only in the repository being committed", async () => {
+  it("excludes unchecked files only in the repository being committed without changing either index", async () => {
     const same: FileStatus = { ...files[1]!, staged: "modified", unstaged: null };
     const other: FileStatus = { ...same, path: "/other/src/f1.ts" };
     useVcs.setState({ roots: ["/p", "/other"], status: [files[0]!, same, other] });
     useCommit.setState({ checks: new Map([[files[0]!.path, "all"]]) });
 
     expect(await commitChanges()).toBe("commit1");
-    expect(unstage.mock.calls).toEqual([[[same.path]]]);
+    expect(commit.mock.calls[0]?.[2]).toMatchObject({ stage: [files[0]!.path], exclude: [same.path] });
+    expect(unstage).not.toHaveBeenCalled();
     expect(checkOf(other, useCommit.getState().checks)).toBe("none");
   });
 

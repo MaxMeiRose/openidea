@@ -204,7 +204,7 @@ export async function showPushDialog(target: PushTarget = {}) {
   await refreshNow();
   if (target.repo && target.repo !== currentRepo()) return;
   // Several repositories: IDEA's dialog lists each one with outgoing commits.
-  const multi = useVcs.getState().roots.length > 1 && !target.branch && !target.revision;
+  const multi = useVcs.getState().roots.length > 1 && !target.repo && !target.branch && !target.revision;
   const only = target.repo === undefined ? undefined : (target.repo ?? currentRepoRoot() ?? undefined);
   openDialog((close) =>
     multi ? <MultiPushDialog only={only} onClose={close} /> : <PushDialog target={target} onClose={close} />,

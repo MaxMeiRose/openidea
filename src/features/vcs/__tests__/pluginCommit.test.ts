@@ -45,7 +45,10 @@ beforeEach(() => {
   useCommit.setState({
     message: "feat: x",
     amend: false,
-    checks: new Map([["/p/b.ts", "none" as const]]),
+    checks: new Map([
+      ["/p/a.ts", "all" as const],
+      ["/p/b.ts", "none" as const],
+    ]),
     excludedHunks: new Map(),
     checkProblems: [],
   });
@@ -86,7 +89,12 @@ describe("the commit plugins see", () => {
     };
     const changed: FileStatus = { ...files[0]!, path: "/w/a/Foo.java", relPath: "Foo.java" };
     useVcs.setState({ root: "/w", repo: "/w/a", roots: ["/w/a", "/w/b"], status: [changed, staged] });
-    useCommit.setState({ checks: new Map([["/w/b/new.yml", "none" as const]]) });
+    useCommit.setState({
+      checks: new Map([
+        [changed.path, "all" as const],
+        [staged.path, "none" as const],
+      ]),
+    });
     const selection = (await maybeCommitService()!.selection())!;
     expect(selection.repositories).toEqual([
       { root: "/w/a", options: expect.objectContaining({ stage: ["/w/a/Foo.java"], exclude: [] }) },

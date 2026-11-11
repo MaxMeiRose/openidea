@@ -68,7 +68,12 @@ it("shows and loads the selected repository in the push dialog", async () => {
   expect(mocks.log.mock.calls.every(([repo]) => repo === "/p/front")).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "Push" }));
   await waitFor(() =>
-    expect(remote).toHaveBeenCalledWith(expect.objectContaining({ op: "push" }), expect.any(String), ["/p/front"]),
+    expect(remote).toHaveBeenCalledWith(
+      expect.objectContaining({ op: "push" }),
+      expect.any(String),
+      ["/p/front"],
+      expect.any(Function),
+    ),
   );
 });
 

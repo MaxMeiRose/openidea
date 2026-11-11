@@ -77,7 +77,8 @@ export function checkBuild(dir: string): string[] {
   for (const file of readdirSync(dir, { recursive: true, encoding: "utf8" })) {
     if (!file.endsWith(".js")) continue;
     const path = resolve(dir, file);
-    for (const error of checkSource(readFileSync(path, "utf8"), startup.has(path))) errors.push(`${file}: ${error}`);
+    for (const error of checkSource(readFileSync(path, "utf8"), startup.has(path)))
+      errors.push(`${file.replaceAll("\\", "/")}: ${error}`);
   }
   return errors;
 }
