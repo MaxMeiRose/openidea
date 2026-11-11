@@ -24,5 +24,5 @@ pub fn caches_schedule_invalidation(app: AppHandle, options: Option<InvalidateCa
 #[specta::specta]
 pub async fn app_restart(app: AppHandle) {
     app.state::<WindowsState>().set_restart();
-    super::window::app_quit(app).await;
+    super::window::app_quit(app.clone(), app.state::<WindowsState>());
 }

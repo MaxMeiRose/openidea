@@ -7,6 +7,7 @@ import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import * as tauriCore from "@/platform/tauriCore";
 import { Composer } from "./Composer";
+import styles from "./Composer.module.css";
 import { composerDraft, updateComposer, useAgents } from "./store";
 
 const native = vi.hoisted(() => ({ listen: vi.fn() }));
@@ -53,7 +54,12 @@ function setup(root = "/project", projectRoot = "/project") {
   );
   const input = screen.getByRole("textbox") as HTMLTextAreaElement;
   document.elementFromPoint = () => input;
-  return { ...view, input, box: input.parentElement!, editor: screen.getByTestId("editor") };
+  return {
+    ...view,
+    input,
+    box: input.closest<HTMLElement>(`.${styles.composer}`)!,
+    editor: screen.getByTestId("editor"),
+  };
 }
 
 describe("Composer file drops", () => {

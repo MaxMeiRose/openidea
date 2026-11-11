@@ -43,6 +43,7 @@ impl Default for VcsSettings {
 pub struct GitSettings {
     /// Show blame after the current editor line.
     pub inline_blame: bool,
+    pub show_branch_in_project_view: bool,
     /// Path to the git executable; empty = auto-detect.
     pub executable: String,
     /// Default of Update Project: `merge` | `rebase`.
@@ -74,6 +75,7 @@ impl Default for GitSettings {
     fn default() -> Self {
         Self {
             inline_blame: false,
+            show_branch_in_project_view: false,
             executable: String::new(),
             update_method: "merge".into(),
             auto_update_on_push_rejected: false,
@@ -118,6 +120,15 @@ pub struct CommitSettings {
     pub ai_claude_model: String,
     /// Empty uses the UI's localized default commit-message prompt.
     pub ai_prompt: String,
+    /// Plugin before-commit checks turned off (`<plugin id>/<check id>`); the rest run.
+    pub disabled_plugin_checks: Vec<String>,
+    /// Double-click / Enter in the changes view: `None` follows the interface (the
+    /// Commit tool window opens the diff, Local Changes the source file).
+    ///
+    /// No `skip_serializing_if`: an unset value must still appear in
+    /// `Settings::default()`, or `SettingsStore::set` rejects the key as unknown.
+    #[specta(optional)]
+    pub double_click_opens_diff: Option<bool>,
 }
 
 impl Default for CommitSettings {
@@ -141,6 +152,8 @@ impl Default for CommitSettings {
             ai_codex_model: String::new(),
             ai_claude_model: String::new(),
             ai_prompt: String::new(),
+            disabled_plugin_checks: Vec::new(),
+            double_click_opens_diff: None,
         }
     }
 }
@@ -278,6 +291,8 @@ impl Default for PythonDebuggerSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RunSettings {
+    /// Target for configurations without an explicit target. Empty = local.
+    pub default_target: String,
     pub confirm_rerun: bool,
     /// Ask before closing a Run tab whose process is still running.
     pub confirm_terminate: bool,
@@ -288,7 +303,13 @@ pub struct RunSettings {
 
 impl Default for RunSettings {
     fn default() -> Self {
-        Self { confirm_rerun: true, confirm_terminate: true, show_on_start: true, termination_timeout_ms: 3000 }
+        Self {
+            default_target: String::new(),
+            confirm_rerun: true,
+            confirm_terminate: true,
+            show_on_start: true,
+            termination_timeout_ms: 3000,
+        }
     }
 }
 

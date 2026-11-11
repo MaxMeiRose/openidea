@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { clearContext, setContext } from "@/platform/context";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
+import { useRemote } from "@/platform/remote";
 import { resolveMenuItems, type MenuItem } from "@/ui";
 import { registerMenuGroup } from "@/workbench/contributions";
 import * as vcsStore from "@/features/vcs/store";
@@ -47,6 +49,8 @@ const OTHER_ACTIONS = [
   "vcs.annotate",
   "vcs.showDiff",
   "vcs.compareWithBranch",
+  "vcs.compareWithRevision",
+  "vcs.showCurrentRevision",
   "vcs.rollback",
   "vcs.push",
   "vcs.pull",
@@ -81,6 +85,7 @@ afterEach(() => {
   useProject.setState({ project: null, settings: null });
   useProjectTree.setState({ root: null });
   vcsStore.useVcs.setState({ available: false, root: null, roots: [], repo: null });
+  useRemote.setState({ session: null });
 });
 
 describe("project view context menu", () => {
@@ -90,6 +95,19 @@ describe("project view context menu", () => {
     const mixed = labels(contextMenuItems([node("/p/left", true), node("/p/a.txt")]));
     for (const label of ["Compare Directories", "Compare Files", "Compare With…"]) expect(mixed).not.toContain(label);
     expect(labels(contextMenuItems([node("/p/a.txt"), node("/p/b.txt")]))).toContain("Compare Files");
+  });
+
+  it("offers Git for repositories found below a non-Git project root", () => {
+    useProject.setState({ project: { name: "p", root: ROOT, trusted: true, isGit: false, settings: {} } as never });
+    vcsStore.useVcs.setState({ available: false, roots: [] });
+    expect(sub(contextMenuItems([node("/p/a.py")]), "Git")).toBeUndefined();
+    vcsStore.useVcs.setState({ available: true, roots: [ROOT] });
+    setContext("vcsAvailable", true);
+    try {
+      expect(sub(contextMenuItems([node("/p/a.py")]), "Git")).toContain("Commit File…");
+    } finally {
+      clearContext("vcsAvailable");
+    }
   });
 
   it("follows IDEA's order for a file", () => {
@@ -147,6 +165,29 @@ describe("project view context menu", () => {
     }
   });
 
+  it("hides the OS file manager in an SSH or dev-container window, whose files are not on this desktop", () => {
+    const library = { ...node("/root/.m2/lib.jar"), readOnly: true };
+    expect(sub(contextMenuItems([library]), "Open In")).toEqual([revealLabel()]);
+    for (const target of [
+      { kind: "ssh", config: "box" },
+      { kind: "devContainer", folder: "/Users/me/app", config: "" },
+    ] as const) {
+      useRemote.setState({ session: { target, root: ROOT, host: "h", os: "linux", commands: [] } });
+      expect(sub(contextMenuItems([node(`${ROOT}/src/a.py`)]), "Open In")).toEqual(["Terminal"]);
+      expect(labels(contextMenuItems([library]))).not.toContain("Open In");
+    }
+  });
+
+  it("offers file revision actions only for a single file", () => {
+    expect(sub(contextMenuItems([node("/p/a.py")]), "Git")).toEqual(
+      expect.arrayContaining(["Compare with Revision…", "Show Current Revision"]),
+    );
+    for (const nodes of [[node("/p/src", true)], [node("/p/a.py"), node("/p/b.py")]]) {
+      expect(sub(contextMenuItems(nodes), "Git")).not.toContain("Compare with Revision…");
+      expect(sub(contextMenuItems(nodes), "Git")).not.toContain("Show Current Revision");
+    }
+  });
+
   it("offers branch comparison for files, folders, their union and the project root", () => {
     for (const nodes of [
       [node("/p/a.py")],
@@ -164,7 +205,7 @@ describe("project view context menu", () => {
       for (const nodes of [[node("/p/a.py")], [node("/p/src", true)], [node("/p", true, true)]]) {
         expect(sub(contextMenuItems(nodes), "Git")).toContain("Show History");
       }
-      expect(sub(contextMenuItems([node("/p/a.py"), node("/p/src", true)]), "Git")).not.toContain("Show History");
+      expect(sub(contextMenuItems([node("/p/a.py"), node("/p/src", true)]), "Git")).toContain("Show History");
     } finally {
       dispose();
     }
@@ -326,5 +367,25 @@ it("offers workspace removal for every member root", () => {
   );
   expect(contextMenuItems([node("/b/src", true)])).not.toContainEqual(
     expect.objectContaining({ action: "workspace.removeProject" }),
+  );
+});
+
+it("does not offer removal on the attached primary", () => {
+  useProject.setState({
+    project: {
+      root: "/a",
+      name: "A",
+      displayName: "A, b",
+      trusted: true,
+      isGit: false,
+      settings: {},
+      workspace: { version: 1, name: "A", projects: ["/a", "/b"] },
+    },
+  });
+  expect(contextMenuItems([node("/a", true, true)])).not.toContainEqual(
+    expect.objectContaining({ action: "project.detach" }),
+  );
+  expect(contextMenuItems([node("/b", true, true)])).toContainEqual(
+    expect.objectContaining({ action: "project.detach" }),
   );
 });

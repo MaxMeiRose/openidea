@@ -20,6 +20,7 @@ export interface IssueLinkValid {
 
 export interface GitSettingsValid {
   inlineBlame: boolean;
+  showBranchInProjectView: boolean;
   executable: string;
   updateMethod: UpdateMethod;
   autoUpdateOnPushRejected: boolean;
@@ -55,6 +56,10 @@ export interface CommitSettingsValid {
   aiCodexModel: string;
   aiClaudeModel: string;
   aiPrompt: string;
+  /** Plugin before-commit checks turned off (`<plugin id>/<check id>`). */
+  disabledPluginChecks: string[];
+  /** Double-click opens the diff (`true`), the source file (`false`), or follows the interface (`null`). */
+  doubleClickOpensDiff: boolean | null;
 }
 
 export interface VcsSettingsValid {
@@ -98,6 +103,7 @@ export interface DebuggerSettingsValid {
 }
 
 export interface RunSettingsValid {
+  defaultTarget: string;
   confirmRerun: boolean;
   confirmTerminate: boolean;
   showOnStart: boolean;
@@ -190,6 +196,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     historyLimit: 1000,
     git: {
       inlineBlame: false,
+      showBranchInProjectView: false,
       executable: "",
       updateMethod: "merge",
       autoUpdateOnPushRejected: false,
@@ -224,6 +231,8 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       aiCodexModel: "",
       aiClaudeModel: "",
       aiPrompt: "",
+      disabledPluginChecks: [],
+      doubleClickOpensDiff: null,
     },
     confirmation: {
       onCreate: "ask",
@@ -262,7 +271,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     skipLibraryCode: true,
     python: { attachSubprocess: true, gevent: false },
   },
-  run: { confirmRerun: true, confirmTerminate: true, showOnStart: true, terminationTimeoutMs: 3000 },
+  run: { defaultTarget: "", confirmRerun: true, confirmTerminate: true, showOnStart: true, terminationTimeoutMs: 3000 },
   terminal: {
     startDirectory: "",
     env: {},
@@ -295,6 +304,8 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj => (v && typeof v === "object" && !Array.isArray(v) ? (v as Obj) : {});
 const bool = (v: unknown, d: boolean) => (typeof v === "boolean" ? v : d);
+/** A boolean the user may leave unset. */
+const tri = (v: unknown): boolean | null => (typeof v === "boolean" ? v : null);
 const text = (v: unknown, d: string) => (typeof v === "string" ? v : d);
 const nonEmpty = (v: unknown, d: string) => (typeof v === "string" && v.trim() ? v : d);
 const oneOf = <T extends string>(v: unknown, allowed: readonly T[], d: T): T =>
@@ -321,6 +332,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
     historyLimit: num(v.historyLimit, d.historyLimit, L.historyLimit, true),
     git: {
       inlineBlame: bool(g.inlineBlame, d.git.inlineBlame),
+      showBranchInProjectView: bool(g.showBranchInProjectView, d.git.showBranchInProjectView),
       executable: text(g.executable, d.git.executable).trim(),
       updateMethod: oneOf(g.updateMethod, ["merge", "rebase"] as const, d.git.updateMethod),
       autoUpdateOnPushRejected: bool(g.autoUpdateOnPushRejected, d.git.autoUpdateOnPushRejected),
@@ -355,6 +367,8 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       aiCodexModel: text(c.aiCodexModel, d.commit.aiCodexModel).trim(),
       aiClaudeModel: text(c.aiClaudeModel, d.commit.aiClaudeModel).trim(),
       aiPrompt: text(c.aiPrompt, d.commit.aiPrompt),
+      disabledPluginChecks: strings(c.disabledPluginChecks, d.commit.disabledPluginChecks),
+      doubleClickOpensDiff: tri(c.doubleClickOpensDiff),
     },
     confirmation: {
       onCreate: oneOf(conf.onCreate, confirm, d.confirmation.onCreate),
@@ -412,6 +426,7 @@ export function validateRun(raw: unknown): RunSettingsValid {
   const d = DEFAULT_WORKFLOW.run;
   const v = obj(raw);
   return {
+    defaultTarget: text(v.defaultTarget, ""),
     confirmRerun: bool(v.confirmRerun, d.confirmRerun),
     confirmTerminate: bool(v.confirmTerminate, d.confirmTerminate),
     showOnStart: bool(v.showOnStart, d.showOnStart),

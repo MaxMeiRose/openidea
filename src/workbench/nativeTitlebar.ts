@@ -1,9 +1,15 @@
 import { useEffect, useRef } from "react";
-import { call, commands, isTauri } from "@/platform/ipc";
+import { call, commands } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
-import { useWindowGroup } from "@/platform/windowGroups";
 import { clampZoom } from "@/platform/zoom";
+
+/**
+ * Mounted bars, newest last, each with a resend that ignores what it sent before. The window
+ * has one set of buttons: when a bar covering another goes away (the project-opening screen
+ * over the frame), the one left re-aligns them to its own height.
+ */
+const mounted: Array<() => void> = [];
 
 export function useNativeTitlebar(bar: HTMLElement | null) {
   const overlay = usePlatform((s) => s.overlayTitleBar);
@@ -26,57 +32,16 @@ export function useNativeTitlebar(bar: HTMLElement | null) {
     update();
     const observer = new ResizeObserver(update);
     observer.observe(bar);
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    let offGroup: (() => void) | undefined;
-    let refreshFrame: number | undefined;
-    const refresh = () => {
-      // The native tab bar may be laid out after the group/focus event.
+    const resend = () => {
       lastHeight.current = null;
       update();
-      if (refreshFrame !== undefined) cancelAnimationFrame(refreshFrame);
-      refreshFrame = requestAnimationFrame(() => {
-        refreshFrame = undefined;
-        lastHeight.current = null;
-        update();
-      });
     };
-    const onFocus = () => {
-      if (useWindowGroup.getState().tabs.length > 1) refresh();
-    };
-    if (isTauri()) {
-      offGroup = useWindowGroup.subscribe((state, previous) => {
-        const labels = (tabs: typeof state.tabs) => tabs.map((tab) => tab.label).join("\0");
-        if (labels(state.tabs) !== labels(previous.tabs)) refresh();
-      });
-      window.addEventListener("focus", onFocus);
-      void import("@tauri-apps/api/webviewWindow")
-        .then(async ({ getCurrentWebviewWindow }) => {
-          // A global Tauri listener also receives insets emitted to other windows.
-          const off = await getCurrentWebviewWindow().listen<number>("openidea://native-top-inset", ({ payload }) => {
-            if (!disposed && Number.isFinite(payload) && payload >= 0)
-              document.documentElement.style.setProperty("--native-top-inset", `${(payload * 100) / zoom}px`);
-          });
-          if (disposed) off();
-          else {
-            unlisten = off;
-            // Request the current inset after subscribing, even if its first native event
-            // preceded this title bar mounting (opening/restoring a project group).
-            lastHeight.current = null;
-            update();
-          }
-        })
-        .catch((e) => console.warn("cannot observe native window chrome", e));
-    }
+    mounted.push(resend);
     return () => {
-      disposed = true;
-      unlisten?.();
-      offGroup?.();
-      window.removeEventListener("focus", onFocus);
-      if (refreshFrame !== undefined) cancelAnimationFrame(refreshFrame);
       observer.disconnect();
       bar.style.removeProperty("--titlebar-zoom");
-      document.documentElement.style.removeProperty("--native-top-inset");
+      mounted.splice(mounted.indexOf(resend), 1);
+      mounted.at(-1)?.();
     };
   }, [bar, overlay, zoom]);
 }

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within, waitFor } from "@testing-library/react";
 import type { AgentEntry, AgentTask } from "@/bindings";
 import type { ToolCall } from "./conversation";
 
@@ -16,6 +16,7 @@ vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: () => Promise.resolve(() => {}) }),
 }));
 
+import styles from "./Session.module.css";
 import { SessionEditor } from "./SessionEditor";
 import { useAgents } from "./store";
 
@@ -54,11 +55,22 @@ const thought: AgentEntry = { type: "thought", text: "thinking" };
 
 beforeEach(() => {
   backend.entries = [];
-  useAgents.setState({ tasks: new Map([[task.id, task]]), entries: new Map(), composers: new Map(), focus: null });
+  useAgents.setState({
+    loaded: true,
+    tasks: new Map([[task.id, task]]),
+    entries: new Map(),
+    composers: new Map(),
+    focus: null,
+  });
 });
 
-function openSession() {
-  return render(<SessionEditor input={{ kind: "agent-session", key: task.id, data: { task: task.id } }} />);
+async function openSession() {
+  const view = render(<SessionEditor input={{ kind: "agent-session", key: task.id, data: { task: task.id } }} />);
+  await waitFor(() => expect(useAgents.getState().entries.has(task.id)).toBe(true));
+  view.container.querySelectorAll(`details.${styles.processRun}`).forEach((fold) => {
+    if (!fold.hasAttribute("open")) fireEvent.click(fold.querySelector("summary")!);
+  });
+  return view;
 }
 
 describe("tool call groups", () => {
@@ -73,8 +85,8 @@ describe("tool call groups", () => {
       { ...tool("r2", name, "Read second.go"), name: null, kind: "read" },
       { ...tool("s2", name, "Search second"), name: null, kind: "search" },
     ];
-    useAgents.setState({ tasks: new Map([[task.id, { ...task, provider: "codex" }]]) });
-    openSession();
+    useAgents.setState({ loaded: true, tasks: new Map([[task.id, { ...task, provider: "codex" }]]) });
+    await openSession();
     for (const label of ["Terminal", "Read", "Search"]) {
       const group = (await screen.findByText(label, { exact: true })).closest("details")!;
       expect(group).not.toHaveAttribute("open");
@@ -93,29 +105,29 @@ describe("tool call groups", () => {
       thought,
       tool("d", "Read", "Read d.ts"),
     ];
-    openSession();
+    await openSession();
     const group = (await screen.findByText("Read", { exact: true })).closest("details")!;
     expect(group).not.toHaveAttribute("open");
-    expect(within(group).getByText("×3")).toBeVisible();
+    expect(within(group).getByText("×2")).toBeVisible();
     expect(within(group.querySelector("summary")!).getByLabelText("Failed")).toBeInTheDocument();
     expect(within(group).getByText("Read a.ts")).not.toBeVisible();
-    expect(screen.getByRole("alert", { name: "Permission needed" })).toBeVisible();
+    expect(screen.getByRole("region", { name: "Allow tool call?" })).toBeVisible();
     expect(screen.getByText("Other tool").closest("details")).not.toHaveAttribute("open");
-    expect(within(group).getByText("Read c.ts")).not.toBeVisible();
+    expect(screen.getByText("Read c.ts").closest("details")).not.toHaveAttribute("open");
     expect(screen.getByText("Read d.ts").closest("details")).not.toHaveAttribute("open");
 
     fireEvent.click(group.querySelector("summary")!);
     expect(within(group).getByText("Read a.ts")).toBeVisible();
     expect(within(group).getByText("Read b.ts")).toBeVisible();
-    expect(within(group).getByText("Read c.ts")).toBeVisible();
+    expect(screen.getByText("Read c.ts").closest("details")).not.toHaveAttribute("open");
     expect(within(group).getByText("output a")).not.toBeVisible();
     fireEvent.click(within(group).getByText("Read a.ts"));
     expect(within(group).getByText("output a")).toBeVisible();
   });
 
   it("keeps an expanded group and individual output open as calls stream in", async () => {
-    backend.entries = [thought, tool("a", "Read", "Read a.ts", "running")];
-    openSession();
+    backend.entries = [thought, tool("a", "Read", "Read a.ts", "completed")];
+    await openSession();
     const group = (await screen.findByText("Read a.ts")).closest("details")!;
     expect(group).not.toHaveAttribute("open");
     fireEvent.click(group.querySelector("summary")!);
@@ -126,7 +138,7 @@ describe("tool call groups", () => {
         entries: new Map(s.entries).set(task.id, [
           thought,
           tool("a", "Read", "Read a.ts"),
-          tool("b", "Read", "Read b.ts", "running"),
+          tool("b", "Read", "Read b.ts", "completed"),
         ]),
       })),
     );
@@ -152,7 +164,7 @@ describe("tool call groups", () => {
 
   it("starts a replacement call collapsed after the conversation is rolled back", async () => {
     backend.entries = [thought, tool("a", "Read", "Read old.ts")];
-    openSession();
+    await openSession();
     const oldGroup = (await screen.findByText("Read old.ts")).closest("details")!;
     fireEvent.click(oldGroup.querySelector("summary")!);
     expect(oldGroup).toHaveAttribute("open");

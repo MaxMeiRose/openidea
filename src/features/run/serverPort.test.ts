@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergePorts, startedPorts } from "./serverPort";
+import { mergePorts, startedPorts } from "@/platform/serverPort";
 
 describe("application listening ports", () => {
   it.each([

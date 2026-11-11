@@ -119,6 +119,8 @@ jobs:
         timeout-minutes: 45
         shell: pwsh
         run: |
+          # Provider fixtures use sh, which Git for Windows supplies outside Git/cmd.
+          $env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH
           # Test repositories and worktrees use LF fixtures, as in upstream CI.
           git config --global core.autocrlf false
           cargo test --locked --timings --no-fail-fast -p ide-agent -p ide-http -p ide-run -p openidea --lib

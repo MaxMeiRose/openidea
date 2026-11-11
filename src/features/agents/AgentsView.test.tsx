@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import type { AgentTask } from "@/bindings";
 import * as actions from "@/platform/actions";
 import { registerActions } from "@/platform/actions";
@@ -9,7 +9,7 @@ import { ContextMenuHost, FILES_DRAG, dragSession, hideContextMenu } from "@/ui"
 import { AgentsHeaderActions, AgentsLocationActions, AgentsView } from "./AgentsView";
 import { SESSION_KIND } from "./model";
 import { archiveTask, unarchiveTask, deleteTask, dockTask, openTask, setSessionLocation, useAgents } from "./store";
-import { taskActions, taskMenu } from "./taskActions";
+import { taskActions, taskMenu, useAgentsHeaderMenu } from "./taskActions";
 import { sendPaths } from "./references";
 import styles from "./Agents.module.css";
 
@@ -121,8 +121,8 @@ afterEach(() => {
 function setup() {
   render(
     <>
-      <AgentsLocationActions />
       <AgentsHeaderActions />
+      <AgentsLocationActions />
       <AgentsView />
       <ContextMenuHost />
     </>,
@@ -262,6 +262,15 @@ describe("Agents docked view", () => {
     expect(setSessionLocation).toHaveBeenCalledWith("toolWindow");
   });
 
+  it("offers placement in the Agents options menu, checked by the current one", () => {
+    useAgents.setState({ sessionLocation: "toolWindow" });
+    const { result } = renderHook(() => useAgentsHeaderMenu());
+    expect(result.current).toEqual([
+      { kind: "action", action: "agents.useToolWindow", icon: "", checked: true },
+      { kind: "action", action: "agents.useEditor", icon: "", checked: false },
+    ]);
+  });
+
   it("moves the history selection to the tool window without a docked conversation", () => {
     setup();
     expect(screen.queryByRole("button", { name: "Open in Editor" })).toBeNull();
@@ -358,7 +367,9 @@ describe("Agents task menu", () => {
     const menu = taskMenu([useAgents.getState().tasks.get("one")!]);
     expect(menu).not.toContainEqual(expect.objectContaining({ action: "agents.dockTask" }));
     expect(menu).not.toContainEqual(expect.objectContaining({ action: "agents.undockTask" }));
-    expect(menu).toContainEqual(expect.objectContaining({ action: "agents.openTask" }));
+    // A click opens the task: the menu doesn't repeat it.
+    expect(menu).not.toContainEqual(expect.objectContaining({ action: "agents.openTask" }));
+    expect(menu[0]).toMatchObject({ action: "agents.renameTask" });
   });
 });
 

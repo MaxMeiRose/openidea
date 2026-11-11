@@ -24,8 +24,8 @@ import { registerLogPaneActions } from "./logPaneActions";
 import { controlLabel, controlOperation, inProgress } from "./operations";
 import { annotationsShown, blameSlot } from "./blame";
 import { inlineBlame } from "./inlineBlame";
-import { BranchWidget, useBranchesPopup } from "./BranchWidget";
-import { showConflictsDialog } from "./conflictsUi";
+import { BranchWidget, BranchesPopupHost, useBranchesPopup } from "./BranchWidget";
+import { showConflictsDialog, takeContinueWhenResolved } from "./conflictsUi";
 import { registerCompareActions } from "./compare";
 import { DIFF_KIND, diffTitle, type DiffData } from "./diffInput";
 import { VcsDialogHost } from "./dialogs";
@@ -39,6 +39,7 @@ import { registerMergeActions } from "./mergeActions";
 import { baseName } from "./model";
 import { installDiagnosticsTracking } from "./commitChecks";
 import { installPreparedMessage, useCommit } from "./commitStore";
+import { installDraftRevision, provideCommit } from "./commitSelection";
 import { activate as activateConflictBanner } from "./conflictBanner";
 import { activate as activateConflictMarkers } from "./conflictMarkers";
 import { MergeRebaseWidget } from "./MergeRebaseWidget";
@@ -46,6 +47,7 @@ import { installFileConfirmations } from "./confirmations";
 import { installIncomingCheck } from "./incoming";
 import { closeLogTab, installGitLog, selectGitTab, useGitLog } from "./logStore";
 import { installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs } from "./store";
+import { installRootSync } from "./rootSync";
 import { tx } from "@/platform/i18n";
 
 /** The Resolve/Continue/Abort buttons exist in the title bar only while there is something to resolve. */
@@ -186,8 +188,13 @@ export function activate(): () => void {
 
   onConflictsCleared(() => {
     notifications().expire?.("vcs.conflicts");
-    // As IDEA does once the last conflict is resolved: offer to continue the stopped operation.
     const op = inProgress();
+    // Resolved from the Conflicts dialog: the stopped rebase / cherry-pick goes on by itself.
+    if (op && takeContinueWhenResolved() === op) {
+      void controlOperation("continue", op);
+      return;
+    }
+    // Otherwise, as IDEA does once the last conflict is resolved: offer to continue it.
     if (op)
       notifications().notify({
         group: "vcs",
@@ -207,9 +214,12 @@ export function activate(): () => void {
   useCommit.setState({ signOff: workflowSettings().vcs.git.signOff });
   const disposers = [
     installVcsStore(),
+    installRootSync(),
     installGitLog(),
     installDiagnosticsTracking(),
     installPreparedMessage(),
+    installDraftRevision(),
+    provideCommit(),
     installIncomingCheck(),
     installFileConfirmations(),
     // Settings › Git › Sign-off commit: the default of Commit Options › Sign-off Commit.
@@ -230,6 +240,7 @@ export function activate(): () => void {
     trackMergeRebaseItem(),
     installHunkPopup(),
     registerOverlay({ id: "vcs.dialogs", component: VcsDialogHost }),
+    registerOverlay({ id: "vcs.branches", component: BranchesPopupHost }),
     activateConflictBanner(),
     activateConflictMarkers(),
     trackCommitWindow(),

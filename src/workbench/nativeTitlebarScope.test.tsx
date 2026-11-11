@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import type { Settings } from "@/platform/ipc";
+import { commands, type Settings } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import { useNativeTitlebar } from "./nativeTitlebar";
@@ -41,7 +41,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it("does not let another project's native inset cover this window's toolbar", async () => {
+it("does not subscribe to native insets from other project windows", async () => {
   vi.stubGlobal(
     "ResizeObserver",
     class {
@@ -54,10 +54,12 @@ it("does not let another project's native inset cover this window's toolbar", as
   const bar = document.createElement("header");
   vi.spyOn(bar, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 40));
   const { unmount } = renderHook(() => useNativeTitlebar(bar));
-  await waitFor(() => expect(bus.global.mock.calls.length + bus.scoped.mock.calls.length).toBeGreaterThan(0));
+  await waitFor(() => expect(commands.windowSetTitlebarHeight).toHaveBeenCalled());
+  expect(bus.global).not.toHaveBeenCalled();
+  expect(bus.scoped).not.toHaveBeenCalled();
   act(() => bus.emitTo("project-a", 36));
-  expect(document.documentElement.style.getPropertyValue("--native-top-inset")).toBe("36px");
+  expect(document.documentElement.style.getPropertyValue("--native-top-inset")).toBe("");
   act(() => bus.emitTo("project-b", 0));
-  expect(document.documentElement.style.getPropertyValue("--native-top-inset")).toBe("36px");
+  expect(document.documentElement.style.getPropertyValue("--native-top-inset")).toBe("");
   unmount();
 });

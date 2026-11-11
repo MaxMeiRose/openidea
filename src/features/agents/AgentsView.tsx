@@ -55,6 +55,7 @@ export function AgentsHeaderActions() {
         onClick={() => useAgents.setState((s) => ({ sessionsOpen: !s.sessionsOpen }))}
       />
       <IconButton icon="plus" action="agents.newTask" size="small" />
+      <IconButton icon="settings" action="agents.mcpServers" size="small" />
     </>
   );
 }
@@ -336,6 +337,8 @@ export function AgentsView() {
                   {project?.workspace ? ` · ${basename(n.task.projectRoot ?? project.root)}` : ""}
                 </span>
               </span>
+              {/* Ready tasks say so by their group; the others show what they're doing. */}
+              {n.task.status !== "ready" && <TaskStatusIcon status={n.task.status} />}
               {unread.has(n.task.id) && (
                 <span className={styles.unreadDot} role="img" aria-label={tx("Unread")} title={tx("Unread")} />
               )}

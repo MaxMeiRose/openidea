@@ -82,6 +82,7 @@
 }
 .age {
   flex: none;
+  margin-left: auto;
   padding-right: 8px;
   color: var(--fg-subtle);
   font-size: var(--fs-small);

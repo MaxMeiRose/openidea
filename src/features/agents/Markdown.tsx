@@ -1,8 +1,12 @@
 /**
  * Agent messages: Markdown → sanitized HTML (marked + DOMPurify). Fenced code is
  * highlighted and gets a Copy button; inline code naming a file of the task opens it.
+ * Mermaid fences become `[data-mermaid]` placeholders drawn by the Markdown viewer's
+ * shared renderer after each render; the block keeps a Copy button of its own, since
+ * the drawn diagram hides the code block, and `onDiagramDrawn` lets the conversation
+ * follow the end when a diagram draws after the last streamed chunk.
  */
-import { useLayoutEffect, useMemo, useRef } from "react";
+import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { Marked } from "marked";
 import DOMPurify from "dompurify";
 import { highlightInto } from "@/editor/lsp/markdown";
@@ -12,14 +16,83 @@ import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
 import { copyText } from "@/ui";
 import { editorService } from "@/workbench/contributions";
+import { hasMermaid, renderMermaidIn } from "@/features/viewers/markdown/mermaid";
+import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { fileHref, filePathTokens, localFileUriPath, pathLink, type PathLink } from "./conversation";
+import { loadImages } from "./markdownImages";
 import styles from "./Session.module.css";
 
-const marked = new Marked({ gfm: true, breaks: true });
+const escapeHtml = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+const marked = new Marked({
+  gfm: true,
+  breaks: true,
+  renderer: {
+    code({ text, lang }) {
+      if (lang?.trim().split(/\s+/)[0]?.toLowerCase() !== "mermaid") return false;
+      return `<div data-mermaid=""><pre><code class="language-mermaid">${escapeHtml(text)}</code></pre></div>\n`;
+    },
+  },
+});
 
 /** Rendered messages by text, least recently used first: reopening a conversation renders it again. */
 const rendered = new Map<string, string>();
 const RENDERED_MAX = 500;
+
+let purifier: ReturnType<typeof DOMPurify> | null = null;
+
+function purify(): ReturnType<typeof DOMPurify> {
+  if (purifier) return purifier;
+  const p = DOMPurify(window);
+  const sources = new WeakMap<Node, string>();
+  // Preserve image-only file URLs without relaxing URI sanitizing for links or other tags.
+  p.addHook("beforeSanitizeAttributes", (node) => {
+    if (node.tagName !== "IMG") return;
+    sources.set(node, node.getAttribute("src") ?? "");
+    node.removeAttribute("src");
+  });
+  p.addHook("afterSanitizeAttributes", (node) => {
+    const src = sources.get(node);
+    if (src) node.setAttribute("data-image-src", src);
+  });
+  purifier = p;
+  return p;
+}
+
+/**
+ * `text` cut into its top-level blocks (a paragraph, a list, a fence…), each with the
+ * blank lines after it, so they join back into `text`. While a reply streams only its
+ * last block changes: the others keep their rendering. Reference links reach across
+ * blocks, and an HTML block can open in one token and close in another, so a text with
+ * either stays whole. The blocks before the last of `previous` (this text's blocks
+ * before it streamed on) have ended: when `text` still starts with them, only the rest
+ * is cut again.
+ */
+export function markdownBlocks(text: string, previous: readonly string[] = []): string[] {
+  let stable = 0;
+  let offset = 0;
+  while (stable < previous.length - 1 && text.startsWith(previous[stable]!, offset))
+    offset += previous[stable++]!.length;
+  if (stable) {
+    const rest = lexBlocks(text.slice(offset));
+    if (rest) return [...previous.slice(0, stable), ...rest];
+  }
+  return lexBlocks(text) ?? [text];
+}
+
+/** `text`'s blocks, or `null` when it has to render whole. */
+function lexBlocks(text: string): string[] | null {
+  const tokens = marked.lexer(text);
+  if (Object.keys(tokens.links).length || tokens.some((t) => t.type === "html")) return null;
+  const blocks: string[] = [];
+  for (const t of tokens) {
+    if (t.type === "space" && blocks.length) blocks[blocks.length - 1] += t.raw;
+    else blocks.push(t.raw);
+  }
+  // The lexer can drop what it doesn't keep in a token (trailing whitespace); keep the text whole.
+  return blocks.join("") === text ? blocks : null;
+}
 
 export function markdownHtml(text: string): string {
   let html = rendered.get(text);
@@ -33,6 +106,8 @@ export function markdownHtml(text: string): string {
 
 function renderHtml(text: string): string {
   const html = marked.parse(text, { async: false }) as string;
+  // Replies can quote repository content. Styles would reach the whole IDE, and the click
+  // handlers below trust `data-copy` / `data-path`, which only `enhance` may set.
   // DOMPurify removes file: URLs by default. Convert only local file links to
   // paths before sanitizing; every other protocol keeps the usual rules.
   const template = document.createElement("template");
@@ -44,14 +119,25 @@ function renderHtml(text: string): string {
     if (path === null) a.removeAttribute("href");
     else a.setAttribute("href", path);
   });
-  const root = DOMPurify.sanitize(template.innerHTML, {
+  const root = purify().sanitize(template.innerHTML, {
     USE_PROFILES: { html: true },
     RETURN_DOM: true,
-    FORBID_TAGS: ["style", "form"],
-    FORBID_ATTR: ["style"],
+    FORBID_TAGS: ["style", "form", "source"],
+    FORBID_ATTR: ["style", "srcset"],
     ALLOW_DATA_ATTR: false,
+    // Only the mermaid placeholder written by the renderer above; data attributes
+    // quoted in a reply stay out.
+    ADD_ATTR: ["data-mermaid"],
   }) as HTMLElement;
   root.querySelectorAll("li").forEach(wrapLooseText);
+  // WebKit cuts controls inside <pre> out of a text selection, even when transparent.
+  root.querySelectorAll("pre").forEach((pre) => {
+    if (pre.parentElement?.hasAttribute("data-mermaid")) return;
+    const block = document.createElement("div");
+    block.className = styles.codeBlock!;
+    pre.replaceWith(block);
+    block.appendChild(pre);
+  });
   return root.innerHTML;
 }
 
@@ -81,7 +167,7 @@ function wrapLooseText(li: Element) {
   flush();
 }
 
-/** Existing files are cached; a missing file is retried if it is created later. */
+/** Whether a path names an existing file, per path (agents name the same files again and again). */
 const existing = new Map<string, Promise<boolean>>();
 const MAX_CACHED_FILES = 512;
 function fileExists(path: string): Promise<boolean> {
@@ -109,17 +195,7 @@ export function openPathLink(link: PathLink) {
 }
 
 /** Highlighting, Copy buttons and file links over freshly rendered `root`. */
-function enhance(root: HTMLElement, cwd: string): () => void {
-  // Layout effects may run again without replacing the HTML (StrictMode or a
-  // changed working directory). Start from the existing content, not old UI wrappers.
-  root.querySelectorAll(`.${styles.codeBlock}`).forEach((block) => {
-    const pre = block.querySelector("pre");
-    if (pre) block.replaceWith(pre);
-  });
-  root.querySelectorAll(`.${styles.tableScroll}`).forEach((wrapper) => wrapper.replaceWith(...wrapper.childNodes));
-  root
-    .querySelectorAll("[data-agent-text-path]")
-    .forEach((span) => span.replaceWith(document.createTextNode(span.textContent ?? "")));
+function enhance(root: HTMLElement, cwd: string, images: Map<string, Promise<string>>): () => void {
   let alive = true;
   type Candidate = { el: HTMLElement; link: PathLink; revision: number; timer?: ReturnType<typeof setTimeout> };
   const candidates = new Map<string, Candidate[]>();
@@ -129,7 +205,7 @@ function enhance(root: HTMLElement, cwd: string): () => void {
     // While a response streams, wait briefly so partial paths do not each probe the disk.
     candidate.timer = setTimeout(() => {
       void fileExists(candidate.link.path).then((found) => {
-        if (!alive || revision !== candidate.revision || !root.contains(candidate.el)) return;
+        if (!alive || revision !== candidate.revision || !candidate.el.isConnected) return;
         const el = candidate.el;
         el.classList.toggle(styles.fileLink!, found);
         if (found) {
@@ -164,12 +240,13 @@ function enhance(root: HTMLElement, cwd: string): () => void {
     candidates.set(link.path, list);
     update(candidate);
   };
+  const disposeImages = loadImages(root, cwd, images);
+  const copies: HTMLButtonElement[] = [];
   root.querySelectorAll<HTMLElement>("pre > code").forEach((code) => {
     const pre = code.parentElement!;
     const lang = [...code.classList].find((c) => c.startsWith("language-"))?.slice("language-".length) ?? null;
     const text = (code.textContent ?? "").replace(/\n+$/, "");
     code.textContent = text;
-    void highlightInto(code, text, lang);
     const copy = document.createElement("button");
     copy.type = "button";
     copy.className = styles.codeCopy!;
@@ -178,30 +255,20 @@ function enhance(root: HTMLElement, cwd: string): () => void {
     copy.setAttribute("aria-label", label);
     copy.appendChild(iconNode("copy", 14));
     copy.dataset.copy = text;
-    const block = document.createElement("div");
-    block.className = styles.codeBlock!;
-    const header = document.createElement("div");
-    header.className = styles.codeHeader!;
-    const language = document.createElement("span");
-    language.textContent = lang || tx("Code");
-    header.append(language, copy);
-    pre.replaceWith(block);
-    block.append(header, pre);
-    if (!text.includes("\n")) {
+    const block = pre.parentElement!;
+    block.appendChild(copy);
+    copies.push(copy);
+    if (!block.hasAttribute("data-mermaid")) void highlightInto(code, text, lang);
+    if (!text.includes("\n") && !block.hasAttribute("data-mermaid")) {
       const link = pathLink(text, cwd);
       if (link) register(code, link);
     }
   });
-  root.querySelectorAll("table").forEach((table) => {
-    const wrapper = document.createElement("div");
-    wrapper.className = styles.tableScroll!;
-    table.replaceWith(wrapper);
-    wrapper.appendChild(table);
-  });
   root.querySelectorAll<HTMLElement>("code").forEach((code) => {
     if (code.parentElement?.tagName === "PRE" || code.closest("a")) return;
     const link = pathLink(code.textContent ?? "", cwd);
-    if (link) register(code, link);
+    if (!link) return;
+    register(code, link);
   });
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const nodes: Text[] = [];
@@ -239,6 +306,7 @@ function enhance(root: HTMLElement, cwd: string): () => void {
         }
       })
     : undefined;
+
   return () => {
     alive = false;
     off?.();
@@ -246,6 +314,8 @@ function enhance(root: HTMLElement, cwd: string): () => void {
       existing.delete(path);
       for (const candidate of list) clearTimeout(candidate.timer);
     }
+    copies.forEach((copy) => copy.remove());
+    disposeImages();
   };
 }
 
@@ -255,14 +325,109 @@ function openFileElement(file: HTMLElement) {
   openPathLink({ path: file.dataset.agentPath!, line, col });
 }
 
-export function Markdown({ text, cwd }: { text: string; cwd: string }) {
-  const html = useMemo(() => markdownHtml(text), [text]);
+interface PaintedBlock {
+  source: string;
+  nodes: ChildNode[];
+  dispose: () => void;
+}
+
+/** Removes the painted blocks from `from` on. */
+function clearBlocks(painted: PaintedBlock[], from: number) {
+  for (const block of painted.splice(from)) {
+    block.dispose();
+    block.nodes.forEach((n) => n.remove());
+  }
+}
+
+/**
+ * Brings `root` to `sources`: blocks whose source is unchanged keep their nodes (and
+ * whatever was drawn into them); the rest are rendered after them. The nodes go straight
+ * into `root`, as a single rendering would put them, so styles and selections see one
+ * message.
+ */
+function paintBlocks(
+  root: HTMLElement,
+  painted: PaintedBlock[],
+  sources: string[],
+  cwd: string,
+  images: Map<string, Promise<string>>,
+) {
+  let same = 0;
+  while (same < painted.length && same < sources.length && painted[same]!.source === sources[same]) same++;
+  clearBlocks(painted, same);
+  sources.slice(same).forEach((source, i, rest) => {
+    const holder = document.createElement("div");
+    // A streaming reply changes its last block on every frame: kept, those would push
+    // the finished blocks of other messages out of the cache.
+    holder.innerHTML = i === rest.length - 1 && !rendered.has(source) ? renderHtml(source) : markdownHtml(source);
+    const dispose = enhance(holder, cwd, images);
+    const nodes = [...holder.childNodes];
+    root.append(...nodes);
+    painted.push({ source, nodes, dispose });
+  });
+}
+
+export function Markdown({
+  text,
+  cwd,
+  onDiagramDrawn,
+}: {
+  text: string;
+  cwd: string;
+  /** A diagram drew after the message rendered: the conversation may follow the end. */
+  onDiagramDrawn?: () => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => (ref.current ? enhance(ref.current, cwd) : undefined), [html, cwd]);
+  const images = useRef(new Map<string, Promise<string>>());
+  /** The blocks on screen, so a streamed chunk repaints only the blocks it changed. */
+  const painted = useRef<PaintedBlock[]>([]);
+  const paintedCwd = useRef(cwd);
+  /** The last drawing of each mermaid block, stood in while a changed one renders. */
+  const diagrams = useRef<Node[]>([]);
+  // Diagrams are drawn in the active theme's colours: a theme change redraws them.
+  const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    if (paintedCwd.current !== cwd) {
+      clearBlocks(painted.current, 0);
+      paintedCwd.current = cwd;
+    }
+    const sources = markdownBlocks(
+      text,
+      painted.current.map((b) => b.source),
+    );
+    paintBlocks(root, painted.current, sources, cwd, images.current);
+  }, [text, cwd]);
+  useLayoutEffect(() => {
+    const blocks = painted.current;
+    return () => clearBlocks(blocks, 0);
+  }, []);
+  // Mermaid diagrams: before paint, so cached ones don't flash their source. Only a
+  // draw that lands after the render needs the follow — cached ones are in place by
+  // the time the conversation's own render pass scrolls.
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root || !hasMermaid(root)) return;
+    const pass = renderMermaidIn(root, diagrams.current);
+    let live = true;
+    if (pass.async) void pass.done.then(() => live && onDiagramDrawn?.());
+    return () => {
+      live = false;
+      pass.cancel();
+    };
+  }, [text, theme, onDiagramDrawn]);
   return (
     <div
       ref={ref}
       className={styles.markdown}
+      onKeyDown={(e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        const file = (e.target as HTMLElement).closest<HTMLElement>("[data-agent-path]");
+        if (!file) return;
+        e.preventDefault();
+        openFileElement(file);
+      }}
       onClick={(e) => {
         const target = e.target as HTMLElement;
         const copy = target.closest<HTMLElement>("button[data-copy]");
@@ -285,14 +450,6 @@ export function Markdown({ text, cwd }: { text: string; cwd: string }) {
           if (link) openPathLink(link);
         }
       }}
-      onKeyDown={(e) => {
-        if (e.key !== "Enter" && e.key !== " ") return;
-        const file = (e.target as HTMLElement).closest<HTMLElement>("[data-agent-path]");
-        if (!file) return;
-        e.preventDefault();
-        openFileElement(file);
-      }}
-      dangerouslySetInnerHTML={{ __html: html }}
     />
   );
 }

@@ -2,6 +2,7 @@
 import { create } from "zustand";
 import { call, commands } from "@/platform/ipc";
 import { groupOf, type CheckState } from "./changes";
+import type { Commit } from "@/bindings";
 import type { CommitProblem } from "./commitChecks";
 import { currentRepoRoot, useVcs } from "./store";
 import { rootOf, stripSlash } from "./model";
@@ -27,6 +28,8 @@ interface CommitState {
   excludedHunks: Map<string, Set<string>>;
   /** Absolute paths selected in the changes tree. */
   selection: string[];
+  /** Keys of the selected tree nodes: which staging side of a partially staged file. */
+  selectionKeys: string[];
   /** Bumped to focus the message field. */
   focusTick: number;
   /** Bumped to open the commit message history popup. */
@@ -38,6 +41,8 @@ interface CommitState {
   selectedList: string | null;
   /** Selected shelf tree key: shelf id, optionally followed by NUL and a file path. */
   selectedShelf: string | null;
+  /** Commit a Fixup… / Squash Into… message was prepared for: offers Commit and Rebase. */
+  fixupTarget: Commit | null;
 }
 
 export type CommitTab = "changes" | "shelf" | "stashes";
@@ -55,13 +60,23 @@ export const useCommit = create<CommitState>(() => ({
   checks: new Map(),
   excludedHunks: new Map(),
   selection: [],
+  selectionKeys: [],
   focusTick: 0,
   historyTick: 0,
   checkProblems: [],
   tab: "changes",
   selectedList: null,
   selectedShelf: null,
+  fixupTarget: null,
 }));
+
+/** The Fixup… / Squash Into… target while the message still is the one prepared for it. */
+export function pendingFixup(message: string, target: Commit | null): Commit | null {
+  if (!target) return null;
+  return message.startsWith(`fixup! ${target.summary}`) || message.startsWith(`squash! ${target.summary}`)
+    ? target
+    : null;
+}
 
 function readBool(key: string, fallback: boolean): boolean {
   try {
@@ -353,6 +368,7 @@ export function installPreparedMessage(): () => void {
         checks: new Map(),
         excludedHunks: new Map(),
         selection: [],
+        selectionKeys: [],
         tab: "changes",
         selectedList: null,
         selectedShelf: null,
