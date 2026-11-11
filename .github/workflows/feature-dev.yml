@@ -31,7 +31,7 @@ jobs:
         with:
           ref: feature-dev
           fetch-depth: 0
-      - name: Merge original upstream into feature-dev
+      - name: Merge both upstreams into feature-dev
         id: merge
         shell: bash
         run: |
@@ -39,13 +39,18 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add original https://github.com/l0ng-ai/openidea.git
+          git remote add dekwan https://github.com/dekwanlabs/openidea.git
           git fetch original main --no-tags
+          git fetch dekwan main feature/dev --no-tags
           before=$(git rev-parse HEAD)
-          if ! git merge --no-ff --no-edit original/main; then
-            echo "::error::Upstream merge has conflicts. Resolve them locally on feature-dev and push; the branch was not updated."
-            git diff --name-only --diff-filter=U >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+          for upstream in original/main dekwan/main dekwan/feature/dev; do
+            if ! git merge --no-ff --no-edit "$upstream"; then
+              echo "::error::Merge from $upstream has conflicts. Resolve them locally on feature-dev and push; the branch was not updated."
+              git diff --name-only --diff-filter=U >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            echo "$upstream: $(git rev-parse "$upstream")" >> "$GITHUB_STEP_SUMMARY"
+          done
           after=$(git rev-parse HEAD)
           echo "sha=$after" >> "$GITHUB_OUTPUT"
           if [ "$before" = "$after" ]; then
@@ -54,7 +59,7 @@ jobs:
             git push origin HEAD:feature-dev
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
-          echo "Upstream: $(git rev-parse original/main); feature-dev: $after" >> "$GITHUB_STEP_SUMMARY"
+          echo "feature-dev: $after" >> "$GITHUB_STEP_SUMMARY"
 
   windows:
     needs: sync
@@ -63,7 +68,7 @@ jobs:
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
        (needs.sync.result == 'success' && needs.sync.outputs.changed == 'true'))
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -84,11 +89,13 @@ jobs:
             ~/.cargo/git
             target/debug
           key: openidea-debug-v1-windows-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: openidea-debug-v1-windows-${{ steps.toolchain.outputs.cachekey }}-
       - uses: actions/cache/restore@v4
         id: release-cache
         with:
           path: target/release
           key: openidea-release-v1-windows-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: openidea-release-v1-windows-${{ steps.toolchain.outputs.cachekey }}-
       - run: pnpm install --frozen-lockfile
       - name: Generate IPC bindings
         id: bindings
@@ -134,7 +141,7 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm knip
-      - run: pnpm test
+      - run: pnpm test --maxWorkers=2
       - name: Build Windows installer for the fork channel
         id: package
         shell: pwsh
@@ -164,6 +171,12 @@ jobs:
           $installers = @(Get-ChildItem -LiteralPath target/release/bundle/nsis -Filter '*x64-setup.exe')
           if ($installers.Count -ne 1) { throw 'Expected exactly one x64 NSIS installer' }
           $installer = $installers[0]
+          # Tauri restores the unpatched build output after packaging; hash the installed file.
+          $extractPath = Join-Path $env:RUNNER_TEMP 'feature-dev-package-content'
+          & 'C:\Program Files\7-Zip\7z.exe' x $installer.FullName "-o$extractPath" -y openidea.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $packagedExecutable = Join-Path $extractPath 'openidea.exe'
+          if (!(Test-Path -LiteralPath $packagedExecutable)) { throw 'Installer is missing openidea.exe' }
           $manifestPath = Join-Path $env:RUNNER_TEMP 'build-info.json'
           @{
             schema = 1
@@ -175,7 +188,7 @@ jobs:
             platform = 'windows-x86_64'
             installerName = $installer.Name
             installerSha256 = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-            executableSha256 = (Get-FileHash -LiteralPath target/release/openidea.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+            executableSha256 = (Get-FileHash -LiteralPath $packagedExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
             runUrl = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
           } | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding utf8
           $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'

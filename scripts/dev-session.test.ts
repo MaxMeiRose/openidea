@@ -37,6 +37,8 @@ describe("development worktrees", () => {
     const vite = await createVite({
       configFile: false,
       logLevel: "silent",
+      // This test checks the listener, without scanning the application's dependency graph.
+      optimizeDeps: { noDiscovery: true, include: [] },
       server: { host: "127.0.0.1", port, strictPort: false, watch: null },
     });
     try {
