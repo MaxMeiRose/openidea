@@ -381,7 +381,7 @@ pub struct BuildInfo {
 #[specta::specta]
 pub fn app_build_info(app: AppHandle) -> BuildInfo {
     BuildInfo {
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: app.package_info().version.to_string(),
         build: option_env!("OPENIDEA_BUILD").unwrap_or("dev").into(),
         profile: if cfg!(debug_assertions) { "debug" } else { "release" }.into(),
         os: std::env::consts::OS.into(),
@@ -420,10 +420,11 @@ fn config_endpoints<R: tauri::Runtime>(app: &AppHandle<R>) -> Vec<String> {
 
 /// The endpoints tried in order: `source` first, the other source when it fails or has
 /// no manifest. Bundles are signed, so either source's manifest and downloads verify.
-/// No official endpoint (a build without updates) means no mirror either. Nightly builds
-/// aren't mirrored: the mirror's manifest would move them to the stable version.
+/// Custom and nightly channels stay on their configured endpoints: the official
+/// mirror would otherwise move them to a different release channel.
 fn source_endpoints(official: Vec<String>, source: UpdateSource, nightly: bool) -> Vec<String> {
-    if official.is_empty() || nightly {
+    let stable = "https://github.com/l0ng-ai/openidea/releases/latest/download/latest.json";
+    if official.is_empty() || nightly || !official.iter().any(|endpoint| endpoint == stable) {
         return official;
     }
     let mirror = vec![CNB_ENDPOINT.to_string()];
@@ -674,6 +675,14 @@ mod tests {
         assert_eq!(source_endpoints(vec![nightly.clone()], UpdateSource::Github, true), [nightly]);
         assert!(is_nightly("0.1.40-nightly.202611081417"));
         assert!(!is_nightly("0.1.40"));
+    }
+
+    #[test]
+    fn custom_update_channels_never_fall_back_to_another_repository() {
+        let endpoint = "https://github.com/MaxMeiRose/openidea/releases/download/feature-dev-latest/latest.json";
+        for source in [UpdateSource::Github, UpdateSource::Cnb] {
+            assert_eq!(source_endpoints(vec![endpoint.into()], source, false), [endpoint]);
+        }
     }
 
     #[test]

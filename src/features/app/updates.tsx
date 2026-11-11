@@ -58,12 +58,15 @@ async function chooseSource(source: UpdateSource) {
  * Offered once a download failed or was cancelled (likely too slow): the same install from
  * the other source. A check never needs it, since it already falls back to the other source.
  */
-function otherSourceAction(version: string, source: UpdateSource) {
+function otherSourceActions(version: string, source: UpdateSource) {
+  if (version.includes("-feature-dev.")) return [];
   const other: UpdateSource = source === "cnb" ? "github" : "cnb";
-  return {
-    label: t("app.update.retryWith", { source: SOURCE_NAMES[other] }),
-    run: () => void chooseSource(other).then(() => installUpdate(version, other)),
-  };
+  return [
+    {
+      label: t("app.update.retryWith", { source: SOURCE_NAMES[other] }),
+      run: () => void chooseSource(other).then(() => installUpdate(version, other)),
+    },
+  ];
 }
 
 let checking: Promise<void> | null = null;
@@ -245,7 +248,7 @@ async function runInstall(version: string, source: UpdateSource) {
         level: "info",
         title: t("app.update.cancelled"),
         key: UPDATE_KEY,
-        actions: [otherSourceAction(version, source)],
+        actions: otherSourceActions(version, source),
         userInitiated: true,
       });
     } else {
@@ -256,7 +259,7 @@ async function runInstall(version: string, source: UpdateSource) {
         key: UPDATE_KEY,
         actions: [
           { label: t("app.update.retry"), run: () => void installUpdate(version, source) },
-          otherSourceAction(version, source),
+          ...otherSourceActions(version, source),
         ],
         userInitiated: true,
       });

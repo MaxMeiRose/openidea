@@ -190,6 +190,15 @@ describe("Install and Restart", () => {
     install.resolve(ok(null));
     await tick();
   });
+
+  it.each(["unavailable", "cancelled"])("keeps a %s fork update on its own download source", async (kind) => {
+    const done = installUpdate("0.1.41-feature-dev.10.1");
+    install.resolve({ status: "error", error: { kind, message: kind } });
+    await done;
+    expect(notes.at(-1)!.actions!.map((action) => action.label)).toEqual(kind === "unavailable" ? ["Retry"] : []);
+    expect(settingsSet).not.toHaveBeenCalled();
+    expect(appRestart).not.toHaveBeenCalled();
+  });
 });
 
 describe("Check for Updates", () => {

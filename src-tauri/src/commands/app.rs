@@ -27,7 +27,7 @@ pub use ide_host::ops::project::ProjectInfo;
 pub fn app_info(state: State<'_, AppState>) -> AppInfo {
     state.note_ipc();
     AppInfo {
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: state.app.package_info().version.to_string(),
         platform: std::env::consts::OS.into(),
         windows_build_number: ide_core::platform::windows_build_number(),
         config_dir: state.config_dir.clone().into(),

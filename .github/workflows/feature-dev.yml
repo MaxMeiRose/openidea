@@ -122,17 +122,33 @@ jobs:
           fi
           if [ "$FORCE_BUILD" != true ]; then
             delivered=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '
-              .[] | select(.draft == false)
+              [.[] | select(.draft == false)
               | select(.tag_name | test("^feature-dev-[a-f0-9]{12}-[0-9]+-[0-9]+$"))
               | select(any(.assets[]; .name == "build-info.json" and .state == "uploaded" and .size > 0))
               | select(any(.assets[]; (.name | test("^OpenIDEA_.*_x64-setup\\.exe$")) and .state == "uploaded" and .size > 0))
-              | .target_commitish')
-            if printf '%s\n' "$delivered" | grep -Fxq "$sha"; then
-              skip "$sha already has a published Windows installer; use force only for an intentional rebuild."
-              exit 0
-            fi
+              | select(any(.assets[]; .name == "latest.json" and .state == "uploaded" and .size > 0))
+              | select(any(.assets[]; (.name | test("^OpenIDEA_.*_x64-setup\\.exe\\.sig$")) and .state == "uploaded" and .size > 0))]
+              | sort_by(.published_at) | reverse | .[] | [.target_commitish, .tag_name] | @tsv')
+            while IFS=$'\t' read -r delivered_sha delivered_tag; do
+              if [ "$delivered_sha" = "$sha" ]; then
+                manifest_dir="$RUNNER_TEMP/delivered-update"
+                gh release download "$delivered_tag" --repo "$GITHUB_REPOSITORY" --pattern latest.json --dir "$manifest_dir" --clobber
+                pwsh -NoProfile -File scripts/publish-feature-dev-channel.ps1 -ManifestPath "$manifest_dir/latest.json" -Commit "$sha" -Repository "$GITHUB_REPOSITORY"
+                skip "$sha already has a signed Windows release; its update channel is ready. Use force only for an intentional rebuild."
+                exit 0
+              fi
+            done <<< "$delivered"
           fi
           echo "build=true" >> "$GITHUB_OUTPUT"
+      - name: Require the fork updater signing key
+        if: steps.build.outputs.build == 'true'
+        env:
+          SIGNING_KEY_CONFIGURED: ${{ secrets.FEATURE_DEV_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$SIGNING_KEY_CONFIGURED" != true ]; then
+            echo "::error::Configure FEATURE_DEV_SIGNING_PRIVATE_KEY before building the feature-dev update channel."
+            exit 1
+          fi
       - uses: pnpm/action-setup@v5
         if: steps.build.outputs.build == 'true'
         with: { version: 11.28.11 }
@@ -231,17 +247,16 @@ jobs:
           restore-keys: openidea-release-v1-windows-${{ steps.toolchain.outputs.cachekey }}-
       - name: Build Windows installer for the fork channel
         id: package
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.FEATURE_DEV_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         shell: pwsh
         run: |
-          # Keep the installed identity. Updates are delivered by the local task,
-          # so the official in-app updater must not overwrite the fork.
-          $config = @{
-            bundle = @{ createUpdaterArtifacts = $false; windows = @{ nsis = @{ installMode = 'currentUser' } } }
-            plugins = @{ updater = @{ endpoints = @() } }
-          }
+          $ErrorActionPreference = 'Stop'
           $configPath = Join-Path $env:RUNNER_TEMP 'feature-dev-tauri.json'
-          $config | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $configPath -Encoding utf8
-          pnpm tauri build --bundles nsis --config $configPath
+          node scripts/feature-dev-release.ts prepare src-tauri/tauri.conf.json src-tauri/tauri.feature-dev.conf.json $configPath $env:GITHUB_RUN_NUMBER $env:GITHUB_RUN_ATTEMPT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm tauri build --bundles nsis --config $configPath --ci
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "built=true" >> $env:GITHUB_OUTPUT
       - uses: actions/cache/save@v4
@@ -257,8 +272,9 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $commit = (git rev-parse HEAD).Trim()
           $tag = "feature-dev-$($commit.Substring(0, 12))-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $version = (Get-Content (Join-Path $env:RUNNER_TEMP 'feature-dev-tauri.json') -Raw | ConvertFrom-Json).version
           $installer = Get-Item -LiteralPath "target/release/bundle/nsis/OpenIDEA_${version}_x64-setup.exe"
+          $signature = Get-Item -LiteralPath "$($installer.FullName).sig"
           # Tauri restores the unpatched build output after packaging; hash the installed file.
           $extractPath = Join-Path $env:RUNNER_TEMP 'feature-dev-package-content'
           & 'C:\Program Files\7-Zip\7z.exe' x $installer.FullName "-o$extractPath" -y openidea.exe
@@ -273,6 +289,8 @@ jobs:
             commit = $commit
             tag = $tag
             version = $version
+            upstreamVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+            inAppUpdates = $true
             platform = 'windows-x86_64'
             installerName = $installer.Name
             installerSha256 = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -280,10 +298,13 @@ jobs:
             runUrl = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
           } | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding utf8
           $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
-          "Windows x64 build of feature-dev at $commit. IPC generation, Rust integration tests, frontend typecheck, lint and tests passed. Install with the local feature-dev update task." |
-            Set-Content -LiteralPath $notesPath -Encoding utf8
-          gh release create $tag $installer.FullName $manifestPath --repo $env:GITHUB_REPOSITORY --target $commit --draft --prerelease --latest=false --title "OpenIDEA feature-dev $($commit.Substring(0, 12))" --notes-file $notesPath
+          git log -1 --format=%B | Set-Content -LiteralPath $notesPath -Encoding utf8
+          $updateManifestPath = Join-Path $env:RUNNER_TEMP 'latest.json'
+          node scripts/feature-dev-release.ts manifest $manifestPath $signature.FullName $notesPath $updateManifestPath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          gh release create $tag $installer.FullName $signature.FullName $manifestPath $updateManifestPath --repo $env:GITHUB_REPOSITORY --target $commit --draft --prerelease --latest=false --title "OpenIDEA $version" --notes-file $notesPath
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --prerelease --latest=false
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./scripts/publish-feature-dev-channel.ps1 -ManifestPath $updateManifestPath -Commit $commit -Repository $env:GITHUB_REPOSITORY
           "Release: https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$tag" >> $env:GITHUB_STEP_SUMMARY
