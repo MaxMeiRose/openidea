@@ -3,36 +3,55 @@ name: Feature dev delivery
 on:
   push:
     branches: [feature-dev]
+    paths-ignore:
+      - "docs/**"
+      - "**/AGENTS.md"
+      - ".agents/**"
+      - ".claude/**"
+      - "README*.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/assets/**"
+      - ".github/pull_request_template.md"
   schedule:
     # 10:17 China time. Scheduled workflows run from the default branch.
     - cron: "17 2 * * *"
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild even if this commit already has a published Windows installer"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 concurrency:
   group: feature-dev-delivery
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
 
 jobs:
-  sync:
-    if: github.repository == 'MaxMeiRose/openidea' && github.event_name == 'schedule'
+  prepare:
+    if: github.repository == 'MaxMeiRose/openidea' && github.ref == 'refs/heads/feature-dev'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     outputs:
-      changed: ${{ steps.merge.outputs.changed }}
-      sha: ${{ steps.merge.outputs.sha }}
+      build: ${{ steps.build.outputs.build }}
+      sha: ${{ steps.source.outputs.sha }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: feature-dev
-          fetch-depth: 0
+          ref: ${{ github.event_name == 'schedule' && 'feature-dev' || github.sha }}
+          fetch-depth: ${{ github.event_name == 'schedule' && '0' || '1' }}
+          filter: blob:none
       - name: Merge both upstreams into feature-dev
         id: merge
+        if: github.event_name == 'schedule'
         shell: bash
         run: |
           set -euo pipefail
@@ -55,18 +74,87 @@ jobs:
           echo "sha=$after" >> "$GITHUB_OUTPUT"
           if [ "$before" = "$after" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "code_changed=false" >> "$GITHUB_OUTPUT"
           else
+            changed_files=$(git diff --name-only "$before" "$after")
+            docs='(^docs/|(^|/)AGENTS\.md$|^\.agents/|^\.claude/|^README[^/]*\.md$|^CONTRIBUTING\.md$|^SECURITY\.md$|^\.github/ISSUE_TEMPLATE/|^\.github/assets/|^\.github/pull_request_template\.md$)'
+            code_changes=$(printf '%s\n' "$changed_files" | grep -Ev "$docs" || true)
+            if [ -n "$code_changes" ]; then
+              echo "code_changed=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "code_changed=false" >> "$GITHUB_OUTPUT"
+            fi
             git push origin HEAD:feature-dev
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
           echo "feature-dev: $after" >> "$GITHUB_STEP_SUMMARY"
+      - name: Select the source commit
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Skip unnecessary Windows builds
+        id: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          UPSTREAM_CHANGED: ${{ steps.merge.outputs.changed }}
+          CODE_CHANGED: ${{ steps.merge.outputs.code_changed }}
+          FORCE_BUILD: ${{ inputs.force }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          skip() {
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "$1" >> "$GITHUB_STEP_SUMMARY"
+          }
+          if [ "$EVENT_NAME" = schedule ] && [ "$UPSTREAM_CHANGED" != true ]; then
+            skip "No new upstream commits; no Windows runner is needed."
+            exit 0
+          fi
+          if [ "$EVENT_NAME" = schedule ] && [ "$CODE_CHANGED" != true ]; then
+            skip "Only upstream documentation changed; no Windows runner is needed."
+            exit 0
+          fi
+          sha=$(git rev-parse HEAD)
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/feature-dev" --jq .object.sha)
+          if [ "$sha" != "$latest" ]; then
+            skip "$sha has been superseded by $latest; no Windows runner is needed."
+            exit 0
+          fi
+          if [ "$FORCE_BUILD" != true ]; then
+            delivered=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '
+              .[] | select(.draft == false)
+              | select(.tag_name | test("^feature-dev-[a-f0-9]{12}-[0-9]+-[0-9]+$"))
+              | select(any(.assets[]; .name == "build-info.json" and .state == "uploaded" and .size > 0))
+              | select(any(.assets[]; (.name | test("^OpenIDEA_.*_x64-setup\\.exe$")) and .state == "uploaded" and .size > 0))
+              | .target_commitish')
+            if printf '%s\n' "$delivered" | grep -Fxq "$sha"; then
+              skip "$sha already has a published Windows installer; use force only for an intentional rebuild."
+              exit 0
+            fi
+          fi
+          echo "build=true" >> "$GITHUB_OUTPUT"
+      - uses: pnpm/action-setup@v5
+        if: steps.build.outputs.build == 'true'
+        with: { version: 11.28.11 }
+      - uses: actions/setup-node@v5
+        if: steps.build.outputs.build == 'true'
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+        if: steps.build.outputs.build == 'true'
+      - run: pnpm typecheck
+        if: steps.build.outputs.build == 'true'
+      - run: pnpm lint
+        if: steps.build.outputs.build == 'true'
+      - run: pnpm format:check
+        if: steps.build.outputs.build == 'true'
+      - run: pnpm knip
+        if: steps.build.outputs.build == 'true'
+      - run: pnpm test --maxWorkers=2
+        if: steps.build.outputs.build == 'true'
 
   windows:
-    needs: sync
-    if: >-
-      !cancelled() && github.repository == 'MaxMeiRose/openidea' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
-       (needs.sync.result == 'success' && needs.sync.outputs.changed == 'true'))
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
     runs-on: windows-latest
     timeout-minutes: 180
     env:
@@ -74,7 +162,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.sync.outputs.sha || github.sha }}
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: pnpm/action-setup@v5
         with: { version: 11.28.11 }
       - uses: actions/setup-node@v5
@@ -90,12 +178,6 @@ jobs:
             target/debug
           key: openidea-debug-v1-windows-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
           restore-keys: openidea-debug-v1-windows-${{ steps.toolchain.outputs.cachekey }}-
-      - uses: actions/cache/restore@v4
-        id: release-cache
-        with:
-          path: target/release
-          key: openidea-release-v1-windows-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
-          restore-keys: openidea-release-v1-windows-${{ steps.toolchain.outputs.cachekey }}-
       - run: pnpm install --frozen-lockfile
       - name: Generate IPC bindings
         id: bindings
@@ -108,19 +190,12 @@ jobs:
           "generated=true" >> $env:GITHUB_OUTPUT
           git diff --exit-code src/bindings.ts
           exit $LASTEXITCODE
-      - uses: actions/cache/save@v4
-        if: always() && steps.bindings.outputs.generated == 'true' && steps.debug-cache.outputs.cache-hit != 'true'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target/debug
-          key: ${{ steps.debug-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v4
-        if: always() && steps.bindings.outputs.generated == 'true'
+        if: failure() && steps.bindings.outputs.generated == 'true'
         with:
           name: generated-bindings
           path: src/bindings.ts
+          retention-days: 7
       - name: Test Rust integration
         timeout-minutes: 45
         shell: pwsh
@@ -131,17 +206,29 @@ jobs:
           git config --global core.autocrlf false
           cargo test --locked --timings --no-fail-fast -p ide-agent -p ide-http -p ide-run -p openidea --lib
           exit $LASTEXITCODE
+      - uses: actions/cache/save@v4
+        if: >-
+          !cancelled() && steps.bindings.outputs.generated == 'true' &&
+          steps.debug-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+          key: ${{ steps.debug-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: failure()
         with:
           name: cargo-timings
           path: target/cargo-timings/
           if-no-files-found: ignore
-      - run: pnpm typecheck
-      - run: pnpm lint
-      - run: pnpm format:check
-      - run: pnpm knip
-      - run: pnpm test --maxWorkers=2
+          retention-days: 7
+      - uses: actions/cache/restore@v4
+        id: release-cache
+        with:
+          path: target/release
+          key: openidea-release-v1-windows-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: openidea-release-v1-windows-${{ steps.toolchain.outputs.cachekey }}-
       - name: Build Windows installer for the fork channel
         id: package
         shell: pwsh
@@ -158,7 +245,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "built=true" >> $env:GITHUB_OUTPUT
       - uses: actions/cache/save@v4
-        if: always() && steps.package.outputs.built == 'true' && steps.release-cache.outputs.cache-hit != 'true'
+        if: >-
+          !cancelled() && steps.package.outputs.built == 'true' &&
+          steps.release-cache.outputs.cache-hit != 'true'
         with:
           path: target/release
           key: ${{ steps.release-cache.outputs.cache-primary-key }}
@@ -194,6 +283,8 @@ jobs:
           $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
           "Windows x64 build of feature-dev at $commit. IPC generation, Rust integration tests, frontend typecheck, lint and tests passed. Install with the local feature-dev update task." |
             Set-Content -LiteralPath $notesPath -Encoding utf8
-          gh release create $tag $installer.FullName $manifestPath --repo $env:GITHUB_REPOSITORY --target $commit --prerelease --latest=false --title "OpenIDEA feature-dev $($commit.Substring(0, 12))" --notes-file $notesPath
+          gh release create $tag $installer.FullName $manifestPath --repo $env:GITHUB_REPOSITORY --target $commit --draft --prerelease --latest=false --title "OpenIDEA feature-dev $($commit.Substring(0, 12))" --notes-file $notesPath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --prerelease --latest=false
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "Release: https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$tag" >> $env:GITHUB_STEP_SUMMARY

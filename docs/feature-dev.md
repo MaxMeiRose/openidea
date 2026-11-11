@@ -10,10 +10,15 @@
 
 `.github/workflows/feature-dev.yml` 每天北京时间 10:17 依次尝试把 `l0ng-ai/openidea/main` 和
 `dekwanlabs/openidea/main`、`dekwanlabs/openidea/feature/dev` 合并到 `feature-dev`；已包含的提交会跳过，GitHub 可能延迟执行。
-冲突会让任务失败，远程分支保持原状，需手动处理。推送 `feature-dev` 和手动运行工作流也会构建。
+冲突会让任务失败，远程分支保持原状，需手动处理。推送 `feature-dev` 和手动运行工作流也会检查是否需要构建。
 GitHub Token 的自动合并推送不会触发新的工作流，因此同一次任务直接继续构建。
 
-Windows x64 包通过 IPC 生成一致性、相关 Rust 测试、前端类型检查、lint 和测试后，发布到本 fork 的 `feature-dev-*` 预发布版本。
+纯文档推送不触发打包；定时合并只有文档变化时也不打包。没有上游更新、提交已过时或该提交已有完整的已发布 Windows 安装包时，在 Linux 阶段结束，不占用 Windows runner。
+前端类型、lint、格式、knip 和测试先在 Linux 执行，通过后才开始 Windows IPC 生成一致性检查、Rust 测试和打包。
+新推送会取消旧流水线；手动或定时任务排队执行，已发布的同一提交会跳过。确需重建时，在手动运行页面勾选 `force`。
+诊断附件仅失败时上传，保留 7 天；Rust 编译缓存继续复用。Release 缓存在 Rust 检查通过后才下载。
+
+Windows x64 包通过这些检查后，先上传到草稿，再发布到本 fork 的 `feature-dev-*` 预发布版本。
 发布包保留安装标识，关闭原始仓库的应用内更新；本地定时任务负责更新，防止官方更新覆盖定制功能。
 更新清单的程序 SHA-256 来自安装包内的 `openidea.exe`；Tauri 在打包后会还原构建目录内的程序，不能用还原后的文件校验安装结果。
 
