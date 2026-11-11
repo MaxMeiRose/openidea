@@ -257,9 +257,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $commit = (git rev-parse HEAD).Trim()
           $tag = "feature-dev-$($commit.Substring(0, 12))-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-          $installers = @(Get-ChildItem -LiteralPath target/release/bundle/nsis -Filter '*x64-setup.exe')
-          if ($installers.Count -ne 1) { throw 'Expected exactly one x64 NSIS installer' }
-          $installer = $installers[0]
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $installer = Get-Item -LiteralPath "target/release/bundle/nsis/OpenIDEA_${version}_x64-setup.exe"
           # Tauri restores the unpatched build output after packaging; hash the installed file.
           $extractPath = Join-Path $env:RUNNER_TEMP 'feature-dev-package-content'
           & 'C:\Program Files\7-Zip\7z.exe' x $installer.FullName "-o$extractPath" -y openidea.exe
@@ -273,7 +272,7 @@ jobs:
             branch = 'feature-dev'
             commit = $commit
             tag = $tag
-            version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+            version = $version
             platform = 'windows-x86_64'
             installerName = $installer.Name
             installerSha256 = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
