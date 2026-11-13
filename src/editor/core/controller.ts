@@ -25,8 +25,10 @@ import {
   getFileDecoration,
   menuGroupItems,
   notifications,
+  openFileExternally,
   resolveFileEditor,
   textEditorWrapperFor,
+  uriOpenerFor,
   useContributions,
   useStandaloneEditor,
   useTextEditorWrappers,
@@ -878,7 +880,7 @@ export class EditorController implements SlotHost {
           ] as MenuItem[])
         : ([
             { kind: "separator" },
-            openInMenu(slot.model.path),
+            openInMenu(slot.model.path, view.state.doc.lineAt(view.state.selection.main.head).number - 1),
             { kind: "separator" },
             localHistoryMenu(slot.model.path),
             gitMenu(slot.model.path),
@@ -1056,6 +1058,8 @@ export class EditorController implements SlotHost {
   }
 
   private async openFileRequest(path: string, o: OpenOptions, generation: OpenRequest): Promise<void> {
+    const opener = uriOpenerFor(path);
+    if (opener) return opener.open(path, o);
     if (isVirtualUri(path)) return this.openVirtualRequest(path, o, generation);
     if (isClassFile(path)) {
       await this.projectTransition;
@@ -1071,8 +1075,10 @@ export class EditorController implements SlotHost {
     }
     await this.projectTransition;
     this.checkOpening(generation);
-    // Images, binary and huge files open in a contributed viewer unless already open as text.
+    // Files opened with another application, then images/binary/huge files in a
+    // contributed viewer, unless already open as text.
     if (!o.asText && !findTab(useTabs.getState(), fileKey(path))) {
+      if (await openFileExternally(path)) return;
       const viewer = await resolveFileEditor(path);
       if (viewer) {
         try {
@@ -1463,7 +1469,7 @@ export class EditorController implements SlotHost {
       }
       try {
         const encoding = await this.manager.backend.setEncoding(meta.doc, meta.encoding, true);
-        model.setMeta({ encoding });
+        model.setMeta({ encoding: encoding.encoding, hasBom: encoding.hasBom });
       } catch (e) {
         notifications().notify({
           level: "error",
@@ -1955,7 +1961,7 @@ export class EditorController implements SlotHost {
 }
 
 /** Open In › for a file: Project View, Finder / Explorer / Files, Terminal. */
-function openInMenu(path: string): MenuItem {
+function openInMenu(path: string, line?: number): MenuItem {
   return {
     label: "Open In",
     submenu: [
@@ -1965,7 +1971,7 @@ function openInMenu(path: string): MenuItem {
         : []),
       { kind: "action", action: "project.openInTerminal", arg: path, label: "Terminal" },
       { kind: "separator" },
-      ...menuGroupItems("openIn", { paths: [path] }),
+      ...menuGroupItems("openIn", { paths: [path], line }),
     ],
   };
 }

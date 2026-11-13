@@ -14,7 +14,7 @@ import {
   registerTitleItem,
   registerToolWindow,
 } from "@/workbench/contributions";
-import { executeAction } from "@/platform/actions";
+import { executeAction, registerActions } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { lazyComponent } from "@/ui";
 import { registerVcsActions } from "./actions";
@@ -28,6 +28,7 @@ import { BranchWidget, BranchesPopupHost, useBranchesPopup } from "./BranchWidge
 import { showConflictsDialog, takeContinueWhenResolved } from "./conflictsUi";
 import { registerCompareActions } from "./compare";
 import { DIFF_KIND, diffTitle, type DiffData } from "./diffInput";
+import { installDiffEditorHost } from "./DiffWindow";
 import { VcsDialogHost } from "./dialogs";
 import { changeMarkers } from "./gutter";
 import { installHunkPopup } from "./HunkPopup";
@@ -49,6 +50,7 @@ import { closeLogTab, installGitLog, selectGitTab, useGitLog } from "./logStore"
 import { installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs } from "./store";
 import { installRootSync } from "./rootSync";
 import { tx } from "@/platform/i18n";
+import { openOnRemoteActions, registerOpenOnRemote } from "./openOnRemote";
 
 /** The Resolve/Continue/Abort buttons exist in the title bar only while there is something to resolve. */
 function trackMergeRebaseItem(): () => void {
@@ -151,6 +153,7 @@ function conflictsBody(names: string[]): string {
 
 /** Settings › Version Control › Log (also used by the Settings window). */
 export { activateComparisonWindow, ComparisonWindow } from "./ComparisonWindow";
+export { activateDiffWindow, DiffWindow } from "./DiffWindow";
 
 /** The diff viewer (editor kind `diff`), also for windows that show diffs without Git (deployment). */
 export function activateDiffViewer(): () => void {
@@ -222,12 +225,15 @@ export function activate(): () => void {
     provideCommit(),
     installIncomingCheck(),
     installFileConfirmations(),
+    installDiffEditorHost(),
     // Settings › Git › Sign-off commit: the default of Commit Options › Sign-off Commit.
     onWorkflowSettingsChange(
       (w) => w.vcs.git.signOff,
       (signOff) => useCommit.setState({ signOff }),
     ),
     registerVcsActions(),
+    registerActions(openOnRemoteActions),
+    registerOpenOnRemote(),
     registerHistoryActions(),
     registerLogPaneActions(),
     activateSettingsPages(),

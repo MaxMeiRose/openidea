@@ -151,8 +151,10 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   const singleFile = single && !single.dir ? single : null;
   const project = useProject.getState().project;
   // Scratches and other contributed roots live outside the project: no VCS, roots or LSP usages.
-  const contentRoots = project ? (project.workspace?.projects ?? [project.root]) : [];
-  const inProject = nodes.length > 0 && nodes.every((n) => contentRoots.some((root) => isSameOrInside(n.path, root)));
+  const inProject = !!project && nodes.every((n) => isSameOrInside(n.path, project.root));
+  // Workspace members may live outside the workspace folder; they have VCS and usages too.
+  const memberRoots = project ? [project.root, ...(project.workspace?.projects ?? [])] : [];
+  const inWorkspace = nodes.every((n) => memberRoots.some((root) => isSameOrInside(n.path, root)));
   const items: MenuItem[] = [];
   const push = (...list: Entry[]) => list.forEach((i) => i && items.push(i));
 
@@ -172,7 +174,11 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
     );
   }
 
-  push({ id: "new", label: "New", submenu: newMenuItems(folder) }, { kind: "separator" });
+  push(
+    { id: "new", label: "New", submenu: newMenuItems(folder) },
+    single?.root && act("maven.importExternal", undefined, "Import Module from Existing Sources"),
+    { kind: "separator" },
+  );
 
   // Cut / Copy / Copy Path/Reference… / Paste
   push(
@@ -226,7 +232,7 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
       shortcut: keyLabel("project.open"),
       run: () => files.forEach((f) => void openFile(f.path)),
     },
-    inProject &&
+    inWorkspace &&
       singleFile && {
         id: "findUsages",
         label: "Find Usages",
@@ -337,7 +343,7 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
 
   // Git ›
   const vcs = useVcs.getState();
-  const repos = inProject && vcs.available ? repositoriesForSelection(nodes, vcs.roots) : [];
+  const repos = inWorkspace && vcs.available ? repositoriesForSelection(nodes, vcs.roots) : [];
   if (repos.length) {
     const arg = vcsArg(nodes);
     const dirs = nodes.some((n) => n.dir);

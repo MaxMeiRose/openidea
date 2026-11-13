@@ -3,6 +3,7 @@
 //! wraps one [`Host`] and adds windows and menus; `openidea-server`
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
+pub mod agent_secrets;
 pub mod data_dirs;
 pub mod environment;
 mod formatter;
@@ -59,7 +60,10 @@ pub struct Host {
     plugin_host: RwLock<std::sync::Weak<plugins::PluginHost>>,
     pub mcp_reports: mcp::Reports,
     pub mcp_requests: mcp::Requests,
+    /// Commands agents run in the Run tool window (`run_command`).
+    pub mcp_agent_runs: mcp::AgentRuns,
     pub trust: trust::TrustStore,
+    pub(crate) mcp_approvals: Arc<trust::McpServerApprovals>,
     pub config_dir: PathBuf,
     /// Persistent user state, including credentials and recovery history.
     pub data_dir: PathBuf,
@@ -73,16 +77,26 @@ pub struct Host {
     pub processes: ProcessManager,
     /// Debug sessions (adapters run on this machine, next to the project).
     pub debugger: Arc<ide_dap::DebugManager>,
+    /// Heap snapshots open in any window, captured from a debug session or opened from a file.
+    pub heap: Arc<ide_heap::HeapRegistry>,
+    /// The window that owns each open heap snapshot; its project's close closes them.
+    pub(crate) heap_windows: Mutex<HashMap<ide_heap::HeapSnapshotId, String>>,
+    pub(crate) heap_requests: ops::heap::HeapRequests,
     /// SSH connections of Settings › SSH Configurations.
     pub ssh: Arc<ide_ssh::SshManager>,
     /// SFTP deployment, remote file editing and runs on run targets.
     pub remote: Arc<ide_remote::RemoteService>,
     /// What child processes get beyond this process's environment (Reload Environment, `remoteEnv`).
     pub environment: environment::Environment,
+    /// The built-in web server (Open In › Browser, the editor's browser bar). On a remote host the
+    /// client forwards its ports.
+    pub web: ide_web::WebServer,
     /// The HTTP proxy's saved password (see `proxy.rs`).
     proxy_password: ide_ssh::secrets::SecretFile,
     /// The proxy password when it could not be saved (no credential store).
     proxy_session_password: Mutex<Option<String>>,
+    /// Values of agents' and MCP servers' environment variables and headers (see `agent_secrets.rs`).
+    pub agent_secrets: Arc<agent_secrets::AgentSecrets>,
     pub(crate) sink_for: SinkFactory,
     owner: fn(&str) -> &str,
     pub runtime: tokio::runtime::Handle,
@@ -129,12 +143,16 @@ impl Host {
             mcp_executable: RwLock::default(),
             mcp_reports: Default::default(),
             mcp_requests: Default::default(),
+            mcp_agent_runs: Default::default(),
             trust: trust::TrustStore::load(&config_dir, &data_dir),
+            mcp_approvals: Arc::new(trust::McpServerApprovals::load(&data_dir)),
             proxy_password: ide_ssh::secrets::SecretFile::new(data_dir.join("proxy-password.json")),
             proxy_session_password: Mutex::default(),
+            agent_secrets: Arc::new(agent_secrets::AgentSecrets::new(&data_dir)),
             remote: Arc::new(ide_remote::RemoteService::new(ssh.clone(), data_dir.join("remote"))),
             ssh,
             environment: environment::Environment::new(project_environment, local_data_dir.clone()),
+            web: ide_web::WebServer::new(),
             global_settings,
             dependency_versions: Arc::new(ide_workspace::dependencies::VersionCache::new(
                 data_dir.join("cache/dependency-versions"),
@@ -143,6 +161,9 @@ impl Host {
             terminals: TerminalManager::new(),
             processes: ProcessManager::new(),
             debugger: ide_dap::DebugManager::new(languages.clone()),
+            heap: Arc::new(ide_heap::HeapRegistry::new(ide_heap::snapshots_root(&local_data_dir))),
+            heap_windows: Mutex::default(),
+            heap_requests: Default::default(),
             languages,
             syntax,
             config_dir,
@@ -251,10 +272,13 @@ impl Host {
     fn begin_close(&self, window: &str) -> Option<std::thread::JoinHandle<()>> {
         self.mcp_reports.forget_window(window);
         self.mcp_requests.forget_window(window);
+        self.mcp_agent_runs.forget_window(window);
         self.external_logs.write().remove(self.owner_window(window));
         for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
             self.cancel_request(request);
         }
+        // After the cancels: a capture or open still running then discards what it registers.
+        ops::heap::close_window_snapshots(self, window);
         let project = self.projects.write().remove(window)?;
         if self.windows_for_root(&project.root).is_empty()
             && let Some(plugins) = self.plugin_host()
@@ -405,9 +429,12 @@ impl Host {
         }
     }
 
-    /// Stops what this host started: notebook kernels, language servers, agents, runs and terminals.
+    /// Stops what this host started: heap snapshots, notebook kernels, language servers, agents,
+    /// runs and terminals.
     /// For a process that exits without dropping the host (the remote server).
     pub async fn shutdown(&self) {
+        // A capture's dump may hold secrets from the debuggee's memory: delete it before exiting.
+        ops::heap::shutdown(self).await;
         self.environment.shutdown();
         self.processes.kill_all();
         self.terminals.kill_all();

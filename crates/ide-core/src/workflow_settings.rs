@@ -201,6 +201,33 @@ pub struct IssueLink {
     pub link: String,
 }
 
+/// Per-level colours for console log lines: a line whose level is detected
+/// (`ERROR`, `WARN`, …) takes the level's colour; ANSI colours the program
+/// prints itself win over it. Values are CSS colours, usually scheme tokens.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LogLevelColors {
+    pub enabled: bool,
+    pub error: String,
+    pub warn: String,
+    pub info: String,
+    pub debug: String,
+    pub trace: String,
+}
+
+impl Default for LogLevelColors {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            error: "var(--ansi-red)".into(),
+            warn: "var(--ansi-yellow)".into(),
+            info: "var(--ansi-green)".into(),
+            debug: "var(--ansi-cyan)".into(),
+            trace: "var(--ansi-magenta)".into(),
+        }
+    }
+}
+
 /// Build, Execution, Deployment › Console.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -212,6 +239,8 @@ pub struct ConsoleSettings {
     pub encoding: String,
     /// Consecutive lines containing any of these are folded.
     pub fold_patterns: Vec<String>,
+    /// Log lines take the colour of their level (Run/Debug consoles).
+    pub log_colors: LogLevelColors,
 }
 
 impl Default for ConsoleSettings {
@@ -228,6 +257,7 @@ impl Default for ConsoleSettings {
                 "at node:internal/".into(),
                 "<frozen importlib._bootstrap".into(),
             ],
+            log_colors: LogLevelColors::default(),
         }
     }
 }
@@ -418,6 +448,33 @@ impl Default for ExternalTool {
             working_directory: "$ProjectFileDir$".into(),
             synchronize_after: true,
             open_console: true,
+        }
+    }
+}
+
+/// Tools › Agents: Command Execution Policy (whitelist and blacklist patterns).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentSecuritySettings {
+    /// Commands or patterns (`git status*`, `pwd`) automatically approved without prompting.
+    pub allowed_commands: Vec<String>,
+    /// Commands or patterns (`rm -rf *`, `mkfs*`) automatically rejected.
+    pub blocked_commands: Vec<String>,
+}
+
+impl Default for AgentSecuritySettings {
+    fn default() -> Self {
+        Self {
+            allowed_commands: Vec::new(),
+            blocked_commands: vec![
+                "rm -rf *".into(),
+                "rm -rf /".into(),
+                "mkfs*".into(),
+                "dd *".into(),
+                ":(){ :|:& };:".into(),
+                "shutdown*".into(),
+                "reboot*".into(),
+            ],
         }
     }
 }

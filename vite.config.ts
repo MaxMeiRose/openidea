@@ -30,6 +30,7 @@ export default defineConfig(() => ({
         "**/src-tauri/**",
         "**/crates/**",
         "**/target/**",
+        "**/.local-artifacts/**",
         // The packages' sources and builds (not `src/features/plugins`).
         `${fileURLToPath(new URL("./plugins", import.meta.url))}/**`,
       ],
@@ -46,6 +47,6 @@ export default defineConfig(() => ({
     environment: "jsdom",
     globals: false,
     setupFiles: ["./src/test/setup.ts"],
-    include: ["src/**/*.test.{ts,tsx}", "perf/**/*.test.ts", "scripts/**/*.test.ts"],
+    include: ["src/**/*.test.{ts,tsx}", "perf/**/*.test.ts", "evals/**/*.test.ts", "scripts/**/*.test.ts"],
   },
 }));

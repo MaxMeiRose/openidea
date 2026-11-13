@@ -1,5 +1,5 @@
-/** Agents tool window: tasks grouped by what they need from the user. */
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+/** Agents tool window: tasks pinned above the user's groups, then by what they need from the user. */
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import type { AgentStatus as Status, AgentTask } from "@/bindings";
 import { EDITOR_TAB_MIME, maybeEditorService, type EditorInput } from "@/workbench/contributions";
@@ -17,6 +17,7 @@ import {
   registerDropTarget,
   showContextMenu,
   startPointerDrag,
+  type IconName,
   type TabItem,
 } from "@/ui";
 import {
@@ -25,6 +26,7 @@ import {
   TASK_DRAG,
   age,
   branchLabel,
+  groupStatus,
   groupTasks,
   providerIcon,
   sessionKey,
@@ -34,6 +36,8 @@ import {
   HOME,
   closeDockedTab,
   importExternalSession,
+  moveTasksToGroup,
+  pinTasks,
   isRelocatingAgentTab,
   openHome,
   refreshExternalSessions,
@@ -42,7 +46,8 @@ import {
   useAgents,
 } from "./store";
 import { sendPaths } from "./references";
-import { taskMenu } from "./taskActions";
+import { groupMenu, taskMenu } from "./taskActions";
+import { groupMembers, pinnedMembers, ungroupedMembers, type OrganizeGroup } from "./organize";
 import { SessionEditor } from "./SessionEditor";
 import { HomeEditor } from "./HomeEditor";
 import styles from "./Agents.module.css";
@@ -87,9 +92,74 @@ export function AgentsLocationActions() {
   );
 }
 
-type Node = { kind: "group"; group: TaskGroup } | { kind: "task"; task: AgentTask };
+/** Key of the pinned section, above the groups. */
+const PINNED_KEY = "pinned";
+/** Key of a group the user made. */
+const customKey = (group: string) => `ug:${group}`;
 
-const nodeKey = (n: Node) => (n.kind === "group" ? `g:${n.group.status}` : n.task.id);
+type Node =
+  | { kind: "pinned"; tasks: AgentTask[] }
+  | { kind: "custom"; group: OrganizeGroup; tasks: AgentTask[] }
+  | { kind: "group"; group: TaskGroup }
+  | { kind: "task"; task: AgentTask };
+
+function nodeKey(n: Node): string {
+  switch (n.kind) {
+    case "pinned":
+      return PINNED_KEY;
+    case "custom":
+      return customKey(n.group.id);
+    case "group":
+      return `g:${n.group.status}`;
+    case "task":
+      return n.task.id;
+  }
+}
+
+/** Where a task shows: the pinned section first, else its group, else its status group. */
+function keysOf(task: AgentTask): string[] {
+  const organize = useAgents.getState().organize;
+  if (organize.pinned.includes(task.id)) return [PINNED_KEY];
+  const group = organize.groupOf[task.id];
+  if (group && organize.groups.some((g) => g.id === group)) return [customKey(group)];
+  return [`g:${groupStatus(task.status)}`];
+}
+
+/** A group header; tasks dropped on it go into the group (or into the pinned section). */
+function GroupRow({
+  label,
+  count,
+  icon,
+  onDropTask,
+}: {
+  label: ReactNode;
+  count: number;
+  icon?: IconName;
+  onDropTask?: (task: string) => void;
+}) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [over, setOver] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !onDropTask) return;
+    return registerDropTarget(el, {
+      accepts: (type) => type === TASK_DRAG,
+      over: () => setOver(true),
+      leave: () => setOver(false),
+      drop: (data) => {
+        setOver(false);
+        onDropTask(data.payload);
+      },
+    });
+  }, [onDropTask]);
+  return (
+    <span ref={ref} className={clsx(styles.row, over && styles.dropOver)}>
+      {icon && <Icon name={icon} size={12} />}
+      <span className={styles.groupLabel}>{label}</span>
+      <span className={styles.count}>{count}</span>
+    </span>
+  );
+}
 
 const sessionTask = (input: EditorInput | null | undefined) =>
   input?.kind === SESSION_KIND ? (input.data as { task?: string } | undefined)?.task : undefined;
@@ -180,9 +250,12 @@ export function AgentsView() {
         return;
       }
       setSelected((current) => (current.has(task) ? current : new Set([task])));
-      const group = groupTasks(useAgents.getState().tasks.values()).find((g) => g.tasks.some((t) => t.id === task));
-      const key = group && `g:${group.status}`;
-      if (key) setCollapsed((c) => (c.has(key) ? new Set([...c].filter((k) => k !== key)) : c));
+      const known = useAgents.getState().tasks.get(task);
+      const keys = known ? keysOf(known) : [];
+      if (keys.length)
+        setCollapsed((c) =>
+          keys.some((key) => c.has(key)) ? new Set([...c].filter((key) => !keys.includes(key))) : c,
+        );
     };
     const dispose = editor?.onActiveInputChange?.(onActive);
     if (loaded) onActive(editor?.activeInput?.() ?? null);
@@ -212,9 +285,10 @@ export function AgentsView() {
         previous.focus({ preventScroll: true });
     };
   }, [historyOpen, loaded, inline, docked]);
+  const organize = useAgents((s) => s.organize);
   const roots = useMemo<Node[]>(() => {
     const needle = query.trim().toLocaleLowerCase();
-    const matching = [...tasks.values()].filter((task) => {
+    const all = [...tasks.values()].filter((task) => {
       if (filter === "running" && task.status !== "running" && task.status !== "starting") return false;
       if (filter !== "all" && filter !== "running" && task.status !== filter) return false;
       return (
@@ -224,10 +298,19 @@ export function AgentsView() {
         )
       );
     });
-    return groupTasks(matching).map((group) => ({ kind: "group", group }));
-  }, [tasks, query, filter]);
+    const pinned = pinnedMembers(all, organize);
+    return [
+      ...(pinned.length ? [{ kind: "pinned", tasks: pinned } as Node] : []),
+      ...organize.groups.map((group): Node => ({
+        kind: "custom",
+        group,
+        tasks: groupMembers(all, organize, group.id),
+      })),
+      ...groupTasks(ungroupedMembers(all, organize)).map((group): Node => ({ kind: "group", group })),
+    ];
+  }, [tasks, organize, query, filter]);
   const expanded = useMemo(
-    () => new Set(roots.map(nodeKey).filter((k) => query.trim() || filter !== "all" || !collapsed.has(k))),
+    () => new Set(roots.map(nodeKey).filter((key) => query.trim() || filter !== "all" || !collapsed.has(key))),
     [roots, collapsed, query, filter],
   );
   // A session tab docks here; a code tab or project file becomes a reference.
@@ -305,11 +388,21 @@ export function AgentsView() {
         rowHeight={44}
         roots={roots}
         getKey={nodeKey}
-        getLabel={(n) => (n.kind === "group" ? n.group.label : n.task.title)}
-        getChildren={(n) =>
-          n.kind === "group" ? n.group.tasks.map((task) => ({ kind: "task", task }) as Node) : undefined
+        getLabel={(n) =>
+          n.kind === "task"
+            ? n.task.title
+            : n.kind === "pinned"
+              ? "Pinned"
+              : n.kind === "custom"
+                ? n.group.name
+                : n.group.label
         }
-        isExpandable={(n) => n.kind === "group"}
+        getChildren={(n) =>
+          n.kind === "task"
+            ? undefined
+            : (n.kind === "group" ? n.group.tasks : n.tasks).map((task) => ({ kind: "task", task }) as Node)
+        }
+        isExpandable={(n) => n.kind !== "task"}
         expanded={expanded}
         onExpandedChange={(_next, node, open) =>
           setCollapsed((c) => {
@@ -326,51 +419,69 @@ export function AgentsView() {
         }}
         onActivate={(n) => n.kind === "task" && showTask(n.task.id)}
         onContextMenu={(n, sel, e) => {
-          if (n?.kind !== "task") return;
+          if (!n) return;
+          if (n.kind === "custom") {
+            showContextMenu(e, groupMenu(n.group));
+            return;
+          }
+          if (n.kind !== "task") return;
           const selection = [...sel].flatMap((id) => {
             const task = tasks.get(id);
             return task ? [task] : [];
           });
           showContextMenu(e, taskMenu(selection));
         }}
-        renderNode={(n) =>
-          n.kind === "group" ? (
-            <span className={styles.row}>
-              <span className={styles.groupLabel}>
-                <T>{n.group.label}</T>
-              </span>
-              <span className={styles.count}>{n.group.tasks.length}</span>
-            </span>
-          ) : (
-            <span
-              className={styles.row}
-              title={n.task.error ?? n.task.title}
-              onPointerDown={(e) => dragTask(e, n.task.id)}
-              onClick={(e) => {
-                if (inline && !e.metaKey && !e.ctrlKey && !e.shiftKey) showTask(n.task.id);
-              }}
-            >
-              <TaskStatusIcon status={n.task.status} />
-              <span className={styles.taskSummary}>
-                <span className={styles.title} data-unread={unread.has(n.task.id) || undefined}>
-                  {n.task.title}
+        renderNode={(n) => {
+          switch (n.kind) {
+            case "pinned":
+              return (
+                <GroupRow
+                  icon="pin"
+                  label={<T>Pinned</T>}
+                  count={n.tasks.length}
+                  onDropTask={(task) => pinTasks([task], true)}
+                />
+              );
+            case "custom":
+              return (
+                <GroupRow
+                  label={n.group.name}
+                  count={n.tasks.length}
+                  onDropTask={(task) => moveTasksToGroup([task], n.group.id)}
+                />
+              );
+            case "group":
+              return <GroupRow label={<T>{n.group.label}</T>} count={n.group.tasks.length} />;
+            case "task":
+              return (
+                <span
+                  className={styles.row}
+                  title={n.task.error ?? n.task.title}
+                  onPointerDown={(e) => dragTask(e, n.task.id)}
+                  onClick={(e) => {
+                    if (inline && !e.metaKey && !e.ctrlKey && !e.shiftKey) showTask(n.task.id);
+                  }}
+                >
+                  <TaskStatusIcon status={n.task.status} />
+                  <span className={styles.taskSummary}>
+                    <span className={styles.title} data-unread={unread.has(n.task.id) || undefined}>
+                      {n.task.title}
+                    </span>
+                    <span className={styles.detail}>
+                      {providerName(n.task.provider)}
+                      {n.task.model ? ` · ${n.task.model}` : ""}
+                      {n.task.isolation === "worktree" ? ` · ${branchLabel(n.task.branch)}` : ""}
+                      {project?.workspace ? ` · ${basename(n.task.projectRoot ?? project.root)}` : ""}
+                    </span>
+                  </span>
+                  {unread.has(n.task.id) && (
+                    <span className={styles.unreadDot} role="img" aria-label={tx("Unread")} title={tx("Unread")} />
+                  )}
+                  <span className={styles.age}>{age(n.task.updatedMs ?? 0)}</span>
                 </span>
-                <span className={styles.detail}>
-                  {providerName(n.task.provider)}
-                  {n.task.model ? ` · ${n.task.model}` : ""}
-                  {n.task.isolation === "worktree" ? ` · ${branchLabel(n.task.branch)}` : ""}
-                  {project?.workspace ? ` · ${basename(n.task.projectRoot ?? project.root)}` : ""}
-                </span>
-              </span>
-              {/* Ready tasks say so by their group; the others show what they're doing. */}
-              {n.task.status !== "ready" && <TaskStatusIcon status={n.task.status} />}
-              {unread.has(n.task.id) && (
-                <span className={styles.unreadDot} role="img" aria-label={tx("Unread")} title={tx("Unread")} />
-              )}
-              <span className={styles.age}>{age(n.task.updatedMs ?? 0)}</span>
-            </span>
-          )
-        }
+              );
+          }
+        }}
         empty={
           <div className={styles.empty}>
             <T>{tasks.size ? "No matching sessions" : "No agent tasks yet"}</T>

@@ -1,6 +1,7 @@
 /**
  * The message box of the New Task page and of sessions: `@` file and folder references
- * (project index search), `/` agent commands, ↑ / ↓ history, pasted or dropped images, Shift+Tab to cycle
+ * (project index search), `/` agent commands, ↑ / ↓ history, pasted or dropped images, files dropped from
+ * outside the project as attachments, Shift+Tab to cycle
  * the agent's mode. Its draft lives in the store under `id`.
  */
 import {
@@ -22,6 +23,7 @@ import { invokeLocal } from "@/platform/tauriCore";
 import { useTx } from "@/platform/i18n";
 import { basename } from "@/platform/project";
 import { isVirtualUri } from "@/platform/virtualDocs";
+import { isRemoteWindow } from "@/platform/remote";
 import { notifications, OWNS_FILE_DROP } from "@/workbench/contributions";
 import {
   FILES_DRAG,
@@ -64,6 +66,7 @@ import { sendSelection } from "./references";
 import { useAgentSettings } from "./agentSettings";
 import styles from "./Composer.module.css";
 import { isImeKey } from "@/platform/ime";
+import { isMacHost } from "@/platform/keymap";
 
 const MAX_PROMPT_HEIGHT = 280;
 const MAX_ITEMS = 12;
@@ -129,6 +132,7 @@ export function Composer(props: ComposerProps) {
   const draft = useAgents((s) => s.composers.get(id));
   const text = draft?.text ?? "";
   const images = draft?.images ?? [];
+  const attached = useMemo(() => draft?.files.filter((f) => f.attached) ?? [], [draft?.files]);
   const tokens = useMemo(() => messageTokens(text), [text]);
   const [preview, setPreview] = useState<AgentImage | null>(null);
   const [dropOver, setDropOver] = useState(false);
@@ -296,6 +300,47 @@ export function Composer(props: ComposerProps) {
     setCompletion(null);
   };
 
+  /**
+   * Adds paths as `@` references (a file or a folder), each once. A path outside the project is
+   * attached when `attachOutside` (an OS drop in a local window), else skipped.
+   */
+  const addPaths = useCallback(
+    (paths: readonly string[], attachOutside = false) => {
+      const current = composerDraft(id);
+      const known = new Set(toPrompt(current).files);
+      const files = current.files.filter((f) => known.has(f.path));
+      const refs: FileRef[] = [];
+      for (const raw of paths) {
+        const source = resolveTyped("", raw.replace(/\\/g, "/"));
+        const base = [root, projectRoot]
+          .filter(Boolean)
+          .map((path) => resolveTyped(path, "."))
+          .find((path) => source === path || source.startsWith(`${path}/`));
+        if (!/^(\/|[A-Za-z]:[\\/])/.test(raw)) continue;
+        if (!base) {
+          const reference = attachOutside
+            ? { path: raw, rel: basename(source), attached: true }
+            : fileRefForPath(source, projectRoot, root);
+          if ((attachOutside && isRemoteWindow()) || known.has(reference.path)) continue;
+          known.add(reference.path);
+          refs.push(reference);
+          continue;
+        }
+        const rel = source === base ? "." : source.slice(base.length + 1);
+        const path = resolveTyped(root, rel);
+        if (known.has(path)) continue;
+        known.add(path);
+        refs.push({ path, rel });
+      }
+      if (!refs.length) return;
+      const mentions = refs.flatMap((r) => (r.attached ? [] : [mentionOf(r.rel)])).join(" ");
+      const glue = current.text && !/\s$/.test(current.text) ? " " : "";
+      const text = mentions ? `${current.text}${glue}${mentions} ` : current.text;
+      updateComposer(id, { text, files: [...files, ...refs] });
+    },
+    [id, root, projectRoot],
+  );
+
   const addImages = useCallback(
     (list: AgentImage[]) => {
       if (list.length) updateComposer(id, { images: [...composerDraft(id).images, ...list] });
@@ -327,37 +372,30 @@ export function Composer(props: ComposerProps) {
     if (image && fitsLimit("image", (image.data.length * 3) / 4)) addImages([image]);
   };
 
-  // Files dropped from the OS onto the box: images are attached, other files referenced.
-  // Both Project view drags and OS drops belong to the prompt, including when the
-  // session is nested inside the editor's own file-drop target.
+  // Files dropped from the OS onto the box: images are inlined when they can be, other files
+  // referenced, or attached by path when outside the project.
   useEffect(() => {
     const box = boxRef.current;
     if (!box) return;
-    const addPaths = (paths: readonly string[], attachImages: boolean) => {
-      const current = composerDraft(id);
-      const known = new Set(toPrompt(current).files);
-      const files = current.files.filter((file) => known.has(file.path));
-      const refs: FileRef[] = [];
+    const dropPaths = (paths: readonly string[], attachImages: boolean) => {
+      const references: string[] = [];
       for (const raw of paths) {
         if (!raw || isVirtualUri(raw) || !/^(\/|[A-Za-z]:[\\/])/.test(raw)) continue;
         const path = resolveTyped("", raw.replace(/\\/g, "/"));
         if (attachImages && IMAGE_EXTENSIONS.test(path)) {
-          void invokeLocal<string>("fs_read_image", { path }).then((url) => {
-            const image = imageFromDataUrl(url, basename(path));
-            if (image) addImages([image]);
-          });
+          void invokeLocal<string>("fs_read_image", { path }).then(
+            (url) => {
+              const image = imageFromDataUrl(url, basename(path));
+              if (image && (image.data.length * 3) / 4 <= MAX_IMAGE_BYTES) addImages([image]);
+              else addPaths([path], true);
+            },
+            () => addPaths([path], true),
+          );
         } else {
-          const ref = fileRefForPath(path, projectRoot, root);
-          if (known.has(ref.path)) continue;
-          known.add(ref.path);
-          refs.push(ref);
+          references.push(path);
         }
       }
-      if (refs.length) {
-        const mentions = refs.map((r) => mentionOf(r.rel)).join(" ");
-        const glue = current.text && !/\s$/.test(current.text) ? " " : "";
-        updateComposer(id, { text: `${current.text}${glue}${mentions} `, files: [...files, ...refs] });
-      }
+      addPaths(references, attachImages);
       requestAnimationFrame(() => {
         const input = ref.current;
         input?.focus();
@@ -370,7 +408,7 @@ export function Composer(props: ComposerProps) {
       leave: () => setDropOver(false),
       drop: (data) => {
         setDropOver(false);
-        addPaths(data.payload.split("\n"), false);
+        dropPaths(data.payload.split("\n"), false);
       },
     });
     let unlisten: (() => void) | undefined;
@@ -380,12 +418,14 @@ export function Composer(props: ComposerProps) {
         getCurrentWebview()
           .onDragDropEvent((event) => {
             const p = event.payload;
-            if (p.type === "leave") return setDropOver(false);
+            if (p.type === "leave") {
+              return setDropOver(false);
+            }
             const bounds = box.getBoundingClientRect();
             const { x, y } = nativeDropPoint(p.position);
             const inside = x >= bounds.left && x < bounds.right && y >= bounds.top && y < bounds.bottom;
             setDropOver(p.type !== "drop" && inside);
-            if (p.type === "drop" && inside && p.paths.length) addPaths(p.paths, true);
+            if (p.type === "drop" && inside && p.paths.length) dropPaths(p.paths, true);
           })
           .then((u) => {
             if (disposed) u();
@@ -402,33 +442,6 @@ export function Composer(props: ComposerProps) {
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (composing.current || isImeKey(e.nativeEvent)) return;
-    const el = e.currentTarget;
-    if (!e.altKey && !e.metaKey && !e.ctrlKey && el.selectionStart === el.selectionEnd) {
-      const backward = e.key === "Backspace" || e.key === "ArrowLeft";
-      const forward = e.key === "Delete" || e.key === "ArrowRight";
-      if (backward || forward) {
-        let offset = 0;
-        for (const token of tokens) {
-          const end = offset + token.value.length;
-          const caret = el.selectionStart;
-          if (token.kind !== "text" && (backward ? caret > offset && caret <= end : caret >= offset && caret < end)) {
-            e.preventDefault();
-            if (e.key === "Backspace" || e.key === "Delete") {
-              setText(text.slice(0, offset) + text.slice(end), offset);
-            } else {
-              const next = backward ? offset : end;
-              el.setSelectionRange(
-                e.shiftKey ? Math.min(caret, next) : next,
-                e.shiftKey ? Math.max(caret, next) : next,
-              );
-            }
-            setCompletion(null);
-            return;
-          }
-          offset = end;
-        }
-      }
-    }
     if (open) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
@@ -453,6 +466,12 @@ export function Composer(props: ComposerProps) {
       e.preventDefault();
       if (!props.disabled) props.onSubmit(send === "now");
       recalled.current = { index: -1, stash: "" };
+      return;
+    }
+    // macOS text boxes scroll on Home / End and leave the caret where it is.
+    if ((e.key === "Home" || e.key === "End") && !e.altKey && !e.ctrlKey && !e.metaKey && isMacHost()) {
+      e.preventDefault();
+      getSelection()?.modify(e.shiftKey ? "extend" : "move", e.key === "Home" ? "backward" : "forward", "lineboundary");
       return;
     }
     if (e.key === "Tab" && e.shiftKey) {
@@ -540,8 +559,24 @@ export function Composer(props: ComposerProps) {
           />
         </Popup>
       )}
-      {images.length > 0 && (
+      {(images.length > 0 || attached.length > 0) && (
         <div className={styles.images} onClick={(e) => e.stopPropagation()}>
+          {attached.map((file) => (
+            <span key={file.path} className={styles.attachment} title={file.path}>
+              <Icon name={fileIconName(file.rel, file.path)} size={16} />
+              <span className={styles.attachmentName}>{file.rel}</span>
+              <button
+                type="button"
+                className={styles.removeImage}
+                aria-label={tx("Remove File")}
+                onClick={() =>
+                  updateComposer(id, { files: composerDraft(id).files.filter((f) => f.path !== file.path) })
+                }
+              >
+                <Icon name="close" size={10} />
+              </button>
+            </span>
+          ))}
           {images.map((img, i) => (
             <span key={i} className={styles.image} title={img.name ?? undefined}>
               <button type="button" className={styles.previewImage} onClick={() => setPreview(img)}>
@@ -588,7 +623,10 @@ export function Composer(props: ComposerProps) {
           onChange={(e) => setText(e.target.value, e.target.selectionStart, false)}
           // The controlled text, not the event's value: closing the completion popup can emit a
           // stale select event with the old text.
-          onSelect={(e) => setCompletion(composing.current ? null : completionAt(text, e.currentTarget.selectionStart))}
+          onSelect={(e) => {
+            const caret = e.currentTarget.selectionStart;
+            setCompletion(composing.current ? null : completionAt(text, caret));
+          }}
           onCompositionStart={() => {
             composing.current = true;
             setCompletion(null);

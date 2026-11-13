@@ -110,6 +110,11 @@
   line-height: normal;
   transform: translateY(-50%);
 }
+/* An icon wider than its cell stays over the next cell's background (domRowCache). */
+.pane :global(.xterm-rows .openidea-terminal-icon) {
+  position: relative;
+  z-index: 1;
+}
 .pane :global(.xterm-viewport) {
   background-color: var(--bg-island, var(--bg-app)) !important;
 }
@@ -129,6 +134,9 @@
   background-color: var(--bg-identifier-under-caret, color-mix(in srgb, var(--fg) 9%, transparent));
   outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   outline-offset: -1px;
+}
+.pane :global(.xterm-decoration-container) {
+  pointer-events: none;
 }
 .pane :global(.xterm .xterm-scrollable-element > .scrollbar > .slider) {
   box-sizing: border-box;

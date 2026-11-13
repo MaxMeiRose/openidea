@@ -3,6 +3,7 @@
  * act on the node passed as the argument (context menus) or on the tree's
  * lead node (toolbar, shortcuts while the tree has focus).
  */
+import { introspectSource } from "./introspection";
 import { writeClipboardText } from "@/platform/clipboard";
 import { call, commands, type DataSource, type DbDriver, type DbTableInfo } from "@/platform/ipc";
 import { registerActions, type Action } from "@/platform/actions";
@@ -43,6 +44,10 @@ import { tx } from "@/platform/i18n";
 
 /** Context key: the Database tree has focus. */
 export const DB_VIEW_FOCUS = "databaseViewFocus";
+
+/** Set while the Database view is mounted: Expand All walks its tree's loaded nodes. */
+export const databaseTree: { expandAll: (() => void) | null } = { expandAll: null };
+
 const OPEN = "projectOpen";
 
 const isNode = (v: unknown): v is DbNode => !!v && typeof v === "object" && "kind" in v && "key" in v;
@@ -149,7 +154,7 @@ export async function insertScript(n: DbNode, kind: ScriptKind) {
 
 /** SQL Scripts › Run SQL Script…: picks a `.sql` file and runs all its statements. */
 async function runScriptFile(id: string) {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const file = await open({
     multiple: false,
     directory: false,
@@ -221,6 +226,17 @@ export function registerDatabaseTreeActions(): () => void {
       icon: "refresh",
       keywords: ["synchronize", "introspect"],
       run: ({ arg }) => refreshNode(nodeFrom(arg)),
+    }),
+    tree({
+      id: "db.introspect",
+      title: "Introspect All Databases",
+      icon: "refresh",
+      keywords: ["snowflake", "completion", "catalog", "schemas"],
+      run: ({ arg }) => {
+        const n = nodeFrom(arg);
+        const id = n ? nodeTarget(n) : null;
+        if (id) void introspectSource(id);
+      },
     }),
     tree({
       id: "db.disconnect",
@@ -468,6 +484,12 @@ export function registerDatabaseTreeActions(): () => void {
       id: "db.separateProceduresAndFunctions",
       title: "Separate Procedures and Functions",
       run: toggleSeparateProceduresAndFunctions,
+    }),
+    tree({
+      id: "db.expandAll",
+      title: "Expand All",
+      icon: "expand-all",
+      run: () => databaseTree.expandAll?.(),
     }),
     tree({
       id: "db.collapseAll",

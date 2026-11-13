@@ -64,8 +64,8 @@ import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
+import { agentName } from "./agentConfig";
 import { loadRunTemplates } from "./runTemplates";
-import { recordRun } from "./services";
 import { mergePorts, startedPorts } from "@/platform/serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
 import { gradleBootLaunch, gradleDelegation, gradleTestLaunch } from "./gradleRun";
@@ -129,6 +129,15 @@ interface SessionRuntime {
   outputListeners: Set<OutputListener>;
   /** Called once the process exited (run executors: collect a coverage report…). */
   onExit?: (exitCode: number | null, stopped: boolean) => void;
+  /** Run executors: acts before the stop signal (see `ExecutorLaunch.beforeStop`). */
+  beforeStop?: (runId: RunId) => Promise<void>;
+  /** A first Stop is waiting for `beforeStop`. */
+  hookPending?: boolean;
+  /**
+   * `runStop` was sent. Every later one is the backend's "kill" (a second `runStop` on a stopping
+   * process becomes SIGKILL, which writes no profile), so the first Stop's continuation checks it.
+   */
+  stopSent?: boolean;
   /** User input typed into the console, not yet sent (IDEA: Enter sends the line). */
   input: string;
   /** Output of a run that emulates a terminal (instead of `console`). */
@@ -744,6 +753,8 @@ export async function startRun(
     prepared?: boolean;
     /** Configurations whose launch led to this one (before launch tasks, compounds): breaks cycles. */
     chain?: readonly string[];
+    /** Runs before the stop signal when the user stops this run (run executors). */
+    beforeStop?: (runId: RunId) => Promise<void>;
   } = {},
 ): Promise<RunSession | null> {
   config = withRunTarget(config);
@@ -847,8 +858,6 @@ export async function startRun(
     useRun.setState((s) => ({ sessions: [...s.sessions, created], activeSession: created.id }));
   }
   bump(session.id);
-  // The Services tool window lists the configuration again after a restart.
-  recordRun(config.id);
   const sessionId = session.id;
   const rt = runtimes.get(sessionId)!;
   const generation = rt.generation;
@@ -873,6 +882,7 @@ export async function startRun(
     }
   });
   rt.onExit = options.onExit;
+  rt.beforeStop = options.beforeStop;
   try {
     const focus = !!config.focusToolWindow;
     if (
@@ -1220,6 +1230,26 @@ export function onRunExited(runId: RunId, code: number | null) {
   finishSession(session.id, code);
 }
 
+/** The longest a Stop waits for an executor's `beforeStop` before it sends the stop signal. */
+export const BEFORE_STOP_TIMEOUT_MS = 12_000;
+
+/** Runs the hook, never throwing; returns once it settled or `BEFORE_STOP_TIMEOUT_MS` passed. */
+async function runBeforeStop(hook: (runId: RunId) => Promise<void>, runId: RunId): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const hooked = (async () => {
+    try {
+      await hook(runId);
+    } catch {
+      /* the stop goes ahead without it */
+    }
+  })();
+  try {
+    await Promise.race([hooked, new Promise<void>((resolve) => (timer = setTimeout(resolve, BEFORE_STOP_TIMEOUT_MS)))]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function stopSession(sessionId: string): Promise<void> {
   const session = getSession(sessionId);
   if (!session) return;
@@ -1234,10 +1264,29 @@ export async function stopSession(sessionId: string): Promise<void> {
   // Stopping keeps the process live (IDEA: the Stop button stays until the process is gone);
   // a second Stop meanwhile skips the grace period and kills it.
   patchSession(sessionId, { stopped: true, status: "stopping" });
+  const runId = session.runId;
+  const rt = runtimes.get(sessionId);
+  if (rt) {
+    if (rt.beforeStop && !rt.hookPending && !rt.stopSent) {
+      rt.hookPending = true;
+      try {
+        await runBeforeStop(rt.beforeStop, runId);
+      } finally {
+        rt.hookPending = false;
+      }
+      // The program may have exited, or the tab been rerun, during the wait; a second Stop may
+      // have sent the signal already, and sending again would make the backend kill it. A tab
+      // closed meanwhile (`closeSession`) is gone, but its process still needs the signal.
+      const current = getSession(sessionId);
+      if (rt.stopSent || (current && (!isLive(current) || current.runId !== runId))) return;
+    }
+    rt.stopSent = true;
+  }
   try {
-    await call(commands.runStop(session.runId));
+    await call(commands.runStop(runId));
   } catch (e) {
-    patchSession(sessionId, { status: "running" });
+    const current = getSession(sessionId);
+    if (current && isLive(current) && current.runId === runId) patchSession(sessionId, { status: "running" });
     notifications().notify({
       group: "run",
       level: "error",
@@ -1452,10 +1501,17 @@ export async function closeSessionTab(sessionId: string): Promise<boolean> {
   return true;
 }
 
-export function closeSession(sessionId: string) {
+/**
+ * Removes a session's tab (stopping its process). An agent tab's closing is told to the MCP
+ * server for the agent unless `agentTabClosed` is false (the archive dropping its oldest).
+ */
+export function closeSession(sessionId: string, options: { agentTabClosed?: boolean } = {}) {
   const session = getSession(sessionId);
   if (!session) return;
   if (isLive(session)) void stopSession(sessionId);
+  const agent = agentName(session.config);
+  if (agent !== null && options.agentTabClosed !== false && isTauri())
+    void call(commands.mcpAgentRunClosed(agent)).catch(() => {});
   const rt = runtimes.get(sessionId);
   if (rt) cancelFlush(rt);
   runtimes.delete(sessionId);

@@ -86,7 +86,7 @@ function CommitDialog({ onClose }: { onClose: () => void }) {
           <SplitHandle />
           <SplitPanel defaultSize="42%" minSize="240px">
             <div className={viewStyles.commit}>
-              <CommitMessageField included={included} runner={runner} />
+              <CommitMessageField included={included} runner={runner} autoFocus />
             </div>
           </SplitPanel>
         </SplitGroup>

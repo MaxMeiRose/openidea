@@ -463,6 +463,7 @@ mod tests {
         t.push(AgentEntry::Permission {
             id: 1,
             title: "Run?".into(),
+            command: None,
             options: vec![],
             questions: vec![],
             chosen: None,

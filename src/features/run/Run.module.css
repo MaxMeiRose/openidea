@@ -12,6 +12,32 @@
   background: none;
 }
 
+/* Archived agent tabs (`run_command`), after the run tabs. */
+.agentArchive {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  margin: 0 4px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.agentArchive:hover {
+  background: var(--bg-hover);
+}
+.agentArchive[data-active] {
+  color: var(--accent);
+}
+.agentArchiveCount {
+  font-size: var(--fs-small);
+}
+
 .panel {
   flex: 1;
   display: flex;
@@ -34,6 +60,14 @@
   gap: 2px;
   padding: 4px 0;
   border-right: 1px solid var(--border);
+  min-height: 0;
+  /* A pane shorter than the buttons (the Services detail) scrolls them with the wheel
+     instead of growing the pane and adding a second scrollbar. */
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.toolbar::-webkit-scrollbar {
+  display: none;
 }
 .toolbarSep {
   width: 16px;
@@ -151,7 +185,7 @@
   left: 0;
   min-width: 100%;
   padding: 0 12px;
-  line-height: 20px;
+  line-height: inherit;
   white-space: pre;
   tab-size: 4;
 }

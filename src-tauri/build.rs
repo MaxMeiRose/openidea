@@ -10,6 +10,8 @@ fn main() {
     // STATUS_ENTRYPOINT_NOT_FOUND.
     let mut windows = tauri_build::WindowsAttributes::new();
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        // The synchronous IPC dispatcher outgrows Windows' 1 MiB main-thread stack in debug builds.
+        println!("cargo:rustc-link-arg-bin=openidea=/STACK:8388608");
         windows = tauri_build::WindowsAttributes::new_without_app_manifest();
         let manifest = manifest_dir.join("windows-app-manifest.xml");
         println!("cargo:rerun-if-changed={}", manifest.display());

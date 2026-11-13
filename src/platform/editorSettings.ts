@@ -105,6 +105,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     smoothCaretMovement: false,
     caretMovementStyle: "snappy",
     lineNumbers: true,
+    lineNumberMode: "absolute",
     showMinimap: true,
     methodSeparators: false,
     whitespaceLeading: true,
@@ -114,6 +115,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     rainbowIndentGuides: false,
     hardWrapGuides: true,
     intentionBulb: true,
+    renderDocComments: false,
     distractionFreeWidth: 80,
   },
   breadcrumbs: { show: true, placement: "bottom", disabledLanguages: [] as string[] },
@@ -180,6 +182,9 @@ export const EDITOR_EXTRA_DEFAULTS = {
     disabledLanguages: [] as string[],
     codeVisionUsages: true,
     codeVisionAuthor: true,
+    codeVisionNoUsages: true,
+    codeVisionUsagesPosition: "top" as "top" | "right",
+    codeVisionAuthorPosition: "top" as "top" | "right",
   },
   inlineCompletion: { enabled: true, onlyOnPause: false, pauseMs: 500, disabledLanguages: [] as string[] },
   gutterIconsDisabled: [] as string[],
@@ -261,6 +266,8 @@ export function validateEditorExtras(raw: unknown): EditorExtras {
   const out = coerceLike(raw, EDITOR_EXTRA_DEFAULTS);
   if (!["ask", "always", "never"].includes(out.autoImport.importsOnPaste)) out.autoImport.importsOnPaste = "ask";
   if (!DOCSTRING_FORMATS.includes(out.docstringFormat)) out.docstringFormat = "rest";
+  for (const k of ["codeVisionUsagesPosition", "codeVisionAuthorPosition"] as const)
+    if (!["top", "right"].includes(out.inlay[k])) out.inlay[k] = "top";
   out.fontWeight = fontWeightOf(out.fontWeight, EDITOR_EXTRA_DEFAULTS.fontWeight);
   out.boldFontWeight = fontWeightOf(out.boldFontWeight, EDITOR_EXTRA_DEFAULTS.boldFontWeight);
   return out;

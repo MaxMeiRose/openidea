@@ -23,6 +23,7 @@ import {
   AGENTS_GROUP,
   HOME_KIND,
   MCP_PAGE,
+  POLICY_PAGE,
   REGISTRY_PAGE,
   SESSION_KIND,
   TASK_DRAG,
@@ -31,7 +32,7 @@ import {
 } from "./model";
 import { sendPaths, sendSelection } from "./references";
 import { focusedSession } from "./sessionFocus";
-import { connect, disconnect, openHome, useAgents } from "./store";
+import { closeActiveTask, closeAndNewTask, connect, disconnect, openHome, refreshProviders, useAgents } from "./store";
 import { TaskStatusMark } from "./TaskStatusMark";
 import { taskActions, useAgentsHeaderMenu } from "./taskActions";
 import { replyActions } from "./replyActions";
@@ -56,8 +57,16 @@ export function activateSettingsPages(): () => void {
       keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
       component: lazyComponent(() => import("./McpServersPage").then((m) => m.McpServersPage)),
     }),
+    registerSettingsPage({
+      id: POLICY_PAGE,
+      title: "Command Permissions",
+      group: AGENTS_GROUP,
+      order: 490,
+      keywords: ["agent", "policy", "security", "whitelist", "blacklist", "permission", "command", "exec"],
+      component: lazyComponent(() => import("./AgentPolicyPage").then((m) => m.AgentPolicyPage)),
+    }),
   ];
-  return () => disposers.forEach((d) => d());
+  return () => disposers.reverse().forEach((d) => d());
 }
 
 export function activate(): () => void {
@@ -86,6 +95,9 @@ export function activate(): () => void {
       : () => {},
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root || s.project?.trusted !== prev.project?.trusted) sync(s.project?.root);
+      // What new tasks start with comes from the agents' list.
+      else if (s.settings?.agents?.newTaskApprovals !== prev.settings?.agents?.newTaskApprovals && s.project?.root)
+        void refreshProviders();
     }),
     registerToolWindow({
       id: TOOL_WINDOW,
@@ -168,6 +180,26 @@ export function activate(): () => void {
         when: "projectOpen",
         keywords: ["agent", "claude", "codex", "gemini", "ai"],
         run: ({ arg }) => openHome(typeof arg === "string" ? arg : undefined),
+      },
+      {
+        id: "agents.closeTask",
+        title: "Close Agent Task",
+        description: "Closes the agent task tab in the editor; the task keeps running in the Agents tool window.",
+        category: "Agents",
+        when: "projectOpen",
+        keywords: ["agent", "tab"],
+        run: async () => {
+          await closeActiveTask();
+        },
+      },
+      {
+        id: "agents.closeAndNewTask",
+        title: "Close and New Agent Task",
+        description: "Closes the agent task tab in the editor, then opens the New Task page.",
+        category: "Agents",
+        when: "projectOpen",
+        keywords: ["agent", "tab"],
+        run: () => closeAndNewTask(),
       },
       {
         id: "agents.addAgent",

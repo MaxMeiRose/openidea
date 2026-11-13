@@ -95,6 +95,8 @@ export function toolGroupLabel(name: string, kind?: string): string {
   return name;
 }
 
+import { opensOtherShare } from "@/platform/paths";
+
 /** `text` as a Markdown quote for the composer, followed by an empty line to type in. */
 export function quoteText(text: string): string {
   const lines = text.replace(/\s+$/, "").split("\n");
@@ -133,7 +135,8 @@ function absolutePath(value: string, cwd: string): string {
   const path = windows ? value.replace(/\\/g, "/") : value;
   const base = windows ? cwd.replace(/\\/g, "/") : cwd;
   const joined = path.startsWith("/") || /^[a-z]:\//i.test(path) ? path : base.replace(/\/+$/, "") + "/" + path;
-  const prefix = joined.startsWith("/") ? "/" : (/^[a-z]:\//i.exec(joined)?.[0] ?? "");
+  let prefix = joined.startsWith("/") ? "/" : (/^[a-z]:\//i.exec(joined)?.[0] ?? "");
+  if (joined.startsWith("//")) prefix = "//";
   const parts: string[] = [];
   for (const part of joined.slice(prefix.length).split("/")) {
     if (!part || part === ".") continue;
@@ -151,7 +154,9 @@ function parseFilePath(value: string, cwd: string): PathLink | null {
   if (!value || value.startsWith("//") || [...value].some((c) => c.charCodeAt(0) < 32)) return null;
   const match = /^(.*?)(?::(\d+)(?::(\d+))?|#L(\d+))?$/.exec(value);
   if (!match?.[1]) return null;
-  const link: PathLink = { path: absolutePath(match[1], cwd) };
+  const path = absolutePath(match[1], cwd);
+  if (opensOtherShare(path, match[1], cwd)) return null;
+  const link: PathLink = { path };
   const line = match[2] ?? match[4];
   if (line) link.line = Math.max(0, Number(line) - 1);
   if (match[3]) link.col = Math.max(0, Number(match[3]) - 1);

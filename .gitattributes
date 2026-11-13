@@ -1,1 +1,5 @@
 * text=auto eol=lf
+# tauri-specta emits trailing spaces around documented union fields.
+src/bindings.ts whitespace=-blank-at-eol
+# JAR manifests end their main section with a blank line.
+**/MANIFEST.MF whitespace=-blank-at-eof

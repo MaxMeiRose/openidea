@@ -12,7 +12,6 @@ async function stubRepositories(page: Page) {
       unstaged: index === 0 ? "modified" : null,
       renamedFrom: null,
     }));
-    const staged = new Set(files.filter((file) => file.staged).map((file) => file.path));
     const committed = new Set<string>();
     const handlers = window.__ipc.handlers;
     handlers.vcs_roots = () => roots.map((root) => ({ root, operation: null, head: "main", headCommit: "1111111" }));
@@ -25,16 +24,10 @@ async function stubRepositories(page: Page) {
       operation: null,
     });
     handlers.vcs_status = () => files.filter((file) => !committed.has(file.path));
-    handlers.vcs_stage = (args) => {
-      for (const path of args.paths as string[]) staged.add(path);
-      return null;
-    };
-    handlers.vcs_unstage = (args) => {
-      for (const path of args.paths as string[]) staged.delete(path);
-      return null;
-    };
+    handlers.vcs_stage = () => null;
+    handlers.vcs_unstage = () => null;
     handlers.vcs_commit = (args) => {
-      for (const path of staged) if (path.startsWith(`${args.repo}/`)) committed.add(path);
+      for (const path of (args.options as { stage: string[] }).stage) committed.add(path);
       return "2222222";
     };
     const module = "/src/features/vcs/store.ts";
@@ -74,11 +67,13 @@ test("commit changes start unchecked and another repository stays unchecked afte
   await expect(client).toBeHidden();
   await expect(server).not.toBeChecked();
   expect(await ipcCalls(page, "vcs_commit")).toEqual([
-    expect.objectContaining({ repo: "/dev/acme-api/frontend", message: "Fix client" }),
+    expect.objectContaining({
+      repo: "/dev/acme-api/frontend",
+      message: "Fix client",
+      options: expect.objectContaining({ stage: ["/dev/acme-api/frontend/client.ts"], exclude: [] }),
+    }),
   ]);
-  expect((await ipcCalls(page, "vcs_stage")).flatMap((args) => args.paths as string[])).toEqual([
-    "/dev/acme-api/frontend/client.ts",
-  ]);
+  expect(await ipcCalls(page, "vcs_stage")).toEqual([]);
   expect(await ipcCalls(page, "vcs_unstage")).toEqual([]);
 
   await page.evaluate(async () => {

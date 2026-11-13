@@ -71,6 +71,7 @@ vi.mock("@/platform/ipc", async (original) => ({
     },
     agentProviders: async () => ({ status: "ok", data: [] }),
     agentChanges: async () => ({ status: "ok", data: [] }),
+    agentGroupedChanges: async () => ({ status: "ok", data: { uncommitted: [], commits: [] } }),
     agentCreate: (...args: unknown[]) => backend.create(...args),
     agentBaseText: async (_task: string, path: string) => ({ status: "ok", data: `base of ${path}` }),
     agentEntries: async () => ({ status: "ok", data: await backend.entries }),
@@ -552,6 +553,7 @@ describe("the diff of an agent change", () => {
     kind: "modified" as const,
     added: 1,
     removed: 1,
+    oldPath: null,
   });
 
   it("lists the task's other changed files, so F7 moves on to the next one", async () => {

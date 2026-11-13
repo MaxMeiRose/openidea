@@ -5,6 +5,7 @@ import type { ServerId, ServerInfo, ServerStatus } from "@/bindings";
 import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
+import { tx } from "@/platform/i18n";
 
 export interface ServerEntry {
   id: ServerId;
@@ -28,6 +29,12 @@ let eventSeq = 0;
 const lastEvent = new Map<ServerId, number>();
 /** Event count when each server left the list, so an older snapshot doesn't bring it back. */
 const removedAt = new Map<ServerId, number>();
+/**
+ * A running server shows busy only once it has been busy this long: jdtls reports a task of a
+ * few milliseconds on almost every edit, save and search, which would make the status flicker.
+ */
+export const BUSY_SHOW_DELAY_MS = 500;
+const pendingBusy = new Map<ServerId, ReturnType<typeof setTimeout>>();
 
 function notifyMissing(e: ServerEntry) {
   if (notifiedMissing.has(e.name)) return;
@@ -88,9 +95,15 @@ export async function refreshServers() {
 }
 
 export async function restartServer(id: ServerId) {
+  const missing = useServers.getState().servers.get(id)?.status === "missing";
   try {
     await call(commands.lspRestart(id));
   } catch (e) {
+    const entry = useServers.getState().servers.get(id);
+    if (missing && entry?.status === "missing") {
+      notifications().notify({ group: "lsp", level: "warning", title: tx`${entry.name} is still not installed` });
+      return;
+    }
     notifications().notify({
       group: "lsp",
       level: "error",
@@ -104,12 +117,25 @@ export function installServerEvents(): () => void {
   const off = onIdeEvent("languageServer", (e) => {
     const known = useServers.getState().servers.has(e.server);
     lastEvent.set(e.server, ++eventSeq);
-    upsertServer({ id: e.server, name: e.name, status: e.status, message: e.message });
+    clearTimeout(pendingBusy.get(e.server));
+    pendingBusy.delete(e.server);
+    const entry = { id: e.server, name: e.name, status: e.status, message: e.message };
+    if (e.status === "busy" && useServers.getState().servers.get(e.server)?.status === "ready") {
+      pendingBusy.set(
+        e.server,
+        setTimeout(() => {
+          pendingBusy.delete(e.server);
+          upsertServer(entry);
+        }, BUSY_SHOW_DELAY_MS),
+      );
+    } else upsertServer(entry);
     if (!known) void refreshServers();
   });
   const offRemoved = onIdeEvent("languageServerRemoved", (e) => {
     removedAt.set(e.server, ++eventSeq);
     lastEvent.delete(e.server);
+    clearTimeout(pendingBusy.get(e.server));
+    pendingBusy.delete(e.server);
     if (!useServers.getState().servers.has(e.server)) return;
     useServers.setState((s) => {
       const servers = new Map(s.servers);
@@ -130,6 +156,8 @@ export function installServerEvents(): () => void {
     off();
     offRemoved();
     unsub();
+    for (const t of pendingBusy.values()) clearTimeout(t);
+    pendingBusy.clear();
   };
 }
 
@@ -172,4 +200,19 @@ export function serversSummary(
   const names = [...new Set((active.length ? active : servers).map((s) => s.name))];
   const text = names.length === 1 ? names[0]! : `${names[0]} +${names.length - 1}`;
   return { text, tone };
+}
+
+const RUNNING: ReadonlySet<ServerStatus> = new Set(["ready", "busy"]);
+
+/** Whether a running ESLint server covers `path` (a `language` file below its configuration). */
+export function eslintCovers(path: string, language: string | null | undefined): boolean {
+  if (!language) return false;
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+  const file = norm(path);
+  for (const s of useServers.getState().servers.values()) {
+    if (s.name !== "eslint" || !RUNNING.has(s.status) || !s.languages.includes(language)) continue;
+    const root = s.root ? norm(s.root) : null;
+    if (!root || file.startsWith(`${root}/`)) return true;
+  }
+  return false;
 }

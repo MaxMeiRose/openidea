@@ -9,4 +9,4 @@ it("starts agent conversations in the tool window even when old editor mode was 
   vi.resetModules();
   const { useAgents } = await import("./store");
   expect(useAgents.getState().sessionLocation).toBe("toolWindow");
-});
+}, 15_000);

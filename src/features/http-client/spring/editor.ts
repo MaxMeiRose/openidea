@@ -24,7 +24,7 @@ export const SPRING_LANGUAGES = new Set(["java", "kotlin"]);
 export const GENERATE_REQUEST = "http.generateSpringRequest";
 export const GENERATE_CONTROLLER_REQUESTS = "http.generateSpringControllerRequests";
 
-const reader: SourceReader = {
+export const sourceReader: SourceReader = {
   read: async (path) => {
     try {
       return await call(commands.fsReadText(path));
@@ -32,6 +32,7 @@ const reader: SourceReader = {
       return null;
     }
   },
+  filesNamed: (name) => call(commands.findFilesNamed(name)),
 };
 
 /** One request per endpoint (`paths[i]` picks another path of the mapping). */
@@ -46,12 +47,12 @@ export async function generateRequests(sourcePath: string, text: string, targets
   try {
     const root = useProject.getState().project?.root ?? null;
     const [host, lookup] = await Promise.all([
-      findHost(sourcePath, root, reader),
+      findHost(sourcePath, root, sourceReader),
       bodyLookup(
         sourcePath,
         parseSource(text),
         targets.map((t) => t.endpoint),
-        reader,
+        sourceReader,
       ),
     ]);
     const blocks = targets.map(({ endpoint, path }) =>

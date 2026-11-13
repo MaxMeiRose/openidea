@@ -138,10 +138,36 @@ async fn start(spec: &ProviderSpec, cwd: &Path, args: &[String]) -> IdeResult<Ow
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(windows)]
+    if let Some(path) = windows_cli_path(spec).await? {
+        command.env("PATH", path);
+    }
     command
         .spawn()
         .map(|child| OwnedChild(Some(child)))
         .map_err(|e| failure(format!("Couldn't start {}: {e}. {}", spec.name, spec.login_hint)))
+}
+
+#[cfg(windows)]
+async fn windows_cli_path(spec: &ProviderSpec) -> IdeResult<Option<std::ffi::OsString>> {
+    let explicit =
+        spec.env.iter().rev().find(|(key, _)| key.eq_ignore_ascii_case("PATH")).map(|(_, value)| value.clone());
+    tokio::task::spawn_blocking(move || {
+        let path = explicit
+            .map(std::ffi::OsString::from)
+            .or_else(|| ide_core::process::host_var_os("PATH").map(|path| ide_core::process::with_user_path(&path)))?;
+        // cmd.exe drops PATH beyond 8191 characters. Recheck the prelisted, not-yet-installed
+        // tools on each ephemeral launch so later installs and directory priority still work.
+        let mut dirs = Vec::new();
+        for dir in std::env::split_paths(&path) {
+            if dir.is_dir() && !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+        std::env::join_paths(dirs).ok()
+    })
+    .await
+    .map_err(failure)
 }
 
 async fn capture(mut reader: impl AsyncRead + Unpin, limit: usize) -> std::io::Result<(String, bool)> {
@@ -434,7 +460,7 @@ mod tests {
     }
 
     async fn native_smoke(id: &str) {
-        let spec = crate::provider::load(None).into_iter().find(|spec| spec.id == id).unwrap();
+        let spec = crate::provider::load(None, None).into_iter().find(|spec| spec.id == id).unwrap();
         let cwd = Path::new(env!("CARGO_MANIFEST_DIR"));
         let cancel = CancellationToken::new();
         let catalog = models(&spec, cwd, &cancel).await.unwrap();
@@ -450,6 +476,32 @@ mod tests {
     #[ignore = "requires an installed and signed-in Codex CLI"]
     async fn installed_codex_generates_a_commit_message() {
         native_smoke("codex").await;
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_cli_shims_can_find_commands_when_managed_tool_paths_exceed_cmd_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let shim = dir.path().join("agent.cmd");
+        std::fs::write(&shim, "@echo off\r\nwhere.exe cmd.exe\r\n").unwrap();
+        let system = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+        let path = std::env::join_paths(
+            (0..140)
+                .map(|i| dir.path().join(format!("uninstalled-managed-tool-{i:03}-with-a-long-directory-name")))
+                .chain(std::iter::once(system)),
+        )
+        .unwrap();
+        assert!(path.len() > 8191);
+        let mut spec = crate::provider::builtin_spec("codex").unwrap();
+        spec.command = shim.to_string_lossy().into_owned();
+        spec.env = vec![("PATH".into(), path.to_string_lossy().into_owned())];
+        let mut owned = start(&spec, dir.path(), &[]).await.unwrap();
+        let output = tokio::time::timeout(Duration::from_secs(5), owned.0.take().unwrap().wait_with_output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(String::from_utf8_lossy(&output.stdout).to_ascii_lowercase().contains("cmd.exe"));
     }
 
     #[tokio::test]
