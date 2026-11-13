@@ -50,6 +50,7 @@ import { allRepos, runRemote } from "./ops";
 import { showPushDialog, showUpdateDialog, type PushTarget, type UpdateTarget } from "./remoteUi";
 import { comparePathsWithRevision, showDirectoryWorkingDiff } from "./comparePaths";
 import { showCloneDialog } from "./clone";
+import { createRepository } from "./createRepository";
 import {
   showManageRemotes,
   showMergeDialog,
@@ -260,6 +261,15 @@ export function registerVcsActions(): () => void {
       category: "Git",
       when: VCS,
       run: cancelCommitAi,
+    },
+    {
+      id: "vcs.createRepository",
+      title: "Create Git Repository…",
+      category: "Git",
+      icon: "branch",
+      when: "projectOpen && projectLocal",
+      keywords: ["init", "git", "enable version control"],
+      run: () => createRepository(),
     },
     {
       id: "vcs.clone",

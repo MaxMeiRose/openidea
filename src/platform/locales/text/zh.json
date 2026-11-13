@@ -8165,5 +8165,9 @@
   "Mock calls": "模拟调用",
   "Run a method to see its return value, duration and exceptions.": "运行方法后可查看返回值、耗时和异常。",
   "Cannot save method cases": "无法保存方法用例",
-  "Conversation location": "会话显示位置"
+  "Conversation location": "会话显示位置",
+  "Create Git Repository…": "创建 Git 仓库…",
+  "Select Directory for Git Init": "选择要执行 Git Init 的目录",
+  "Couldn't create Git repository": "无法创建 Git 仓库",
+  "Created Git repository in {dir}": "已在 {dir} 创建 Git 仓库"
 }

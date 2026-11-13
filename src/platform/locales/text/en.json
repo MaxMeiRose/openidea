@@ -1603,5 +1603,9 @@
   "Cannot save method cases": "Cannot save method cases",
   "Accept: application/json": "Accept: application/json",
   "/api/example": "/api/example",
-  "Conversation location": "Conversation location"
+  "Conversation location": "Conversation location",
+  "Create Git Repository…": "Create Git Repository…",
+  "Select Directory for Git Init": "Select Directory for Git Init",
+  "Couldn't create Git repository": "Couldn't create Git repository",
+  "Created Git repository in {dir}": "Created Git repository in {dir}"
 }

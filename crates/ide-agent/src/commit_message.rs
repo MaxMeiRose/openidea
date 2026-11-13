@@ -125,6 +125,7 @@ impl Drop for OwnedChild {
 }
 
 async fn start(spec: &ProviderSpec, cwd: &Path, args: &[String]) -> IdeResult<OwnedChild> {
+    let env = cli_environment(spec).await?;
     let mut command = Command::new(executable(spec).await?);
     ide_core::process::prepare(command.as_std_mut());
     ide_core::process::own_group(command.as_std_mut());
@@ -132,20 +133,32 @@ async fn start(spec: &ProviderSpec, cwd: &Path, args: &[String]) -> IdeResult<Ow
         .args(args)
         .current_dir(cwd)
         .envs(ide_core::process::shell_env())
-        .envs(spec.env.iter().map(|(key, value)| (key, value)))
+        .envs(env.iter().map(|(key, value)| (key, value)))
         .env_remove("CLAUDECODE")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    #[cfg(windows)]
-    if let Some(path) = windows_cli_path(spec).await? {
-        command.env("PATH", path);
-    }
     command
         .spawn()
         .map(|child| OwnedChild(Some(child)))
         .map_err(|e| failure(format!("Couldn't start {}: {e}. {}", spec.name, spec.login_hint)))
+}
+
+async fn cli_environment(spec: &ProviderSpec) -> IdeResult<Vec<(String, String)>> {
+    #[cfg(windows)]
+    {
+        let mut env = spec.env.clone();
+        if let Some(path) = windows_cli_path(spec).await? {
+            env.retain(|(key, _)| !key.eq_ignore_ascii_case("PATH"));
+            env.push(("PATH".into(), path.to_string_lossy().into_owned()));
+        }
+        Ok(env)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(spec.env.clone())
+    }
 }
 
 #[cfg(windows)]
@@ -336,16 +349,10 @@ pub(crate) async fn models(
 
 async fn codex_models(spec: &ProviderSpec, cwd: &Path, cancel: &CancellationToken) -> IdeResult<Vec<AgentConfigValue>> {
     let command = executable(spec).await?;
-    let peer = Peer::spawn_framed(
-        &command,
-        &spec.args,
-        cwd,
-        &spec.env,
-        Arc::new(NoopHandler),
-        Box::new(|_| {}),
-        Framing::Lines,
-    )
-    .map_err(failure)?;
+    let env = cli_environment(spec).await?;
+    let peer =
+        Peer::spawn_framed(&command, &spec.args, cwd, &env, Arc::new(NoopHandler), Box::new(|_| {}), Framing::Lines)
+            .map_err(failure)?;
     let run = async {
         peer.request::<_, Value>(
             "initialize",
@@ -479,11 +486,9 @@ mod tests {
     }
 
     #[cfg(windows)]
-    #[tokio::test]
-    async fn windows_cli_shims_can_find_commands_when_managed_tool_paths_exceed_cmd_limit() {
+    fn windows_cli_fixture() -> (tempfile::TempDir, ProviderSpec) {
         let dir = tempfile::tempdir().unwrap();
         let shim = dir.path().join("agent.cmd");
-        std::fs::write(&shim, "@echo off\r\nwhere.exe cmd.exe\r\n").unwrap();
         let system = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
         let path = std::env::join_paths(
             (0..140)
@@ -495,6 +500,14 @@ mod tests {
         let mut spec = crate::provider::builtin_spec("codex").unwrap();
         spec.command = shim.to_string_lossy().into_owned();
         spec.env = vec![("PATH".into(), path.to_string_lossy().into_owned())];
+        (dir, spec)
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_cli_shims_can_find_commands_when_managed_tool_paths_exceed_cmd_limit() {
+        let (dir, spec) = windows_cli_fixture();
+        std::fs::write(&spec.command, "@echo off\r\nwhere.exe cmd.exe\r\n").unwrap();
         let mut owned = start(&spec, dir.path(), &[]).await.unwrap();
         let output = tokio::time::timeout(Duration::from_secs(5), owned.0.take().unwrap().wait_with_output())
             .await
@@ -502,6 +515,36 @@ mod tests {
             .unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
         assert!(String::from_utf8_lossy(&output.stdout).to_ascii_lowercase().contains("cmd.exe"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_model_discovery_shims_can_find_commands_with_long_managed_tool_paths() {
+        let (dir, spec) = windows_cli_fixture();
+        std::fs::write(
+            &spec.command,
+            "@echo off\r\nwhere.exe cmd.exe >nul || exit /b 1\r\n\"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoLogo -NoProfile -NonInteractive -File \"%~dp0models.ps1\"\r\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("models.ps1"),
+            r#"
+while ($line = [Console]::ReadLine()) {
+    $request = $line | ConvertFrom-Json
+    if ($null -eq $request.id) { continue }
+    $result = @{}
+    if ($request.method -eq 'model/list') {
+        $result = @{ data = @(@{ model = 'fixture-model'; displayName = 'Fixture Model' }) }
+    }
+    $response = @{ jsonrpc = '2.0'; id = $request.id; result = $result }
+    [Console]::WriteLine(($response | ConvertTo-Json -Depth 5 -Compress))
+}
+"#,
+        )
+        .unwrap();
+        let models = codex_models(&spec, dir.path(), &CancellationToken::new()).await.unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].value, "fixture-model");
     }
 
     #[tokio::test]

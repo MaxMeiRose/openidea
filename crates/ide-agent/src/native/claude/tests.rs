@@ -311,6 +311,8 @@ struct Replay {
     sent: Arc<Mutex<Vec<Vec<Value>>>>,
     launched: Mutex<Vec<Vec<String>>>,
     errors: Arc<Mutex<Vec<String>>>,
+    /// Each process's kill token.
+    kills: Mutex<Vec<CancellationToken>>,
 }
 
 impl Cli for Replay {
@@ -334,6 +336,7 @@ impl Cli for Replay {
         let (shim_in, cli_in) = tokio::io::duplex(1 << 20);
         let (mut cli_out, shim_out) = tokio::io::duplex(1 << 20);
         let kill = CancellationToken::new();
+        self.kills.lock().push(kill.clone());
         let (sent, errors, token) = (self.sent.clone(), self.errors.clone(), kill.clone());
         sent.lock().push(Vec::new());
         tokio::spawn(async move {
@@ -436,6 +439,7 @@ async fn legacy_model_and_thinking_choices_reach_the_cli_without_get_settings() 
         sent: Arc::default(),
         launched: Mutex::default(),
         errors: Arc::default(),
+        kills: Mutex::default(),
     });
     let (dir, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let h = Harness::connect(cli.clone(), dir.path().into(), dir.path().join("pending"), cwd.path().into(), Vec::new())
@@ -490,6 +494,7 @@ async fn switching_models_clears_an_unsupported_effort_in_the_cli() {
         sent: Arc::default(),
         launched: Mutex::default(),
         errors: Arc::default(),
+        kills: Mutex::default(),
     });
     let (dir, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let h = Harness::connect(cli.clone(), dir.path().into(), dir.path().join("p"), cwd.path().into(), Vec::new()).await;
@@ -518,6 +523,7 @@ async fn discovery_returns_model_specific_effort_without_a_prompt_or_persistent_
         sent: Arc::default(),
         launched: Mutex::default(),
         errors: Arc::default(),
+        kills: Mutex::default(),
     });
     let (dir, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let pending = dir.path().join("pending");
@@ -611,6 +617,7 @@ async fn replay(name: &str) -> Replayed {
         sent: Arc::default(),
         launched: Mutex::default(),
         errors: Arc::default(),
+        kills: Mutex::default(),
     });
     let (config, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let cwd_path = std::fs::canonicalize(cwd.path()).unwrap();
@@ -642,6 +649,23 @@ async fn replay_simple() {
     assert!(args.contains(&"--permission-prompt-tool".to_owned()));
     let user = r.sent(0).into_iter().find(|m| m["type"] == "user").unwrap();
     assert_eq!(user["message"]["content"][0]["text"], "Reply with exactly: hello there");
+}
+
+/// The app closing the connection (an idle task released, archived or deleted) stops the
+/// CLI processes of its sessions, idle ones included.
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_the_connection_stops_the_processes() {
+    let r = replay("simple").await;
+    assert!(r.cli.kills.lock().iter().all(|k| !k.is_cancelled()));
+    r.h.client.kill();
+    let kills = r.cli.kills.lock().clone();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for k in kills {
+            k.cancelled().await;
+        }
+    })
+    .await
+    .expect("every process was stopped");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -910,6 +934,7 @@ async fn a_stop_ahead_of_its_prompt_cancels_it() {
         sent: Arc::default(),
         launched: Mutex::default(),
         errors: Arc::default(),
+        kills: Mutex::default(),
     });
     let (dir, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let h = Harness::connect(cli.clone(), dir.path().into(), dir.path().join("p"), cwd.path().into(), Vec::new()).await;
@@ -953,6 +978,7 @@ async fn a_failed_turn_reports_its_failure() {
             sent: Arc::default(),
             launched: Mutex::default(),
             errors: Arc::default(),
+            kills: Mutex::default(),
         });
         let (dir, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let h =
