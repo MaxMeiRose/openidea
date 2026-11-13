@@ -93,6 +93,23 @@ describe("AI commit messages", () => {
     expect(mocks.working).not.toHaveBeenCalled();
   });
 
+  it("uses the only checked repository even when another repository is active", async () => {
+    useCommit.setState({
+      checks: new Map([
+        [file.path, "none"],
+        [other.path, "all"],
+      ]),
+    });
+    await generateCommitMessage();
+    expect(useCommitAi.getState().error).toBeNull();
+    expect(mocks.generate).toHaveBeenCalledWith("claude", "/p/b", "sonnet", expect.any(String), expect.any(Number));
+    const context = JSON.parse(mocks.generate.mock.calls[0]![3]);
+    expect(context.files).toMatchObject([{ repository: "/p/b", path: "other.ts" }]);
+    expect(mocks.working).toHaveBeenCalledWith(other.path);
+    expect(mocks.working.mock.calls.every(([path]) => path === other.path)).toBe(true);
+    expect(useCommit.getState().message).toBe("fix(vcs): keep repository selections");
+  });
+
   it("describes the staged change type when the working tree has a different type", async () => {
     useVcs.setState({ status: [{ ...file, staged: "modified", unstaged: "deleted" }] });
     useCommit.setState({ checks: new Map([[file.path, "staged"]]) });
@@ -132,7 +149,7 @@ describe("AI commit messages", () => {
     expect(useCommit.getState().message).toBe("Draft");
   });
 
-  it("rejects changes checked in more than the current repository", async () => {
+  it("includes checked changes from multiple repositories in one message", async () => {
     useCommit.setState({
       checks: new Map([
         [file.path, "all"],
@@ -140,8 +157,35 @@ describe("AI commit messages", () => {
       ]),
     });
     await generateCommitMessage();
-    expect(mocks.generate).not.toHaveBeenCalled();
-    expect(useCommitAi.getState().error).toContain("one repository");
+    expect(useCommitAi.getState().error).toBeNull();
+    const [, repo, , input] = mocks.generate.mock.calls[0]!;
+    expect(repo).toBe("/p/a");
+    expect(JSON.parse(input).files).toMatchObject([
+      { repository: "/p/a", path: "selected.ts" },
+      { repository: "/p/b", path: "other.ts" },
+    ]);
+    expect(useCommit.getState().message).toBe("fix(vcs): keep repository selections");
+  });
+
+  it("includes each repository's previous commit when amending multiple repositories", async () => {
+    useCommit.setState({
+      amend: true,
+      checks: new Map([
+        [file.path, "all"],
+        [other.path, "all"],
+      ]),
+    });
+    mocks.log.mockImplementation(async (repo: string) => ok([{ id: repo, message: `Original intent in ${repo}` }]));
+    mocks.files.mockResolvedValue(ok([{ path: "previous.ts", kind: "modified" }]));
+    const { context } = await commitAiContext();
+    expect(JSON.parse(context)).toMatchObject({
+      amend: true,
+      previousCommit: null,
+      previousCommits: [
+        { repository: "/p/b", message: "Original intent in /p/b" },
+        { repository: "/p/a", message: "Original intent in /p/a" },
+      ],
+    });
   });
 
   it("discards a result when selected file contents changed during generation", async () => {

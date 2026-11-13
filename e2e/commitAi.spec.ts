@@ -59,6 +59,38 @@ async function prepareCommit(page: Page) {
   return page.getByRole("region", { name: "Commit", exact: true });
 }
 
+test("AI generation follows checked repositories after unchecking the active repository", async ({
+  workbench: page,
+}, testInfo) => {
+  const panel = await prepareCommit(page);
+  const client = panel.getByRole("checkbox", { name: "Include client.ts in commit" });
+  const server = panel.getByRole("checkbox", { name: "Include server.ts in commit" });
+  const generate = panel.getByRole("button", { name: "Generate with AI", exact: true });
+  const message = panel.getByRole("textbox", { name: "Commit message", exact: true });
+  await client.check();
+  await server.check();
+  await client.uncheck();
+  await expect(server).toBeChecked();
+  await generate.click();
+  await page.screenshot({ path: testInfo.outputPath("selected-repository.png"), animations: "disabled" });
+  await expect(message).toHaveValue("fix(vcs): preserve repository selections");
+  const [request] = await ipcCalls(page, "agent_generate_commit_message");
+  expect(request).toMatchObject({ repo: "/dev/acme-api/backend" });
+  expect(JSON.parse(request!.prompt as string).files).toMatchObject([
+    { repository: "/dev/acme-api/backend", path: "server.ts" },
+  ]);
+  await expect(client).not.toBeChecked();
+
+  await client.check();
+  await generate.click();
+  await expect.poll(async () => (await ipcCalls(page, "agent_generate_commit_message")).length).toBe(2);
+  const [, combined] = await ipcCalls(page, "agent_generate_commit_message");
+  expect(JSON.parse(combined!.prompt as string).files).toMatchObject([
+    { repository: "/dev/acme-api/frontend", path: "client.ts" },
+    { repository: "/dev/acme-api/backend", path: "server.ts" },
+  ]);
+});
+
 test("Amend selects the current repository and AI generation uses the selected tool and model", async ({
   workbench: page,
 }, testInfo) => {

@@ -3,7 +3,7 @@ import { call, commands, nextRequestId } from "@/platform/ipc";
 import { tx, useI18n } from "@/platform/i18n";
 import { effectiveCommitAiPrompt } from "@/platform/commitAiSettings";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { checkOf, planCommit, renamedFromPath } from "./changes";
+import { checkOf, commitRepos, planCommit, renamedFromPath } from "./changes";
 import { useChangelists, withListDefaults } from "./changelists";
 import { useCommit } from "./commitStore";
 import { currentHunkText, hunkKeys } from "./hunks";
@@ -22,14 +22,14 @@ const FILE_LIMIT = 24_000;
 export async function commitAiContext() {
   const vcs = useVcs.getState();
   const commit = useCommit.getState();
-  const repo = currentRepoRoot();
-  if (!repo) throw new Error(tx("Select a Git repository first."));
-  const roots = vcs.roots.length ? vcs.roots : [repo];
+  const currentRepo = currentRepoRoot();
+  if (!currentRepo) throw new Error(tx("Select a Git repository first."));
+  const roots = vcs.roots.length ? vcs.roots : [currentRepo];
   const checks = withListDefaults(vcs.status, vcs.root ?? "", useChangelists.getState().state, commit.checks);
   const included = planCommit(vcs.status, checks).included;
   if (!included.length && !commit.amend) throw new Error(tx("Select changes to generate a commit message."));
-  if (included.some((file) => rootOf(file.path, roots) !== repo))
-    throw new Error(tx("AI generation supports one repository. Uncheck changes from other repositories."));
+  const repositories = commitRepos(included, roots, currentRepo).filter((root): root is string => root !== null);
+  const repo = repositories.at(-1) ?? currentRepo;
   const cfg = workflowSettings().vcs.commit;
   let remaining = CONTEXT_LIMIT;
   const take = (text: string) => {
@@ -72,20 +72,31 @@ export async function commitAiContext() {
       }),
     });
   }
-  let previous = null;
+  const previous = [];
   if (commit.amend) {
-    const [head] = await call(
-      commands.vcsLog(repo, { branch: "HEAD", path: null, author: null, text: null, range: null, skip: 0, limit: 1 }),
-    );
-    if (!head) throw new Error(tx("There is no commit to amend."));
-    const files = await call(commands.vcsCommitFiles(repo, head.id));
-    previous = { message: head.message.slice(0, FILE_LIMIT), files };
+    for (const repository of repositories) {
+      const [head] = await call(
+        commands.vcsLog(repository, {
+          branch: "HEAD",
+          path: null,
+          author: null,
+          text: null,
+          range: null,
+          skip: 0,
+          limit: 1,
+        }),
+      );
+      if (!head) throw new Error(tx("There is no commit to amend."));
+      const files = await call(commands.vcsCommitFiles(repository, head.id));
+      previous.push({ repository, message: head.message.slice(0, FILE_LIMIT), files });
+    }
   }
   const context = JSON.stringify({
     instructions: effectiveCommitAiPrompt(cfg.aiPrompt),
     language: useI18n.getState().locale,
     amend: commit.amend,
-    previousCommit: previous,
+    previousCommit: previous.length === 1 ? previous[0] : null,
+    previousCommits: previous.length > 1 ? previous : undefined,
     files,
   });
   if (new TextEncoder().encode(context).length > 512 << 10)
@@ -140,7 +151,7 @@ export async function generateCommitMessage() {
     if (!unchanged()) return;
     const current = await commitAiContext();
     if (!unchanged()) return;
-    if (current.context !== context) {
+    if (current.repo !== repo || current.context !== context) {
       useCommitAi.setState({ error: tx("Selected changes changed during generation. Generate the message again.") });
       return;
     }

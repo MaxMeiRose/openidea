@@ -110,6 +110,10 @@ Run what CI runs for the parts you touched:
 
 Several worktrees can be developed and run side by side.
 
+- Keep task logs, screenshots, downloaded installers and historical verification material in
+  `.local-artifacts/<task>/` inside this checkout. Do not create sibling `openidea-*` artifact
+  directories in the workspace root. `.local-artifacts/archive/` retains earlier task material.
+
 - Create one per task: `git worktree add ../<name> -b <branch> origin/main`, then
   `pnpm install` in it.
 - Launch with `pnpm tauri dev` / `pnpm dev:app`, not the raw `pnpm exec tauri dev` CLI. The

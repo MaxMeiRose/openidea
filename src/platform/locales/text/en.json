@@ -1003,7 +1003,6 @@
   "Up to date with {upstream}": "Up to date with {upstream}",
   "Agent run status": "Agent run status",
   "Run finished": "Run finished",
-  "AI generation supports one repository. Uncheck changes from other repositories.": "AI generation supports one repository. Uncheck changes from other repositories.",
   "Selected changes changed during generation. Generate the message again.": "Selected changes changed during generation. Generate the message again.",
   "CLI default": "CLI default",
   "Commit AI provider": "Commit AI provider",

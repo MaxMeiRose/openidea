@@ -32,6 +32,7 @@ target/
 *.tsbuildinfo
 test-results/
 playwright-report/
+.local-artifacts/
 
 # Local AI agent files. Shared skills live in .agents/skills; .claude/skills links to them.
 CLAUDE.local.md
