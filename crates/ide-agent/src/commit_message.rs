@@ -321,6 +321,9 @@ fn choices(rows: &Value, codex: bool) -> Vec<AgentConfigValue> {
                     .unwrap_or(value)
                     .to_owned(),
                 description: row.get("description").and_then(Value::as_str).map(str::to_owned),
+                cost_category: None,
+                usage_multiplier: None,
+                pricing: None,
             })
         })
         .take(500)

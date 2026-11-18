@@ -119,11 +119,13 @@ pub enum EventKind {
     EditorFocused,
     ActionPerformed,
     VcsChanged,
+    /// Problems of the window's files changed (a language server or a report).
+    ProblemsChanged,
     Scheduled,
 }
 
 impl EventKind {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::DocumentChanged,
         Self::WebsocketReady,
         Self::FileClosed,
@@ -139,6 +141,7 @@ impl EventKind {
         Self::EditorFocused,
         Self::ActionPerformed,
         Self::VcsChanged,
+        Self::ProblemsChanged,
         Self::Scheduled,
     ];
 
@@ -159,6 +162,7 @@ impl EventKind {
             Self::EditorFocused => "editor-focused",
             Self::ActionPerformed => "action-performed",
             Self::VcsChanged => "vcs-changed",
+            Self::ProblemsChanged => "problems-changed",
             Self::Scheduled => "scheduled",
         }
     }
@@ -294,6 +298,8 @@ pub enum WorkbenchEvent {
     EditorFocused(Option<String>),
     ActionPerformed(ActionPerformed),
     VcsChanged(String),
+    /// Problems of the window's files changed; plugins re-read `problems`.
+    ProblemsChanged,
     Scheduled,
 }
 
@@ -315,6 +321,7 @@ impl WorkbenchEvent {
             Self::EditorFocused(_) => EventKind::EditorFocused,
             Self::ActionPerformed(_) => EventKind::ActionPerformed,
             Self::VcsChanged(_) => EventKind::VcsChanged,
+            Self::ProblemsChanged => EventKind::ProblemsChanged,
             Self::Scheduled => EventKind::Scheduled,
         }
     }
@@ -859,6 +866,14 @@ pub struct Endpoint {
     pub location: Location,
 }
 
+/// The clipboard as `ui.read-clipboard` returns it (API 1.11): `None` for a kind it doesn't
+/// hold; `image` is PNG bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClipboardContent {
+    pub text: Option<String>,
+    pub image: Option<Vec<u8>>,
+}
+
 /// A notification button that runs one of the publishing plugin's commands.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -925,6 +940,9 @@ pub struct FileDecoration {
     /// Text shown after the name (API 1.7 `set-file-note`).
     #[serde(default)]
     pub note: Option<String>,
+    /// `[[contributes.fileIcons]]` id for this file or folder (API 1.8 `set-file-icon`).
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 /// Commit metadata, date in Unix seconds.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -947,6 +965,28 @@ pub struct BlameLine {
     pub author: String,
     pub date: i64,
     pub summary: String,
+}
+
+/// How an occurrence in a build's dependency graph was resolved (API 1.10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DependencyStatus {
+    Resolved,
+    OmittedForConflict,
+    OmittedForDuplicate,
+    VersionManaged,
+}
+
+/// One occurrence in the flat dependency graph of `build.dependencies` (API 1.10);
+/// `parent` indexes the list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DependencyNode {
+    pub group: String,
+    pub artifact: String,
+    pub version: String,
+    pub scope: String,
+    pub status: DependencyStatus,
+    pub requested_version: Option<String>,
+    pub parent: Option<u32>,
 }
 
 /// Non-secret settings of a plugin-owned project database source (API 1.4).

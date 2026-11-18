@@ -98,6 +98,15 @@ describe("run config → launch config", () => {
     });
   });
 
+  it("cargo run under lldb-dap builds the same way and passes the environment as strings", () => {
+    const l = launchConfigFor(
+      rc({ kind: "cargo", command: "cargo", args: ["run"], env: { RUST_LOG: "debug" }, debugAdapter: "lldb-dap" }),
+      "/p",
+    )!;
+    expect(l.adapter).toBe("lldb-dap");
+    expect(extra(l)).toEqual({ cargo: { args: ["build"], filter: { kind: "bin" } }, env: ["RUST_LOG=debug"] });
+  });
+
   it("cargo test builds test binaries without running", () => {
     const l = launchConfigFor(
       rc({ kind: "cargo", command: "cargo", args: ["test", "--workspace"], debugAdapter: "codelldb" }),
@@ -113,7 +122,7 @@ describe("run config → launch config", () => {
     )!;
     expect(script.program).toBe("/p/manage.py");
     expect(script.args).toEqual(["runserver"]);
-    expect(extra(script)).toMatchObject({ python: "/p/.venv/bin/python", django: true, console: "internalConsole" });
+    expect(extra(script)).toMatchObject({ python: "/p/.venv/bin/python", django: true, console: "integratedTerminal" });
 
     const mod = launchConfigFor(
       rc({ kind: "python", command: "python3", args: ["-m", "app", "-v"], debugAdapter: "debugpy" }),
@@ -165,6 +174,24 @@ describe("run config → launch config", () => {
       "/p",
     )!;
     expect(extra(uv)).toMatchObject({ python: ["uv", "run", "python"], debugLauncherPython: "python" });
+  });
+
+  it("debugpy: a Windows venv interpreter or tool path debugs with that interpreter", () => {
+    usePlatform.setState({ os: "windows" });
+    const venv = "C:\\work\\app\\.venv\\Scripts\\";
+    const script = launchConfigFor(
+      rc({ kind: "python", command: `${venv}python.exe`, args: ["main.py"], debugAdapter: "debugpy" }),
+      "C:/work/app",
+    )!;
+    expect(extra(script).python).toBe(`${venv}python.exe`);
+    expect(extra(script).module).toBeUndefined();
+    expect(script.program).toBe("C:/work/app/main.py");
+
+    const pytest = launchConfigFor(
+      rc({ kind: "pytest", command: `${venv}pytest.exe`, args: ["-x"], debugAdapter: "debugpy" }),
+      "C:/work/app",
+    )!;
+    expect(extra(pytest)).toMatchObject({ module: "pytest", python: `${venv}python.exe` });
   });
 
   it("js-debug: npm scripts run through the package manager, node scripts directly", () => {
@@ -362,6 +389,31 @@ describe("run config → launch config", () => {
       });
     },
   );
+
+  it("Zig under CodeLLDB: no source-language mode, so evaluation stays LLDB's own", () => {
+    const exe = launchConfigFor(
+      rc({ kind: "zig-application", command: "./zig-out/bin/app", debugAdapter: "codelldb" }),
+      "/p",
+    )!;
+    expect(exe.adapter).toBe("codelldb");
+    expect(extra(exe)).toEqual({ sourceLanguages: [] });
+    const single = launchConfigFor(
+      rc({
+        kind: "native",
+        command: "/tmp/openidea-run/calc-1",
+        debugAdapter: "codelldb",
+        params: { language: "zig" },
+      }),
+      "/p",
+    )!;
+    expect(extra(single)).toEqual({ sourceLanguages: [] });
+    // Rust-compiled binaries keep CodeLLDB's default (Rust) source mode.
+    const rust = launchConfigFor(
+      rc({ kind: "native", command: "/tmp/openidea-run/app-1", debugAdapter: "codelldb" }),
+      "/p",
+    )!;
+    expect(rust.extraJson).toBeNull();
+  });
 
   it("Godot: the editor's adapter plays the main scene or the chosen one of the project", () => {
     const project = rc({

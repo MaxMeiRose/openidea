@@ -48,6 +48,7 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
             "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
@@ -59,6 +60,7 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/output": super::bindings::openidea::plugin::output,
             "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
             "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
             "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
             "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
@@ -86,6 +88,7 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
             "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
@@ -97,6 +100,7 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/output": super::bindings::openidea::plugin::output,
             "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
             "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
             "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
             "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
@@ -124,6 +128,7 @@ pub(crate) mod views_bindings {
             "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
             "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
@@ -135,6 +140,7 @@ pub(crate) mod views_bindings {
             "openidea:plugin/output": super::bindings::openidea::plugin::output,
             "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
             "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
             "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
             "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
@@ -147,8 +153,8 @@ pub(crate) mod views_bindings {
 }
 
 use bindings::openidea::plugin::{
-    commit, detail_types, diagnostics, editor, events, fs, invocation, ipc, log, net, process, secrets, settings,
-    storage, tasks, types as wit, ui, vcs, views, workspace,
+    build, commit, detail_types, diagnostics, editor, events, fs, invocation, ipc, log, net, process, secrets,
+    settings, storage, tasks, types as wit, ui, vcs, views, workspace,
 };
 
 /// A project handle: its root.
@@ -347,7 +353,7 @@ impl StoreData {
     /// their window; background and scheduled calls ask nobody, so only an
     /// already-allowed host connects there.
     fn ask_net(&mut self, host: &str) -> Result<Option<bool>, wit::Error> {
-        let client = self.net_interactive.then(|| self.invocation.client.clone()).flatten();
+        let client = self.user_invoked.then(|| self.invocation.client.clone()).flatten();
         let subject = self.subject.clone();
         let started = Instant::now();
         let answer = self.host.net_ask(&subject, client.as_deref(), host, &self.cancel.token());
@@ -536,6 +542,37 @@ impl ui::Host for StoreData {
         }
         let client = self.invocation.client.clone();
         Ok(self.host.copy_to_clipboard(client.as_deref(), clip(text, crate::runtime::MAX_TEXT)).map_err(to_wit))
+    }
+
+    fn read_clipboard(&mut self) -> Fallible<ui::ClipboardContent> {
+        if let Err(e) = self.require(Capability::ClipboardRead) {
+            return Ok(Err(e));
+        }
+        // Never unattended: not from an event handler, a web view message or a command
+        // another plugin ran through `command-runner` (its chain is not empty).
+        let client = match &self.invocation.client {
+            Some(client) if self.user_invoked && self.invocation.command_chain.is_empty() => client.clone(),
+            _ => {
+                let why = "clipboard.read (only in a command or view action the user ran)";
+                return Ok(Err(wit::Error::Denied(why.into())));
+            }
+        };
+        let started = Instant::now();
+        let content = self.host.read_clipboard(&client, &self.cancel.token());
+        // The window may ask the user first: the wait doesn't count against the call's budget.
+        let waited = started.elapsed();
+        self.deadline += waited;
+        self.call_started += waited;
+        let content = match content {
+            Ok(content) => content,
+            Err(e) => return Ok(Err(to_wit(e))),
+        };
+        let max = crate::runtime::MAX_CLIPBOARD_BYTES;
+        if content.text.as_ref().is_some_and(|t| t.len() > max) || content.image.as_ref().is_some_and(|i| i.len() > max)
+        {
+            return Ok(Err(wit::Error::Failed(format!("the clipboard holds more than {} MiB", max >> 20))));
+        }
+        Ok(Ok(ui::ClipboardContent { text: content.text, image: content.image }))
     }
 
     fn open_url(&mut self, url: String) -> Fallible<()> {
@@ -870,7 +907,7 @@ impl editor::Host for StoreData {
             return Ok(Err(wit::Error::Invalid("edits too large".into())));
         }
         let root = self.table.get(&project)?.root.clone();
-        let path = match self.resolve_in_project(&root, &path) {
+        let path = match self.resolve_background_document_in_project(&root, &path) {
             Ok(path) => path,
             Err(error) => return Ok(Err(wit::Error::Invalid(error))),
         };
@@ -934,6 +971,14 @@ impl StoreData {
     fn resolve_writable_in_project(&self, root: &Path, path: &str) -> Result<PathBuf, String> {
         sandbox::resolve_writable_in_root(root, path).or_else(|root_error| {
             sandbox::resolve_writable_in_roots(&self.host.member_roots(root), path).map_err(|_| root_error)
+        })
+    }
+    /// A background document edit is the only plugin operation that changes an
+    /// editor on behalf of a remote peer.  It therefore rejects links and IDE
+    /// control directories instead of using the normal read resolver.
+    fn resolve_background_document_in_project(&self, root: &Path, path: &str) -> Result<PathBuf, String> {
+        sandbox::resolve_background_document_in_root(root, path).or_else(|root_error| {
+            sandbox::resolve_background_document_in_roots(&self.host.member_roots(root), path).map_err(|_| root_error)
         })
     }
     /// Whether a `project` resource's path lands inside the resource's root or
@@ -1178,6 +1223,44 @@ impl vcs::Host for StoreData {
         }
         let root = self.table.get(&project)?.root.clone();
         Ok(self.host.vcs_remotes(&root).map_err(to_wit))
+    }
+}
+
+impl build::Host for StoreData {
+    fn dependencies(
+        &mut self,
+        project: Resource<ProjectRes>,
+        module: Option<String>,
+    ) -> Fallible<Vec<build::DependencyNode>> {
+        if let Err(e) = self.require(Capability::BuildRead) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        Ok(self
+            .host
+            .build_dependencies(&root, module.as_deref())
+            .map(|nodes| {
+                nodes
+                    .into_iter()
+                    .map(|n| build::DependencyNode {
+                        group: n.group,
+                        artifact: n.artifact,
+                        version: n.version,
+                        scope: n.scope,
+                        status: match n.status {
+                            crate::DependencyStatus::Resolved => build::DependencyStatus::Resolved,
+                            crate::DependencyStatus::OmittedForConflict => build::DependencyStatus::OmittedForConflict,
+                            crate::DependencyStatus::OmittedForDuplicate => {
+                                build::DependencyStatus::OmittedForDuplicate
+                            }
+                            crate::DependencyStatus::VersionManaged => build::DependencyStatus::VersionManaged,
+                        },
+                        requested_version: n.requested_version,
+                        parent: n.parent,
+                    })
+                    .collect()
+            })
+            .map_err(to_wit))
     }
 }
 
@@ -1774,6 +1857,13 @@ impl views::Host for StoreData {
         if let Err(e) = self.require_window() {
             return Ok(Err(e));
         }
+        let diff = crate::FileDiff::from(crate::ContentDiff::from(diff));
+        Ok(self.host.open_diff(self.invocation.client.as_deref().unwrap(), diff, file_name).map_err(to_wit))
+    }
+    fn open_file_diff(&mut self, diff: views::FileDiff, file_name: Option<String>) -> Fallible<()> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
         Ok(self.host.open_diff(self.invocation.client.as_deref().unwrap(), diff.into(), file_name).map_err(to_wit))
     }
     fn reply_content_tab(&mut self, request_id: String, reply: views::ContentTabReply) -> Fallible<()> {
@@ -2135,6 +2225,12 @@ impl From<bindings::openidea::plugin::views::ContentDiff> for crate::ContentDiff
     }
 }
 
+impl From<bindings::openidea::plugin::views::FileDiff> for crate::FileDiff {
+    fn from(v: bindings::openidea::plugin::views::FileDiff) -> Self {
+        Self { left: v.left, right: v.right, left_label: v.left_label, right_label: v.right_label, title: v.title }
+    }
+}
+
 impl From<bindings::openidea::plugin::views::ContentTabReply> for crate::ContentTabReply {
     fn from(v: bindings::openidea::plugin::views::ContentTabReply) -> Self {
         Self {
@@ -2245,6 +2341,11 @@ impl bindings::openidea::plugin::run::Host for StoreData {
 }
 pub(crate) mod run_configurations_bindings {
     wasmtime::component::bindgen!({ world: "configurations-provider", path: "../../wit" });
+}
+pub(crate) mod launch_configurations_bindings {
+    wasmtime::component::bindgen!({ world: "launch-configurations-provider", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
 }
 pub(crate) mod test_results_bindings {
     wasmtime::component::bindgen!({ world: "test-results-provider", path: "../../wit",
@@ -2497,7 +2598,13 @@ impl bindings::openidea::plugin::decorations::Host for StoreData {
             .file_decorations(
                 Some(&real),
                 &set_id,
-                Some(crate::FileDecoration { badge: item.badge, style: item.style, tooltip: item.tooltip, note: None }),
+                Some(crate::FileDecoration {
+                    badge: item.badge,
+                    style: item.style,
+                    tooltip: item.tooltip,
+                    note: None,
+                    icon: None,
+                }),
             )
             .map_err(to_wit))
     }
@@ -2515,8 +2622,35 @@ impl bindings::openidea::plugin::decorations::Host for StoreData {
             Ok(real) => real,
             Err(e) => return Ok(Err(e)),
         };
-        let item = crate::FileDecoration { badge: None, style: String::new(), tooltip, note: Some(note) };
+        let item = crate::FileDecoration { badge: None, style: String::new(), tooltip, note: Some(note), icon: None };
         Ok(self.host.file_decorations(Some(&real), &set_id, Some(item)).map_err(to_wit))
+    }
+    fn set_file_icon(&mut self, path: String, set_id: String, icon: String, tooltip: Option<String>) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let real = match self.decoration_path(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        let item = crate::FileDecoration { badge: None, style: String::new(), tooltip, note: None, icon: Some(icon) };
+        Ok(self.host.file_decorations(Some(&real), &set_id, Some(item)).map_err(to_wit))
+    }
+    fn set_file_icons(&mut self, set_id: String, items: Vec<(String, String)>) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        if items.len() > 10_000 {
+            return Ok(Err(wit::Error::Invalid("at most 10000 file icons per set".into())));
+        }
+        let mut resolved = Vec::with_capacity(items.len());
+        for (path, icon) in items {
+            match self.decoration_path(&path) {
+                Ok(real) => resolved.push((real, icon)),
+                Err(e) => return Ok(Err(e)),
+            }
+        }
+        Ok(self.host.file_icon_decorations(&set_id, resolved).map_err(to_wit))
     }
 }
 
@@ -2602,6 +2736,57 @@ impl bindings::openidea::plugin::database::Host for StoreData {
         Ok(result.map_err(to_wit))
     }
 }
+/// The longest method name and params a plugin may send a language server.
+const MAX_LSP_METHOD: usize = 256;
+const MAX_LSP_PARAMS: usize = 1 << 20;
+
+impl StoreData {
+    fn lsp_call(
+        &mut self,
+        project: Resource<ProjectRes>,
+        server: String,
+        method: String,
+        params: Option<String>,
+        notify: bool,
+    ) -> Fallible<String> {
+        if let Err(e) = self.require(Capability::Lsp(server.clone())) {
+            return Ok(Err(e));
+        }
+        if method.len() > MAX_LSP_METHOD || params.as_ref().is_some_and(|p| p.len() > MAX_LSP_PARAMS) {
+            return Ok(Err(wit::Error::Invalid("method exceeds 256 bytes or params exceed 1 MiB".into())));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        let token = self.cancel.token();
+        let timeout = self.io_timeout();
+        let outcome = self.host.lsp_request(&root, &server, &method, params, notify, &token, timeout);
+        if outcome.is_err() {
+            self.grant_io_error_grace();
+        }
+        Ok(outcome.map_err(to_wit))
+    }
+}
+
+impl bindings::openidea::plugin::language_servers::Host for StoreData {
+    fn request(
+        &mut self,
+        project: Resource<ProjectRes>,
+        server: String,
+        method: String,
+        params: Option<String>,
+    ) -> Fallible<String> {
+        self.lsp_call(project, server, method, params, false)
+    }
+    fn notify(
+        &mut self,
+        project: Resource<ProjectRes>,
+        server: String,
+        method: String,
+        params: Option<String>,
+    ) -> Fallible<()> {
+        Ok(self.lsp_call(project, server, method, params, true)?.map(|_| ()))
+    }
+}
+
 impl bindings::openidea::plugin::extensions::Host for StoreData {
     fn contributions(&mut self, point: String) -> Fallible<Vec<bindings::openidea::plugin::extensions::Contribution>> {
         Ok(self

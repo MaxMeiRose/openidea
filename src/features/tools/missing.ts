@@ -7,6 +7,8 @@
 import { executeAction } from "@/platform/actions";
 import { onIdeEvent } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
+import { expiredKey } from "./expired";
+import { jdkRequiredKey } from "./jdk";
 import { installTool, refreshTools, SETTINGS_PAGE_ID, toolByName, useTools } from "./store";
 import { tx } from "@/platform/i18n";
 
@@ -15,7 +17,7 @@ export const missingKey = (name: string) => `lsp-missing-${name}`;
 /**
  * `offered`: servers already offered for install. A fallback of one of them (pyright
  * after basedpyright) stays quiet: installing the first is enough, and the Language
- * Servers… page offers the others.
+ * Servers… page offers the others. So does a companion server (pylsp-rope's refactorings).
  */
 export async function promptInstall(
   name: string,
@@ -25,7 +27,7 @@ export async function promptInstall(
 ): Promise<boolean> {
   if (!useTools.getState().loaded) await refreshTools();
   const tool = toolByName(name);
-  if (!tool || !tool.canInstall || tool.status !== "missing") return false;
+  if (!tool || !tool.canInstall || tool.status !== "missing" || tool.companion) return false;
   const position = tool.alternatives.indexOf(name);
   if (position > 0 && tool.alternatives.slice(0, position).some((n) => offered.has(n))) return false;
   formatter ||= tool.kind === "formatter";
@@ -74,6 +76,17 @@ export function installMissingServerPrompts(): () => void {
         if (await promptInstall(e.name, true, offered)) offered.add(e.name);
       })
       .catch(() => {});
+  });
+}
+
+/**
+ * A server that starts after all (installed from the Language Servers page, given a JDK,
+ * updated) takes down the balloons that said it could not.
+ */
+export function installServerReadyExpiry(): () => void {
+  return onIdeEvent("languageServer", (e) => {
+    if (e.status !== "ready") return;
+    for (const key of [missingKey(e.name), jdkRequiredKey(e.name), expiredKey(e.name)]) notifications().expire?.(key);
   });
 }
 

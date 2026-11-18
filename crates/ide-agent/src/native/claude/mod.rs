@@ -85,6 +85,8 @@ pub(crate) async fn discover(spec: ProviderSpec, cwd: PathBuf) -> Result<Discove
         let (spec, cwd) = spec.await.map_err(|e| e.to_string())?;
         let mut args = spec.args;
         args.extend(Start::New { id: uuid::Uuid::new_v4().to_string() }.args());
+        // Metadata discovery must not launch project-configured MCP servers.
+        args.extend(["--strict-mcp-config".into(), "--mcp-config".into(), "{\"mcpServers\":{}}".into()]);
         let launch = Launch { program: spec.command, args, cwd, env: spec.env };
         let mut io = cli::Process.launch(&launch, Arc::new(|_| {})).map_err(|e| e.to_string())?;
         let _stop = io.kill.clone().drop_guard();
@@ -168,6 +170,8 @@ struct Session {
     id: String,
     cwd: PathBuf,
     mcp_config: Option<tempfile::TempPath>,
+    /// MCP servers switched off for this session (`--disallowedTools`), its own config's too.
+    mcp_off: Vec<String>,
     shim: Weak<Shim>,
     st: Mutex<State>,
     /// Serializes (re)starting the process.
@@ -191,6 +195,8 @@ struct State {
     limit_resets_ms: Option<f64>,
     terminal_only: Vec<String>,
     titled: bool,
+    /// A title is being read or generated.
+    titling: bool,
 }
 
 struct Turn {
@@ -344,9 +350,10 @@ impl Shim {
         cwd: PathBuf,
         start: Start,
         pending: bool,
-        mcp_config: Option<String>,
+        params: &Value,
     ) -> Arc<Session> {
-        let mcp_config = mcp_config.and_then(|json| match write_mcp_config(&json) {
+        let mcp_off = mcp_off(params);
+        let mcp_config = mcp_config(params).and_then(|json| match write_mcp_config(&json) {
             Ok(path) => Some(path),
             Err(e) => {
                 tracing::warn!("Claude Code session {id}: cannot write its MCP configuration: {e}");
@@ -356,6 +363,7 @@ impl Shim {
         let session = Arc::new(Session {
             id: id.to_owned(),
             mcp_config,
+            mcp_off,
             shim: Arc::downgrade(self),
             st: Mutex::new(State {
                 proc: None,
@@ -369,6 +377,7 @@ impl Shim {
                 limit_resets_ms: None,
                 terminal_only: Vec::new(),
                 titled: false,
+                titling: false,
             }),
             cwd,
             starting: tokio::sync::Mutex::new(()),
@@ -426,8 +435,13 @@ impl Shim {
                 };
                 let discovery = Shim::new(config, self.cli.clone(), self.on_stderr.clone());
                 let id = new_uuid(false);
-                let session =
-                    discovery.add_session(&id, self.config.cwd.clone(), Start::New { id: id.clone() }, false, None);
+                let session = discovery.add_session(
+                    &id,
+                    self.config.cwd.clone(),
+                    Start::New { id: id.clone() },
+                    false,
+                    &json!({}),
+                );
                 let result = rt.block_on(session.ensure());
                 session.stop();
                 result.map_err(internal)?;
@@ -442,13 +456,8 @@ impl Shim {
             }
             "session/new" => {
                 let id = new_uuid(false);
-                let session = self.add_session(
-                    &id,
-                    self.cwd_of(&params),
-                    Start::New { id: id.clone() },
-                    false,
-                    mcp_config(&params),
-                );
+                let session =
+                    self.add_session(&id, self.cwd_of(&params), Start::New { id: id.clone() }, false, &params);
                 rt.block_on(session.ensure()).map_err(|e| self.start_error(&session, e))?;
                 session.announce_commands();
                 Ok(json!({ "sessionId": id, "configOptions": session.st.lock().settings.options() }))
@@ -464,7 +473,7 @@ impl Shim {
                     None => return Err(invalid(format!("no Claude Code session {id} in {}", cwd.display()))),
                 };
                 let chain = self.base_chain(&cwd, &start).map_err(internal)?;
-                let session = self.add_session(id, cwd, start, pending, mcp_config(&params));
+                let session = self.add_session(id, cwd, start, pending, &params);
                 rt.block_on(session.ensure()).map_err(|e| self.start_error(&session, e))?;
                 if method == "session/load" {
                     session.replay(&chain);
@@ -490,7 +499,7 @@ impl Shim {
                     (start, st.settings.clone())
                 };
                 self.save_pending(&id, Some(&start));
-                let session = self.add_session(&id, source.cwd.clone(), start, true, mcp_config(&params));
+                let session = self.add_session(&id, source.cwd.clone(), start, true, &params);
                 session.st.lock().settings = settings;
                 let options = session.st.lock().settings.options();
                 Ok(json!({ "sessionId": id, "configOptions": options }))
@@ -696,6 +705,9 @@ impl Session {
         let mut args = shim.config.args.clone();
         if let Some(config) = &self.mcp_config {
             args.extend(["--mcp-config".to_owned(), config.to_string_lossy().into_owned()]);
+        }
+        if !self.mcp_off.is_empty() {
+            args.extend(["--disallowedTools".to_owned(), self.mcp_off.join(",")]);
         }
         args.extend(start.args());
         let launch =
@@ -1125,7 +1137,8 @@ impl Session {
                     } else if matches!(st.start, Start::New { .. }) {
                         st.start = Start::Resume { id: self.id.clone(), at: None };
                     }
-                    read_title = !st.titled;
+                    read_title = !st.titled && !st.titling;
+                    st.titling |= read_title;
                     if let Some(turn) = st.turn.as_ref()
                         && belongs(turn, &msg)
                     {
@@ -1150,19 +1163,48 @@ impl Session {
         }
     }
 
-    /// Sends the title Claude Code gave the session, once it has one.
+    /// Sends the session's title once it has one: the one in its transcript, or else one
+    /// Claude Code is asked for, as it titles no session run the way the Agent SDK runs it.
+    /// Without a title the next turn tries again.
     fn read_title(self: &Arc<Self>) {
         let me = self.clone();
-        tokio::task::spawn_blocking(move || {
-            let Some(title) = chain_title(&me) else { return };
-            me.st.lock().titled = true;
-            if let Some(shim) = me.shim() {
+        tokio::spawn(async move {
+            let reader = me.clone();
+            let entries = tokio::task::spawn_blocking(move || transcript_entries(&reader)).await.ok().flatten();
+            let mut title = entries.as_deref().and_then(history::title);
+            if title.is_none()
+                && let Some(source) = entries.as_deref().and_then(history::title_source)
+            {
+                title = me.generate_title(source).await;
+            }
+            {
+                let mut st = me.st.lock();
+                st.titling = false;
+                if title.is_none() {
+                    return;
+                }
+                st.titled = true;
+            }
+            if let (Some(title), Some(shim)) = (title, me.shim()) {
                 shim.notify(vec![Update {
                     session: me.id.clone(),
                     update: json!({ "sessionUpdate": "session_info_update", "title": title }),
                 }]);
             }
         });
+    }
+
+    /// A title Claude Code generates from `source`, also written to the transcript.
+    async fn generate_title(&self, source: String) -> Option<String> {
+        let proc = self.st.lock().proc.clone()?;
+        let request = json!({ "subtype": "generate_session_title", "description": source, "persist": true });
+        match proc.control(request).await {
+            Ok(r) => r.get("title").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned),
+            Err(e) => {
+                tracing::debug!("generating a claude session title: {e}");
+                None
+            }
+        }
     }
 
     async fn on_cli_request(self: &Arc<Self>, proc: &Arc<Proc>, msg: Value) {
@@ -1494,9 +1536,13 @@ fn strings(v: Option<&Value>) -> Vec<String> {
 
 /// The title in a session's transcript (or that of the session it continues).
 fn chain_title(session: &Session) -> Option<String> {
+    history::title(&transcript_entries(session)?)
+}
+
+fn transcript_entries(session: &Session) -> Option<Vec<Value>> {
     let shim = session.shim()?;
     let path = shim.transcript(&session.cwd, &session.id).filter(|p| p.exists())?;
-    history::title(&history::read(&path).ok()?)
+    history::read(&path).ok()
 }
 
 fn start_json(start: &Start) -> Value {
@@ -1523,6 +1569,24 @@ fn write_mcp_config(json: &str) -> std::io::Result<tempfile::TempPath> {
     let mut file = tempfile::Builder::new().prefix("openidea-mcp-").suffix(".json").tempfile()?;
     std::io::Write::write_all(&mut file, json.as_bytes())?;
     Ok(file.into_temp_path())
+}
+
+/// The servers switched off for the session (`_meta.openidea.mcpServersOff`) as Claude Code
+/// permission rules that deny all of a server's tools (`mcp__<server>`), so a server of
+/// Claude Code's own configuration stays off too.
+fn mcp_off(params: &Value) -> Vec<String> {
+    params
+        .pointer("/_meta/openidea/mcpServersOff")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(|name| {
+            let name: String =
+                name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
+            format!("mcp__{name}")
+        })
+        .collect()
 }
 
 /// ACP `mcpServers` as Claude Code's `--mcp-config` JSON (`None` when there are none).

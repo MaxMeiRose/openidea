@@ -142,7 +142,7 @@ pub fn snapshot(ep: &DockerEndpoint) -> DockerSnapshot {
     }
     const FMT: &str = "{{json .}}";
     let (containers, images, volumes, networks) = std::thread::scope(|s| {
-        let c = s.spawn(|| run(ep, &["ps", "--all", "--no-trunc", "--format", FMT], QUICK));
+        let c = s.spawn(|| run(ep, &["ps", "--all", "--no-trunc", "--format", PS_FORMAT], QUICK));
         let i = s.spawn(|| run(ep, &["image", "ls", "--no-trunc", "--format", FMT], QUICK));
         let v = s.spawn(|| run(ep, &["volume", "ls", "--format", FMT], QUICK));
         let n = s.spawn(|| run(ep, &["network", "ls", "--no-trunc", "--format", FMT], QUICK));
@@ -483,6 +483,7 @@ pub fn endpoint_is_local(ep: &DockerEndpoint) -> IdeResult<bool> {
             |name| context_host(&DockerEndpoint::Default, name),
         )?,
         DockerEndpoint::Context { name } => context_host(&DockerEndpoint::Default, Some(name.trim()))?,
+        DockerEndpoint::Ssh { .. } => return Ok(false),
     };
     Ok(daemon_url_is_local(&url))
 }
@@ -539,6 +540,24 @@ pub fn compose_config(ep: &DockerEndpoint, dir: &Path, files: &[String]) -> IdeR
     let mut cmd = command(ep, &args)?;
     cmd.current_dir(dir);
     let out = process::run(cmd, QUICK, None)?;
+    if out.success { Ok(out.stdout) } else { Err(failure(&args, &out.stderr, &out.stdout)) }
+}
+
+/// Runs the docker CLI with `args` in `dir` and returns its standard output; a non-zero
+/// exit is an error with docker's message.
+pub fn cli(
+    ep: &DockerEndpoint,
+    dir: Option<&Path>,
+    args: &[String],
+    timeout: Duration,
+    cancel: Option<&CancellationToken>,
+) -> IdeResult<String> {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut cmd = command(ep, &args)?;
+    if let Some(dir) = dir {
+        cmd.current_dir(dir);
+    }
+    let out = process::run(cmd, timeout, cancel)?;
     if out.success { Ok(out.stdout) } else { Err(failure(&args, &out.stderr, &out.stdout)) }
 }
 

@@ -16,6 +16,7 @@ dunce.workspace = true
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-notification = "2.8.1"
 tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
 tauri-plugin-mcp-bridge = "0.13"
 tauri-plugin-window-state = "2"
@@ -66,6 +67,7 @@ ide-spell.workspace = true
 ide-ssh.workspace = true
 ide-remote.workspace = true
 ide-host.workspace = true
+ide-command.workspace = true
 ide-mcp.workspace = true
 ide-notebook.workspace = true
 ide-jsonrpc.workspace = true
@@ -95,6 +97,7 @@ objc2-web-kit = { version = "0.3", default-features = false, features = ["std", 
 gtk = "0.18"
 
 [target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Storage_EnhancedStorage",

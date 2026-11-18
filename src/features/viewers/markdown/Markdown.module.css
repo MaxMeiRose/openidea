@@ -5,23 +5,21 @@
   display: flex;
   position: relative;
 }
+.group {
+  flex: 1;
+}
 .editor {
+  flex: 1;
+  min-height: 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
 }
-.mode-preview .editor {
-  display: none;
+.mode-preview > :global([data-group]) > :global([data-panel]:first-child) {
+  display: none !important;
 }
-.panels {
-  flex: 1;
-}
-.divider {
-  background: var(--border-editor-tabs, var(--border));
-}
-.mode-editor .divider,
-.mode-preview .divider {
-  display: none;
+.mode-preview > :global([data-group]) > :global([data-panel]:last-child) {
+  flex-grow: 1 !important;
 }
 
 .layoutActions {
@@ -35,10 +33,13 @@
 
 .preview {
   flex: 1;
-  min-width: 0;
   min-height: 0;
+  min-width: 0;
   position: relative;
   overflow: auto;
+  /* Positions are restored and synced by source line; Chromium's scroll anchoring
+     would keep a later block in view while images above it load. */
+  overflow-anchor: none;
   padding: 16px 28px 40vh;
   outline: none;
   /* The preview sits on the editor background, so its text comes from the
@@ -121,12 +122,21 @@
   opacity: 0.8;
 }
 .preview :global(table) {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
   border-collapse: collapse;
 }
 .preview :global(th),
 .preview :global(td) {
   padding: 4px 10px;
   border: 1px solid var(--border-strong);
+  overflow-wrap: normal;
+}
+.preview :global(td code),
+.preview :global(td a) {
+  overflow-wrap: anywhere;
 }
 .preview :global(th) {
   background: var(--bg-editor-inline, var(--bg-elev));
@@ -137,7 +147,11 @@
   margin: 1.5em 0;
 }
 .preview :global(img) {
-  max-width: 100%;
+  max-width: calc(100% * var(--markdown-zoom-scale, 1));
+}
+.preview :global(img[data-natural-width]) {
+  width: calc(min(var(--image-width), 100%) * var(--markdown-zoom-scale, 1));
+  height: auto;
 }
 .preview :global(ul.contains-task-list) {
   list-style: none;
@@ -161,11 +175,35 @@
 .preview :global([data-mermaid-state="ok"] > pre) {
   display: none;
 }
+.preview :global([align="left" i]) {
+  --mermaid-align: left;
+  --mermaid-margin-left: 0;
+  --mermaid-margin-right: auto;
+}
+.preview :global([align="right" i]) {
+  --mermaid-align: right;
+  --mermaid-margin-left: auto;
+  --mermaid-margin-right: 0;
+}
+.preview :global([align="center" i]),
+.preview :global(center) {
+  --mermaid-align: center;
+  --mermaid-margin-left: auto;
+  --mermaid-margin-right: auto;
+}
 .preview :global(.mermaid-output) {
-  overflow: hidden;
-  text-align: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: var(--mermaid-align, center);
+}
+.preview :global(.mermaid-output svg[data-natural-width]) {
+  display: block;
+  margin: 0 var(--mermaid-margin-right, auto) 0 var(--mermaid-margin-left, auto);
+  width: calc(min(var(--diagram-width), 100%) * var(--markdown-zoom-scale, 1));
+  height: auto;
 }
 .preview :global(.mermaid-output[data-zoomed="true"]) {
+  overflow: hidden;
   cursor: grab;
   touch-action: none;
   user-select: none;

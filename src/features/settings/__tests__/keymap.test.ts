@@ -232,20 +232,23 @@ describe("conflicts", () => {
 });
 
 describe("shortcut search", () => {
-  it.each(Object.keys(PRESETS))("keeps the mouse-only caret action configurable in %s", (preset) => {
+  it.each(Object.keys(PRESETS))("keeps mouse-only selection actions configurable in %s", (preset) => {
     const dispose = registerEditorActions();
     const originalKeymap = useKeymap.getState();
-    const id = "editor.addOrRemoveCaret";
-    const title = "Add or Remove Caret";
     try {
-      expect(matchActions(allActions(), title, { isEnabled: () => true, recent: [id] })).toEqual([]);
-      const variants: KeymapDraft["overrides"][] = [{}, { [id]: ["Alt+Button1"] }, { [id]: [] }];
-      for (const overrides of variants) {
-        useKeymap.setState({ preset, overrides });
-        expect(keymapSearchLabels()).toContain(title);
-        const tree = buildKeymapTree(allActions(), { preset, overrides }, title, "");
-        const group = tree.find((node) => node.key === "grp:Editor Actions");
-        expect(group?.kind === "group" && group.children.map((node) => node.key)).toEqual([id]);
+      for (const [id, title] of [
+        ["editor.addOrRemoveCaret", "Add or Remove Caret"],
+        ["editor.createRectangularSelectionOnMouseDrag", "Create Rectangular Selection on Mouse Drag"],
+      ] as const) {
+        expect(matchActions(allActions(), title, { isEnabled: () => true, recent: [id] })).toEqual([]);
+        const variants: KeymapDraft["overrides"][] = [{}, { [id]: ["Alt+Button1"] }, { [id]: [] }];
+        for (const overrides of variants) {
+          useKeymap.setState({ preset, overrides });
+          expect(keymapSearchLabels()).toContain(title);
+          const tree = buildKeymapTree(allActions(), { preset, overrides }, title, "");
+          const group = tree.find((node) => node.key === "grp:Editor Actions");
+          expect(group?.kind === "group" && group.children.map((node) => node.key)).toEqual([id]);
+        }
       }
     } finally {
       useKeymap.setState(originalKeymap);
@@ -267,6 +270,11 @@ describe("shortcut search", () => {
       { id: "internal.x", title: "Internal", hidden: true, run },
     ];
     const draft = { preset: "intellij-macos", overrides: {} };
+    // Hidden from Search Everywhere but keymap-listed (Cut / Copy / Paste) still shows.
+    const copy = { id: "edit.copy", title: "Copy", category: "Edit", hidden: true, keymap: true, run };
+    const withCopy = buildKeymapTree([...actions, copy], draft, "copy", "");
+    const edit = withCopy[0]!.kind === "group" ? withCopy[0]!.children[0] : undefined;
+    expect(edit?.kind === "group" && edit.children.map((n) => n.key)).toEqual(["edit.copy"]);
     const all = buildKeymapTree(actions, draft, "", "");
     expect(all.map((n) => n.key)).toEqual(["grp:Main Menu"]);
     const menu = all[0]!.kind === "group" ? all[0]!.children : [];

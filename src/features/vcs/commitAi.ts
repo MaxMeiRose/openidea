@@ -4,12 +4,13 @@ import { tx, useI18n } from "@/platform/i18n";
 import { effectiveCommitAiPrompt } from "@/platform/commitAiSettings";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { checkOf, commitRepos, planCommit, renamedFromPath } from "./changes";
-import { useChangelists, withListDefaults } from "./changelists";
+import { useChangelists } from "./changelists";
 import { useCommit } from "./commitStore";
 import { currentHunkText, hunkKeys } from "./hunks";
 import { effectiveKind, rootOf, stripSlash } from "./model";
 import { readWorkingText } from "./ops";
 import { currentRepoRoot, useVcs } from "./store";
+import { inclusionChecks } from "./staging";
 
 export const useCommitAi = create<{ request: number | null; error: string | null }>(() => ({
   request: null,
@@ -25,7 +26,7 @@ export async function commitAiContext() {
   const currentRepo = currentRepoRoot();
   if (!currentRepo) throw new Error(tx("Select a Git repository first."));
   const roots = vcs.roots.length ? vcs.roots : [currentRepo];
-  const checks = withListDefaults(vcs.status, vcs.root ?? "", useChangelists.getState().state, commit.checks);
+  const checks = inclusionChecks(vcs.status, vcs.root ?? "", useChangelists.getState().state, commit.checks);
   const included = planCommit(vcs.status, checks).included;
   if (!included.length && !commit.amend) throw new Error(tx("Select changes to generate a commit message."));
   const repositories = commitRepos(included, roots, currentRepo).filter((root): root is string => root !== null);

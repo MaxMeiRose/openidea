@@ -10,6 +10,9 @@ import { BRACKET_COLORS } from "./rainbowBrackets";
 import { LINE_INSET } from "./lineInset";
 import { GUIDE_COLORS } from "./indentGuides";
 
+/** How much of its palette colour a rainbow indent guide takes. */
+const RAINBOW_GUIDE_STRENGTH = "55%";
+
 /** The `--editor-*` locals of `findStyles`, for the `&` rule. */
 export const findLocals = {
   "--editor-search": "var(--bg-search-match, color-mix(in srgb, var(--warning) 30%, transparent))",
@@ -79,13 +82,6 @@ export const overviewStyles = {
     cursor: "default",
     zIndex: "3",
   },
-  // Over an outer scroller (an aligned diff): stays at the top of its viewport, taking no room.
-  ".cm-openidea-overview-sticky": {
-    position: "sticky",
-    bottom: "auto",
-    flex: "none",
-    alignSelf: "flex-end",
-  },
   ".cm-openidea-overviewMark": {
     position: "absolute",
     left: "3px",
@@ -137,11 +133,26 @@ export const openideaTheme = EditorView.theme({
       "var(--bg-editor-selection-inactive, color-mix(in srgb, var(--accent) 14%, transparent))",
     "--editor-indent-guide": "var(--border-indent-guide, var(--border))",
     "--openidea-guide": "linear-gradient(var(--editor-indent-guide), var(--editor-indent-guide))",
-    // Rainbow indent guides: one image per depth, so they follow the colour scheme.
+    // The guide the caret is on (IDEA's Selected indent guide).
+    "--editor-indent-guide-active": "var(--border-indent-guide-active, var(--editor-indent-guide))",
+    "--openidea-guide-active": "linear-gradient(var(--editor-indent-guide-active), var(--editor-indent-guide-active))",
+    // The guide of the block whose braces match at the caret (IDEA's Matched braces indent guide).
+    "--editor-indent-guide-brace":
+      "var(--border-indent-guide-brace, var(--bg-matched-brace, var(--editor-indent-guide-active)))",
+    "--openidea-guide-brace": "linear-gradient(var(--editor-indent-guide-brace), var(--editor-indent-guide-brace))",
+    // Rainbow indent guides: one image per depth, so they follow the colour scheme. The
+    // palettes are text colours; guides take them at half strength so they stay chrome.
     ...Object.fromEntries(
       Array.from({ length: GUIDE_COLORS }, (_, i) => {
-        const color = `var(--syn-rainbow-${i + 1}, var(--editor-indent-guide))`;
+        const color = `color-mix(in srgb, var(--syn-rainbow-${i + 1}, var(--editor-indent-guide)) ${RAINBOW_GUIDE_STRENGTH}, transparent)`;
         return [`--openidea-guide-${i + 1}`, `linear-gradient(${color}, ${color})`];
+      }),
+    ),
+    // A rainbow guide of a bracket block takes its bracket's colour (rainbow brackets).
+    ...Object.fromEntries(
+      Array.from({ length: BRACKET_COLORS }, (_, i) => {
+        const color = `color-mix(in srgb, var(--syn-bracket-${i + 1}, var(--editor-indent-guide)) ${RAINBOW_GUIDE_STRENGTH}, transparent)`;
+        return [`--openidea-guide-bracket-${i + 1}`, `linear-gradient(${color}, ${color})`];
       }),
     ),
     ...findLocals,

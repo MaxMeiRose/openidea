@@ -13,6 +13,7 @@ export {
   FILES_DRAG,
   REMOTE_FILES_DRAG,
   dragRequiresAlt,
+  beginDrag,
   dragSession,
   dropZoneAt,
   registerDropTarget,
@@ -43,5 +44,4 @@ export { lockDragCursor, type DragCursor } from "./dragCursor";
 export { useSanitizedField } from "./useSanitizedField";
 export * from "./rowSelection";
 export * from "./LogPane";
-export * from "./InlineTag";
 export * from "./Chip";

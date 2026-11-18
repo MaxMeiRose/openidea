@@ -8,7 +8,7 @@ import { acceptCompletion, completionStatus } from "@codemirror/autocomplete";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { focusedSoftWrapSurface } from "@/workbench/softWrap";
-import { resetSurfaceFontZoom, stepFocusedSurfaceFontZoom } from "@/workbench/contributions";
+import { resetSurfaceFontZoom, stepFocusedSurfaceFontZoom, stepSurfaceFontZoomIn } from "@/workbench/contributions";
 import { editorController, useGotoLine, useTabs } from "./controller";
 import {
   addCaretsToLineEnds,
@@ -71,14 +71,15 @@ import { copyReferenceToClipboard, declaredName, qualifiedReference, referenceOf
 import { declarationChain } from "./view/outline";
 import { recordClipboard } from "./clipboardHistory";
 import { useDocMeta, useOutline } from "./model/document";
-import { resetAllEditorsFontZoom, stepAllEditorsFontZoom } from "./cm/prefs";
+import { resetAllEditorsFontZoom, resetConfiguredEditorsFontZoom, stepConfiguredEditorsFontZoom } from "./cm/prefs";
 import { useProject } from "@/platform/project";
 import { call, commands } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
-import { notifications } from "@/workbench/contributions";
+import { menuGroupItems, notifications } from "@/workbench/contributions";
 import { togglePinSelectedContent } from "@/workbench/toolwindows/content";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import { toggleReadOnly } from "./fileAttributes";
+import { codeVisionShown, toggleCodeVision } from "./codeVision";
 import { openNavBarPopup } from "./view/NavBarPopup";
 import {
   cachedStructureQueries,
@@ -95,9 +96,12 @@ import { readFileLines, withDocument } from "@/editor/lsp/files";
 import { pathToCopy } from "@/platform/copyPath";
 import { shortcutLabel } from "@/platform/keymap";
 
-/** Text-editing actions: the editor has focus, or a popup (Find Action) runs them on it. */
-export const TEXT_WHEN = "editorTextFocus || textEditorActive && popupOpen";
-const EDITOR_WHEN = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
+/**
+ * Text-editing actions: the editor has focus, or a popup (Find Action) runs them on it. Not a
+ * tool window's speed search: it opens a layer too, but the keys belong to its tree (⌘⌫).
+ */
+export const TEXT_WHEN = "editorTextFocus || textEditorActive && popupOpen && !toolWindowFocus";
+const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
 const TABS_WHEN = "editorTabsOpen && !toolWindowFocus";
 
 function activeSlot(): EditorSlot | null {
@@ -114,7 +118,12 @@ function withView(run: (view: EditorView, slot: EditorSlot) => unknown) {
   };
 }
 
-/** Routes keyboard font zoom to focus, then the active editor slot. */
+function activePaneEditorFocus(): Element | null {
+  if (typeof document === "undefined") return null;
+  return document.querySelector(`[data-pane-id="${useTabs.getState().activePane}"] [data-editor-focus]`);
+}
+
+/** Routes keyboard font zoom to focus, then the active editor slot or pane surface. */
 function stepSurfaceFontSize(delta: 1 | -1): void {
   const activeEl = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
   if (activeEl) {
@@ -123,16 +132,53 @@ function stepSurfaceFontSize(delta: 1 | -1): void {
     if (cmEl) {
       const cmView = EditorView.findFromDOM(cmEl);
       if (cmView) {
-        stepAllEditorsFontZoom(cmView, delta);
+        stepConfiguredEditorsFontZoom(cmView, delta);
         return;
       }
     }
   }
 
   const slot = activeSlot();
-  if (!slot?.view) return;
-  stepAllEditorsFontZoom(slot.view, delta);
+  if (!slot?.view) {
+    stepSurfaceFontZoomIn(activePaneEditorFocus(), delta);
+    return;
+  }
+  stepConfiguredEditorsFontZoom(slot.view, delta);
   if (!slot.view.hasFocus && !getContext().popupOpen) slot.view.focus();
+}
+
+function resetFontSize(): void {
+  const allScope = editorPrefs().general.wheelZoomScope === "all";
+  const surfaceOpts = allScope ? { isolatedOnly: true } : undefined;
+  const activeEl = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
+  if (activeEl) {
+    if (stepFocusedSurfaceFontZoom(0, surfaceOpts)) return;
+    if (!allScope) {
+      const cmEl = activeEl.closest?.(".cm-editor") as HTMLElement | null;
+      if (cmEl) {
+        const cmView = EditorView.findFromDOM(cmEl);
+        if (cmView) {
+          resetConfiguredEditorsFontZoom(cmView);
+          return;
+        }
+      }
+    }
+  }
+
+  const slot = activeSlot();
+  if (!allScope && slot?.view) {
+    resetConfiguredEditorsFontZoom(slot.view);
+    return;
+  }
+  if (!slot?.view && stepSurfaceFontZoomIn(activePaneEditorFocus(), 0, surfaceOpts)) return;
+  if (allScope) resetAllFontSize();
+}
+
+function resetAllFontSize(): void {
+  resetAllEditorsFontZoom();
+  if (typeof document !== "undefined") {
+    resetSurfaceFontZoom();
+  }
 }
 
 // --- extend / shrink selection ---------------------------------------------------
@@ -524,9 +570,41 @@ function copyReference(reference: Promise<string>) {
   }
 }
 
+/** The selected lines (1-based), leaving out the one a selection ends at the start of. */
+function selectedLines(state: EditorState): { first: number; last: number } {
+  const { doc, selection } = state;
+  const { from, to } = selection.main;
+  const first = doc.lineAt(from).number;
+  const last = Math.max(first, doc.lineAt(to).number - (to > from && doc.lineAt(to).from === to ? 1 : 0));
+  return { first, last };
+}
+
+/** `path:12`, or `path:12-18` for a selection over several lines. */
+function pathWithLines(state: EditorState, path: string): string {
+  const { first, last } = selectedLines(state);
+  return `${pathToCopy("relative", path)}:${first}${last > first ? `-${last}` : ""}`;
+}
+
 function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
   const path = slot.model.path;
-  const line = view.state.doc.lineAt(view.state.selection.main.head).number;
+  const { first, last } = selectedLines(view.state);
+  const contributed = menuGroupItems("copyPath", {
+    paths: [path],
+    line: first - 1,
+    endLine: last > first ? last - 1 : undefined,
+  }).flatMap((item) =>
+    (item.kind ?? "item") === "item" && "run" in item && item.id && item.run && item.preview
+      ? [
+          {
+            id: item.id,
+            label: item.verbatim ? item.label : tx(item.label),
+            preview: item.preview,
+            shortcut: shortcutLabel(item.id),
+            run: item.run,
+          },
+        ]
+      : [],
+  );
   const flavours = [
     { id: "project.copyAbsolutePath", label: "Absolute Path", value: pathToCopy("absolute", path) },
     { id: "project.copyFileName", label: "File Name", value: pathToCopy("name", path) },
@@ -535,7 +613,7 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
     {
       id: "editor.copyPathWithLineNumber",
       label: "Path with line number",
-      value: `${pathToCopy("relative", path)}:${line}`,
+      value: pathWithLines(view.state, path),
     },
   ];
   const popup: Extract<LspPopup, { kind: "list" }> = {
@@ -554,6 +632,7 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
             void executeAction(f.id, f.id === "editor.copyPathWithLineNumber" ? f.value : path);
           },
         })),
+      ...contributed,
       {
         id: "editor.copyReference",
         label: tx("Reference"),
@@ -666,7 +745,7 @@ export function registerEditorActions(): () => void {
     id,
     title,
     category: "Edit",
-    when: `${TEXT_WHEN} || findBarFocus || findBarOpen && popupOpen`,
+    when: `${TEXT_WHEN} || findBarFocus || findBarOpen && popupOpen && !toolWindowFocus`,
     run: ({ arg, ctx }) => {
       const view = typeof arg === "string" || ctx.findBarFocus ? findPanelTarget(arg)?.view() : null;
       if (view) {
@@ -686,6 +765,14 @@ export function registerEditorActions(): () => void {
       "rainbow parentheses",
       "color scheme",
     ]),
+    {
+      id: "editor.toggleCodeVision",
+      title: "Code Vision",
+      category: "Editor",
+      keywords: ["code lens", "usages", "code author", "git author", "inlay hints", "show", "hide"],
+      toggled: codeVisionShown,
+      run: () => toggleCodeVision(),
+    },
     text("code.commentLine", "Comment with Line Comment", (v) => commentLine(v)),
     text("code.commentBlock", "Comment with Block Comment", (v) => commentBlock(v)),
     text("code.duplicateLine", "Duplicate Line or Selection", (v) => duplicateLineOrSelection(v)),
@@ -830,6 +917,16 @@ export function registerEditorActions(): () => void {
       // The mouse selection style handles the pointer position and dragging.
       run: () => {},
     },
+    {
+      id: "editor.createRectangularSelectionOnMouseDrag",
+      title: "Create Rectangular Selection on Mouse Drag",
+      category: "Editor Actions",
+      when: "textEditorActive",
+      hidden: true,
+      keymap: true,
+      // The mouse selection style owns the drag; invoking the action alone is harmless.
+      run: () => {},
+    },
     text("editor.cloneCaretAbove", "Clone Caret Above", (v) => cloneCaretAbove(v), { category: "Editor Actions" }),
     text("editor.cloneCaretBelow", "Clone Caret Below", (v) => cloneCaretBelow(v), { category: "Editor Actions" }),
     text("editor.matchBrace", "Move Caret to Matching Brace", (v) => cursorMatchBrace(v), {
@@ -908,16 +1005,19 @@ export function registerEditorActions(): () => void {
     },
     {
       id: "editor.resetFontSize",
+      title: "Reset Font Size",
+      category: "View",
+      keywords: ["zoom", "font size", "mouse wheel"],
+      when: "projectOpen",
+      run: resetFontSize,
+    },
+    {
+      id: "editor.resetFontSizeAll",
       title: "Reset Font Size in All Editors",
       category: "View",
       keywords: ["zoom", "font size", "mouse wheel"],
       when: "projectOpen",
-      run: () => {
-        resetAllEditorsFontZoom();
-        if (typeof document !== "undefined") {
-          resetSurfaceFontZoom();
-        }
-      },
+      run: resetAllFontSize,
     },
     {
       id: "editor.increaseFontSize",
@@ -1200,12 +1300,7 @@ export function registerEditorActions(): () => void {
       when: TEXT_WHEN,
       run: ({ arg }) => {
         if (typeof arg === "string") copyEditorPath(arg);
-        else
-          withView((view, slot) =>
-            copyEditorPath(
-              `${pathToCopy("relative", slot.model.path)}:${view.state.doc.lineAt(view.state.selection.main.head).number}`,
-            ),
-          )();
+        else withView((view, slot) => copyEditorPath(pathWithLines(view.state, slot.model.path)))();
       },
     },
     {

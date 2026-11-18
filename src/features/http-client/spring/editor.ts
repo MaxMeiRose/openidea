@@ -4,8 +4,14 @@
  * can still generate requests into the `generated-requests.http` scratch.
  */
 import { MapMode, RangeSet, StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
-import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
-import { activeEditor, intentionProviders, type ContributedIntention, type EditorDocContext } from "@/editor/api";
+import { EditorView, GutterMarker, ViewPlugin, type ViewUpdate } from "@codemirror/view";
+import {
+  activeEditor,
+  iconAreaSource,
+  intentionProviders,
+  type ContributedIntention,
+  type EditorDocContext,
+} from "@/editor/api";
 import { tx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
@@ -262,6 +268,7 @@ class SpringMarker extends GutterMarker {
     el.type = "button";
     el.tabIndex = -1;
     el.className = styles.runMarker ?? "";
+    el.dataset.iconSource = "spring";
     el.title = this.mark.title;
     el.setAttribute("aria-label", this.mark.title);
     el.innerHTML = gutterIconMarkup(this.mark.methodName ? "gutter-api-request" : "file-http") ?? "";
@@ -348,13 +355,24 @@ export function springEditorExtension(ctx: EditorDocContext): Extension {
     marksField,
     detector,
     intentionProviders.of(intentions),
-    gutter({
-      class: `${styles.runGutter} cm-openidea-gutter-spring`,
+    // In the shared icon area, after the run icons.
+    iconAreaSource.of({
+      order: 30,
       markers: (view) =>
         RangeSet.of(
           view.state.field(marksField).map((m) => new SpringMarker(m, path).range(m.pos)),
           true,
         ),
+      mousedown: (view, block, event) => {
+        if (event.button !== 0) return false;
+        const el = (event.target as HTMLElement).closest?.('[data-icon-source="spring"]') as HTMLElement | null;
+        const mark = el && view.state.field(marksField).find((m) => m.pos === block.from);
+        if (!el || !mark) return false;
+        const rect = el.getBoundingClientRect();
+        event.preventDefault();
+        showContextMenu({ x: rect.left, y: rect.bottom + 2 }, mark.items(path, view.state.doc.toString()));
+        return true;
+      },
     }),
   ];
 }

@@ -2,7 +2,7 @@
 import { useMemo, useRef, useState } from "react";
 import { tx } from "@/platform/i18n";
 import { Button, Checkbox, IconButton, Input, Select, T } from "@/ui";
-import { registerSettingsPage, useSettingsForm } from "@/workbench/contributions";
+import { registerSettingsPages, useSettingsForm } from "@/workbench/contributions";
 import { pluginsBackend } from "./backend";
 import { localizeContributions, usePluginCatalogs } from "./pluginText";
 import { itemsOf } from "./projection";
@@ -19,6 +19,8 @@ export interface SettingSchema {
   options?: string[] | null;
   multiline?: boolean;
   group?: string | null;
+  /** A sample drawn in the setting's own style, e.g. the message a severity produces. */
+  example?: { text: string; style: string } | null;
   items?: SettingSchema | null;
   properties?: SettingSchema[];
 }
@@ -217,20 +219,36 @@ function SettingControl({ pluginId, s }: { pluginId: string; s: SettingSchema })
   const all = form.useValue("plugins") as PluginSettings | undefined;
   const stored = all?.[pluginId]?.[s.key];
   const value = accepts(s, stored) ? stored : s.default;
+  const control = (
+    <ValueControl
+      s={s}
+      value={value}
+      set={(v) => {
+        const valid = accepts(s, v);
+        setInvalid(!valid);
+        // Keep the chosen value even when it equals the default: false and ""
+        // are real plugin settings, not "remove the override".
+        if (valid) form.setMapEntry("plugins", [pluginId, s.key], v);
+      }}
+    />
+  );
+  const example = s.example ? (
+    <span className={styles.example} data-style={s.example.style}>
+      {s.example.text}
+    </span>
+  ) : null;
   return (
     <div className={styles.field}>
       {s.type !== "boolean" && <span>{s.title}</span>}
-      <ValueControl
-        s={s}
-        value={value}
-        set={(v) => {
-          const valid = accepts(s, v);
-          setInvalid(!valid);
-          // Keep the chosen value even when it equals the default: false and ""
-          // are real plugin settings, not "remove the override".
-          if (valid) form.setMapEntry("plugins", [pluginId, s.key], v);
-        }}
-      />
+      {/* A sample sits in a second column, one row per setting, the way PyCharm previews a severity. */}
+      {example ? (
+        <div className={styles.exampleRow}>
+          {control}
+          {example}
+        </div>
+      ) : (
+        control
+      )}
       {s.description && <div className={styles.description}>{s.description}</div>}
       {invalid && (
         <p role="alert" className={styles.error}>
@@ -354,24 +372,20 @@ function PluginSecrets({ pluginId }: { pluginId: string }) {
 export function projectSettings(pluginId: string, decl: SettingsDecl): () => void {
   const id = pluginSettingsPageId(pluginId);
   const pages = decl.pages ?? [];
-  const dispose = [
-    registerSettingsPage({
+  return registerSettingsPages([
+    {
       id,
       title: decl.title,
       projectScope: true,
       keywords: ["plugin", pluginId, ...keywords(decl)],
       component: pages.length ? undefined : settingsPage(pluginId, decl),
-    }),
-  ];
-  for (const p of pages)
-    dispose.push(
-      registerSettingsPage({
-        id: `${id}.settings:${p.id}`,
-        title: p.title,
-        projectScope: true,
-        keywords: [pluginId, decl.title, ...keywords(p)],
-        component: settingsPage(pluginId, p),
-      }),
-    );
-  return () => dispose.forEach((d) => d());
+    },
+    ...pages.map((p) => ({
+      id: `${id}.settings:${p.id}`,
+      title: p.title,
+      projectScope: true,
+      keywords: [pluginId, decl.title, ...keywords(p)],
+      component: settingsPage(pluginId, p),
+    })),
+  ]);
 }

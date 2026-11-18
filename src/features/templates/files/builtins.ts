@@ -67,6 +67,11 @@ export const BUILTIN_CODE_TEMPLATES: readonly TemplateFragment[] = [
     body: "func Test$NAME$(t *testing.T) {\n\t$END$\n}\n",
   },
   {
+    name: "Zig Test Function",
+    description: "Zig File › Test file",
+    body: 'test "$NAME$" {\n    $END$\n}\n',
+  },
+  {
     name: "Rust Test Function",
     description: "Rust File › Test module",
     body: "#[test]\nfn it_works() {\n    $END$\n}\n",
@@ -211,6 +216,19 @@ export const BUILTIN_FILE_TEMPLATES: readonly FileTemplate[] = [
     kinds: [{ id: "module", label: "Module", body: "module $PROJECT_NAME$\n\ngo 1.20\n" }],
   },
   {
+    id: "zig",
+    name: "Zig File",
+    icon: "file-zig",
+    extension: "zig",
+    nameStyle: "snake",
+    kinds: [
+      { id: "file", label: "Empty file", body: "$END$\n" },
+      { id: "main", label: "Main", body: "pub fn main() !void {\n    $END$\n}\n" },
+      { id: "test", label: "Test file", body: '#parse("Zig Test Function")\n' },
+      { id: "struct", label: "Struct", body: "pub const $NAME$ = struct {\n    $END$\n};\n" },
+    ],
+  },
+  {
     id: "php",
     name: "PHP File",
     icon: "file-php",
@@ -293,6 +311,27 @@ export const BUILTIN_FILE_TEMPLATES: readonly FileTemplate[] = [
         body: 'package $PACKAGE$;\n\nimport org.junit.jupiter.api.Test;\n\nimport static org.junit.jupiter.api.Assertions.*;\n\n#parse("File Header")\nclass $NAME$ {\n\n    #parse("JUnit5 Test Method")\n}\n',
       },
     ],
+  },
+  {
+    id: "csharp",
+    name: "C# Class",
+    icon: "class",
+    extension: "cs",
+    nameStyle: "pascal",
+    packageStyle: "csharp",
+    kinds: (
+      [
+        ["class", "Class", "class"],
+        ["interface", "Interface", "interface"],
+        ["struct", "Struct", "struct"],
+        ["enum", "Enum", "enum"],
+        ["record", "Record", "record"],
+      ] as const
+    ).map(([id, label, keyword]) => ({
+      id,
+      label,
+      body: `namespace $PACKAGE$;\n\n#parse("File Header")\npublic ${keyword} $NAME$\n{\n    $END$\n}\n`,
+    })),
   },
   {
     id: "kotlin",

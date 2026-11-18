@@ -10,11 +10,13 @@ import { maybeEditorService, notifications, projectViewSelection } from "@/workb
 import { promptText } from "./dialogs";
 import { focusedDiffNavigator } from "./diffNavigator";
 import { compareFilesData, displayPath } from "./compareData";
+import { showDirectoryComparison } from "./directoryCompareKind";
 export { compareFilesData, displayPath } from "./compareData";
 import { openDiff, openVcsDiff, type DiffData } from "./diffInput";
 import { baseName } from "./model";
 import { tx } from "@/platform/i18n";
 import { readClipboardPlainText } from "@/platform/clipboard";
+import { workflowSettings } from "@/platform/workflowSettings";
 
 function argPath(arg: unknown): string | undefined {
   if (typeof arg === "string") return arg;
@@ -35,6 +37,7 @@ function argPaths(arg: unknown): string[] {
 export function clipboardDiffData(path: string, clipboard: string, selection: string | null): DiffData {
   return {
     path,
+    swappable: true,
     title: selection ? tx`Clipboard ↔ ${baseName(path)} (selection)` : tx`Clipboard ↔ ${baseName(path)}`,
     left: { type: "text", text: clipboard, label: "Clipboard" },
     right: selection
@@ -67,6 +70,20 @@ export function parseTextsArg(arg: unknown): TextsArg | null {
     left,
     right,
     line: typeof a.line === "number" ? a.line : undefined,
+  };
+}
+
+let blankDiffs = 0;
+
+/** Open Blank Diff Window: two empty sides to type or paste into; the editor's selection fills the left one. */
+export function blankDiffData(selection: string | null): DiffData {
+  return {
+    // A path of its own, so each blank diff gets a new tab.
+    path: `blank-diff:${++blankDiffs}`,
+    title: tx("Blank Diff"),
+    left: { type: "text", text: selection ?? "", label: "", editable: true },
+    right: { type: "text", text: "", label: "", editable: true },
+    swappable: true,
   };
 }
 
@@ -111,11 +128,6 @@ async function pickComparison(
 }
 
 const contextPath = (arg: unknown) => argPath(arg) ?? maybeEditorService()?.activePath() ?? undefined;
-
-async function showDirectories(left: string, right: string) {
-  const { showDirectoryComparison } = await import("./DirectoryCompare");
-  showDirectoryComparison(left, right);
-}
 
 async function isDirectory(path: string): Promise<boolean> {
   try {
@@ -176,6 +188,58 @@ export function registerCompareActions(): () => void {
       run: () => focusedDiffNavigator()?.showSettings(),
     },
     {
+      // Diff.FocusOppositePane; it beats the Switcher's ⌃⇧⇥ while a side-by-side diff is focused.
+      id: "diff.focusOppositePane",
+      title: "Select Opposite Diff Pane",
+      category: "Diff",
+      when: "diffEditorFocus",
+      keyWhen: "diffEditorFocus && !popupOpen",
+      enabled: () => (focusedDiffNavigator()?.viewer?.()?.panes().length ?? 0) > 1,
+      run: () => void focusedDiffNavigator()?.focusOpposite(),
+    },
+    {
+      // CloseDiffEditor: Esc in a diff tab that nothing in the diff takes (see DiffEditor).
+      id: "diff.closeEditor",
+      title: "Close Diff Editor",
+      category: "Diff",
+      when: "diffEditorFocus",
+      run: () => void focusedDiffNavigator()?.close(),
+    },
+    {
+      id: "diff.swapSides",
+      title: "Swap Sides",
+      description: "Swaps the left and right sides of the diff",
+      category: "Diff",
+      icon: "swap-panels",
+      when: "diffEditorFocus",
+      run: () => void focusedDiffNavigator()?.swapSides(),
+    },
+    {
+      id: "diff.showInExternalTool",
+      title: "Show Diff in External Tool",
+      category: "Diff",
+      icon: "external-tools",
+      when: "diffEditorFocus",
+      enabled: () => {
+        const { enabled, path } = workflowSettings().externalDiff;
+        return enabled && !!path;
+      },
+      run: () => void focusedDiffNavigator()?.showInExternalTool(),
+    },
+    {
+      id: "diff.openBlankDiff",
+      title: "Open Blank Diff Window",
+      description: "Opens two editors side by side to compare their content",
+      category: "Diff",
+      icon: "diff",
+      keywords: ["empty diff", "new diff", "compare text", "paste"],
+      run: () => {
+        const ed = activeEditor();
+        const sel = ed?.view.state.selection.main;
+        return openDiff(blankDiffData(sel && !sel.empty ? ed!.view.state.sliceDoc(sel.from, sel.to) : null));
+      },
+    },
+    {
       id: "diff.nextFile",
       title: "Compare Next File",
       category: "Diff",
@@ -232,19 +296,20 @@ export function registerCompareActions(): () => void {
           const other = await pickDirectory(path);
           if (!other || other === path) return;
           if (!(await isDirectory(other))) return info("Select a directory to compare");
-          await showDirectories(path, other);
+          showDirectoryComparison(path, other);
           return;
         }
         const other = await pickComparison(path);
         if (!other) return;
         if (other.type === "file") {
           if (other.path === path) return;
-          await openVcsDiff(compareFilesData(path, other.path));
+          await openVcsDiff({ ...compareFilesData(path, other.path), swappable: true });
         } else {
           await openVcsDiff({
             path,
             left: { type: "text", text: other.text, label: other.label },
             right: { type: "worktree", label: displayPath(path) },
+            swappable: true,
           });
         }
       },
@@ -260,7 +325,7 @@ export function registerCompareActions(): () => void {
         const paths = arg === undefined ? projectViewSelection() : argPaths(arg);
         if (paths.length !== 2 || !(await isDirectory(paths[0]!)) || !(await isDirectory(paths[1]!)))
           return info("Select two directories to compare");
-        await showDirectories(paths[0]!, paths[1]!);
+        showDirectoryComparison(paths[0]!, paths[1]!);
       },
     },
     {
@@ -272,7 +337,7 @@ export function registerCompareActions(): () => void {
       run: async ({ arg }) => {
         const paths = argPaths(arg).filter((p) => !p.endsWith("/"));
         if (paths.length !== 2) return info("Select two files to compare");
-        await openVcsDiff(compareFilesData(paths[0]!, paths[1]!));
+        await openVcsDiff({ ...compareFilesData(paths[0]!, paths[1]!), swappable: true });
       },
     },
     {

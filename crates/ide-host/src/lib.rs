@@ -4,7 +4,10 @@
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
 pub mod agent_secrets;
+pub mod catalogue;
 pub mod data_dirs;
+pub mod diagnostics_store;
+mod direnv;
 pub mod environment;
 mod formatter;
 mod java_runtime;
@@ -22,7 +25,7 @@ pub mod rpc;
 pub mod shell_env;
 pub mod trust;
 
-pub use project::{Project, apply_git_executable, apply_workspace_edit, history_retention};
+pub use project::{Project, apply_git_executable, history_retention};
 
 use ide_core::{CancellationToken, IdeError, IdeResult, RequestId, SharedSink};
 use ide_language::{LanguageRegistry, Syntax};
@@ -58,10 +61,14 @@ pub struct HostConfig {
 pub struct Host {
     pub(crate) mcp_executable: RwLock<Option<PathBuf>>,
     plugin_host: RwLock<std::sync::Weak<plugins::PluginHost>>,
+    /// Every `Diagnostics` event the host ever emitted, per file and producer:
+    /// the snapshot plugins read (`problems`), independent of windows and reports.
+    pub diagnostics: Arc<diagnostics_store::DiagnosticsStore>,
     pub mcp_reports: mcp::Reports,
     pub mcp_requests: mcp::Requests,
     /// Commands agents run in the Run tool window (`run_command`).
     pub mcp_agent_runs: mcp::AgentRuns,
+    pub(crate) agent_catalogs: Arc<ide_agent::AgentCatalogs>,
     pub trust: trust::TrustStore,
     pub(crate) mcp_approvals: Arc<trust::McpServerApprovals>,
     pub config_dir: PathBuf,
@@ -86,6 +93,8 @@ pub struct Host {
     pub ssh: Arc<ide_ssh::SshManager>,
     /// SFTP deployment, remote file editing and runs on run targets.
     pub remote: Arc<ide_remote::RemoteService>,
+    /// Tunnels of Docker connections made through an SSH configuration.
+    pub docker_tunnels: ops::docker::DockerTunnels,
     /// What child processes get beyond this process's environment (Reload Environment, `remoteEnv`).
     pub environment: environment::Environment,
     /// The built-in web server (Open In › Browser, the editor's browser bar). On a remote host the
@@ -135,15 +144,20 @@ impl Host {
             runtime,
             project_environment,
         } = config;
+        // Every sink the host hands out records diagnostics into the shared store first.
+        let diagnostics: Arc<diagnostics_store::DiagnosticsStore> = Arc::default();
+        let sink_for: SinkFactory = diagnostics_store::recording_sink_factory(diagnostics.clone(), sink_for);
         let global_settings = SettingsStore::load(&config_dir, None);
         let ssh = Arc::new(ide_ssh::SshManager::new(data_dir.join("ssh-passwords.json")));
         ssh.set_configs(global_settings.effective().ssh.configs);
         let host = Self {
             plugin_host: RwLock::default(),
             mcp_executable: RwLock::default(),
+            diagnostics,
             mcp_reports: Default::default(),
             mcp_requests: Default::default(),
             mcp_agent_runs: Default::default(),
+            agent_catalogs: Arc::default(),
             trust: trust::TrustStore::load(&config_dir, &data_dir),
             mcp_approvals: Arc::new(trust::McpServerApprovals::load(&data_dir)),
             proxy_password: ide_ssh::secrets::SecretFile::new(data_dir.join("proxy-password.json")),
@@ -151,6 +165,7 @@ impl Host {
             agent_secrets: Arc::new(agent_secrets::AgentSecrets::new(&data_dir)),
             remote: Arc::new(ide_remote::RemoteService::new(ssh.clone(), data_dir.join("remote"))),
             ssh,
+            docker_tunnels: Default::default(),
             environment: environment::Environment::new(project_environment, local_data_dir.clone()),
             web: ide_web::WebServer::new(),
             global_settings,
@@ -180,6 +195,14 @@ impl Host {
             open_locks: Default::default(),
         };
         host.apply_proxy();
+        host.apply_added_jdks();
+        // Before any project starts jdtls; the deleting itself can take a while.
+        let unused =
+            ide_sdk::jdtls_workspaces::take_unused(&host.local_data_dir, ide_sdk::jdtls_workspaces::UNUSED_FOR);
+        if !unused.is_empty() {
+            std::thread::spawn(move || ide_sdk::jdtls_workspaces::remove(unused));
+        }
+        ops::agent::move_user_mcp_values(&host);
         host
     }
 
@@ -287,12 +310,18 @@ impl Host {
         }
         project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
         project.plugin_diagnostics.close();
+        // The producers will re-report when a project reopens; until then the snapshot
+        // must not answer for files whose project is gone.
+        self.diagnostics.forget_root(&project.root);
         if let Some(plugins) = plugins::editor_plugin_host() {
             plugins.invalidate_client_navigation(&project.root, Some(window), None);
             plugins.set_active_file(window, None);
         }
         if !project.light {
             self.environment.project_closed();
+            if self.windows_for_root(&project.root).is_empty() {
+                self.environment.direnv_closed(&project.root);
+            }
         }
         if let Some(bridge) = &project.kotlin_bridge {
             bridge.stop();
@@ -514,6 +543,14 @@ impl Host {
 
     pub(crate) fn insert_project(&self, window: &str, project: Arc<Project>) {
         self.projects.write().insert(window.to_owned(), project);
+    }
+}
+
+impl Host {
+    /// Lists the JDKs added by hand (global Settings › SDKs) with the detected ones.
+    pub fn apply_added_jdks(&self) {
+        let homes = self.global_settings.effective().languages.java.added_jdks;
+        ide_sdk::java::set_added_jdks(homes.into_iter().map(PathBuf::from));
     }
 }
 

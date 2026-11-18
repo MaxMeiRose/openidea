@@ -4,7 +4,7 @@
  */
 import { useProject } from "@/platform/project";
 import { buildCMake, isCMakeBuild } from "./cmake";
-import { dotnetBuildConfig } from "./dotnetTypes";
+import { dotnetProjectFile } from "./dotnetTypes";
 import { useBuildPresentation } from "@/platform/projectPresentation";
 import { buildTask } from "./buildTask";
 import { moduleTaskError } from "./configs";
@@ -13,6 +13,7 @@ import type { BeforeLaunchTask, RunConfig } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { notifications, toolWindowService, useContributions } from "@/workbench/contributions";
 import { externalToolConfig } from "./externalTools";
+import { toolWindowTitle } from "@/workbench/toolwindows/title";
 import { startRun, useRun } from "./store";
 
 export const BUILD_ACTION = "build.buildProject";
@@ -56,8 +57,10 @@ export function taskLabel(task: BeforeLaunchTask, configs: readonly RunConfig[] 
       return `External tool '${workflowSettings().externalTools.find((t) => t.id === target)?.name ?? target}'`;
     case "command":
       return target ? `Run '${target}'` : "Run shell command";
-    case "toolWindow":
-      return `Activate '${useContributions.getState().toolWindows.get(target)?.title ?? target}' tool window`;
+    case "toolWindow": {
+      const tw = useContributions.getState().toolWindows.get(target);
+      return `Activate '${tw ? toolWindowTitle(tw) : target}' tool window`;
+    }
     default:
       return task.kind;
   }
@@ -84,8 +87,12 @@ async function runTask(
 ): Promise<string | null> {
   const target = task.target ?? "";
   switch (task.kind) {
-    case "dotnetBuild":
-      return (await runToEnd(dotnetBuildConfig(config), chain, show)) ? null : "Build failed";
+    case "dotnetBuild": {
+      // In the Build tool window, like Build Project: its messages link to the sources.
+      const project = dotnetProjectFile(config);
+      if (!project) return "Select a .NET project";
+      return buildTask("build.buildModule", { target: project, activate: false, wait: true });
+    }
     case "build": {
       if (target) return buildCMake(target, show === true);
       const error = await buildTask(BUILD_ACTION, { activate: false });

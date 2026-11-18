@@ -29,12 +29,14 @@ import { countFileMatches } from "./session";
 import { CodePreview, MatchText, type PreviewHighlight } from "./parts";
 import {
   NO_MARKS,
+  confirmAllText,
   confirmText,
   countUsages,
   groupState,
   loadReplacePreview,
   pendingUsages,
   replaceTargets,
+  skipTargets,
   startReplace,
   summaryText,
   toggleExcluded,
@@ -175,7 +177,7 @@ export function FindTabs() {
         id: String(t.id),
         label: t.title,
         closable: true,
-        icon: t.pinned ? "pin" : undefined,
+        pinned: t.pinned,
       }))}
       activeId={String(tab.id)}
       onSelect={(id) => useFindWindow.setState({ active: Number(id) })}
@@ -187,16 +189,18 @@ export function FindTabs() {
       onContextMenu={(id, e) => {
         const t = tabs.find((x) => x.id === Number(id));
         if (!t) return;
+        // IDEA's content tab menu.
         showContextMenu(e, [
-          { id: "pin", label: t.pinned ? "Unpin Tab" : "Pin Tab", run: () => pinFindTab(t.id, !t.pinned) },
-          { kind: "separator" },
           { id: "close", label: "Close Tab", run: () => closeFindTab(t.id) },
+          { id: "closeAll", label: "Close All Tabs", run: () => tabs.forEach((o) => closeFindTab(o.id)) },
           {
             id: "closeOthers",
             label: "Close Other Tabs",
             disabled: tabs.length < 2,
             run: () => tabs.forEach((o) => o.id !== t.id && closeFindTab(o.id)),
           },
+          { kind: "separator" },
+          { id: "pin", label: t.pinned ? "Unpin Tab" : "Pin Tab", run: () => pinFindTab(t.id, !t.pinned) },
         ]);
       }}
     />
@@ -279,14 +283,15 @@ function FindTabView({ tab }: { tab: FindTab }) {
     }));
   }, [preview?.path, st.files]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const replace = async (usages: Usage[]) => {
+  const replace = async (usages: Usage[], allInScope = false) => {
     if (tab.replacement === null || !usages.length || running) return;
     const run = startReplace(
       {
         query: tab.query,
         replacement: tab.replacement,
         preserveCase: !!tab.preserveCase,
-        targets: replaceTargets(usages),
+        targets: allInScope ? skipTargets(allGroups, marks) : replaceTargets(usages),
+        allInScope,
       },
       setProgress,
     );
@@ -351,13 +356,17 @@ function FindTabView({ tab }: { tab: FindTab }) {
 
   const replaceMode = tab.replacement !== null;
   const allPending = pendingUsages(allGroups, marks);
+  // Past the search's limit, every match in the scope is replaced, listed or not (as in IDEA).
+  const allInScope = !!st.summary?.limitHit;
   const confirmReplaceAll = async () => {
     const ok = await confirm({
       title: "Replace All",
       ok: "Replace",
       message: (
         <>
-          {confirmText(countUsages(allPending), tab.query.pattern, tab.replacement ?? "")}
+          {allInScope
+            ? confirmAllText(tab.query.pattern, tab.replacement ?? "")
+            : confirmText(countUsages(allPending), tab.query.pattern, tab.replacement ?? "")}
           {marks.excluded.size > 0 && (
             <>
               {" "}
@@ -367,7 +376,7 @@ function FindTabView({ tab }: { tab: FindTab }) {
         </>
       ),
     });
-    if (ok) void replace(allPending);
+    if (ok) void replace(allPending, allInScope);
   };
   const selectedPending = pendingUsages(selectedGroups(), marks);
 
@@ -422,7 +431,12 @@ function FindTabView({ tab }: { tab: FindTab }) {
           </>
         )}
       </div>
-      <SplitGroup orientation="horizontal" className={styles.split} id="find-results-split">
+      <SplitGroup
+        orientation="horizontal"
+        className={styles.split}
+        id="find-results-split"
+        storageKey={showPreview ? "openidea.find.previewSplit" : undefined}
+      >
         <SplitPanel id="results" minSize={120} className={styles.splitPanel}>
           <Tree<Node>
             className={styles.tree}

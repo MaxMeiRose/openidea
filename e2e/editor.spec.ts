@@ -174,12 +174,36 @@ test("⌘R replaces every match in the file", async ({ workbench: page }) => {
   await expect(editor.locator(".cm-line", { hasText: "OrderDto" })).toHaveCount(2);
 });
 
-test("Markdown preview highlights ⌘F matches and selected word occurrences", async ({ workbench: page }) => {
+test("Markdown preview highlights ⌘F matches, selected words and scales diagrams with font zoom", async ({
+  workbench: page,
+}) => {
+  await page.evaluate(async () => {
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 96" width="320" height="96"><!-- svg-source:excalidraw --><rect width="320" height="96"/></svg>';
+    const url = `data:image/svg+xml;base64,${btoa(svg)}`;
+    const routeModule = "/src/platform/tauriCore.ts";
+    const { setInvokeRoute } = await import(/* @vite-ignore */ routeModule);
+    setInvokeRoute((cmd: string) => (cmd === "fs_read_image" ? Promise.resolve(url) : null));
+  });
+
   const editor = await openFromTree(page, "README.md");
   const content = editor.locator(".cm-content");
   await content.click();
   await page.keyboard.press("Meta+a");
-  await page.keyboard.insertText("# Order Service\n\nManage **Order** items and `Order` status.\n");
+  await page.keyboard.insertText(
+    [
+      "# Order Service",
+      "",
+      "Manage **Order** items and `Order` status.",
+      "",
+      "```mermaid",
+      "flowchart LR",
+      "  A --> B",
+      "```",
+      "",
+      "![Diagram](./arch.excalidraw.svg)",
+    ].join("\n"),
+  );
 
   const preview = page.getByRole("document", { name: "Markdown preview" });
   await expect(preview).toContainText("Manage Order items");
@@ -209,6 +233,98 @@ test("Markdown preview highlights ⌘F matches and selected word occurrences", a
       })),
     )
     .toEqual({ current: ["Order"], other: ["Order", "Order"] });
+
+  const mermaidSvg = preview.locator(".mermaid-output svg");
+  const excalidrawImg = preview.locator('img[alt="Diagram"]');
+  await expect(mermaidSvg).toBeVisible();
+  await expect(excalidrawImg).toHaveAttribute("src", /^data:image\/svg\+xml/);
+
+  const widths = async () => ({
+    mermaid: (await mermaidSvg.boundingBox())!.width,
+    excalidraw: (await excalidrawImg.boundingBox())!.width,
+  });
+  const base = await widths();
+  expect(base.mermaid).toBeGreaterThan(50);
+  expect(base.excalidraw).toBeCloseTo(320, 0);
+
+  const runAction = (id: string, times = 1) =>
+    page.evaluate(
+      async ({ id, times }) => {
+        const actionsModule = "/src/platform/actions.ts";
+        const { executeAction } = await import(/* @vite-ignore */ actionsModule);
+        for (let i = 0; i < times; i++) await executeAction(id);
+      },
+      { id, times },
+    );
+
+  await runAction("editor.increaseFontSize", 4);
+  const zoomedIn = await widths();
+  expect(zoomedIn.mermaid / base.mermaid).toBeCloseTo(17 / 13, 2);
+  expect(zoomedIn.excalidraw / base.excalidraw).toBeCloseTo(17 / 13, 2);
+
+  await runAction("editor.decreaseFontSize", 6);
+  const zoomedOut = await widths();
+  expect(zoomedOut.mermaid / base.mermaid).toBeCloseTo(11 / 13, 2);
+  expect(zoomedOut.excalidraw / base.excalidraw).toBeCloseTo(11 / 13, 2);
+
+  await runAction("editor.resetFontSize");
+  const reset = await widths();
+  expect(reset.mermaid).toBeCloseTo(base.mermaid, 1);
+  expect(reset.excalidraw).toBeCloseTo(base.excalidraw, 1);
+});
+
+test("Markdown preview aligns Mermaid diagrams to their container align attribute", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  const diagram = ["```mermaid", "flowchart LR", "  A --> B", "```"].join("\n");
+  await page.keyboard.insertText(
+    [
+      diagram,
+      "",
+      '<div align="left" style="width: 960px; max-width: 100%; margin-left: 0; text-align: left;">',
+      "",
+      diagram,
+      "",
+      "</div>",
+      "",
+      '<div align="right">',
+      "",
+      diagram,
+      "",
+      "</div>",
+      "",
+      '<div align="left"><div align="center">',
+      "",
+      diagram,
+      "",
+      "</div></div>",
+    ].join("\n"),
+  );
+
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  const outputs = preview.locator("[data-mermaid-state='ok'] .mermaid-output");
+  await expect(outputs).toHaveCount(4);
+
+  const offsets = await outputs.evaluateAll((els) =>
+    els.map((out) => {
+      const outRect = out.getBoundingClientRect();
+      const svgRect = out.querySelector("svg")!.getBoundingClientRect();
+      return {
+        leftGap: svgRect.left - outRect.left,
+        rightGap: outRect.right - svgRect.right,
+      };
+    }),
+  );
+
+  expect(offsets[0]!.leftGap).toBeGreaterThan(20);
+  expect(Math.abs(offsets[0]!.leftGap - offsets[0]!.rightGap)).toBeLessThanOrEqual(1.5);
+  expect(Math.abs(offsets[1]!.leftGap)).toBeLessThanOrEqual(1);
+  expect(offsets[1]!.rightGap).toBeGreaterThan(40);
+  expect(offsets[2]!.leftGap).toBeGreaterThan(40);
+  expect(Math.abs(offsets[2]!.rightGap)).toBeLessThanOrEqual(1);
+  expect(Math.abs(offsets[3]!.leftGap - offsets[3]!.rightGap)).toBeLessThanOrEqual(1.5);
 });
 
 test("the bookmark gutter takes no width until the file has a bookmark", async ({ workbench: page }) => {
@@ -284,4 +400,141 @@ test("vertical tabs leave a narrow editor group most of its width", async ({ wor
     const [paneBox, contentBox] = await Promise.all([pane.boundingBox(), pane.getByRole("tabpanel").boundingBox()]);
     expect(contentBox!.width).toBeGreaterThanOrEqual(paneBox!.width * 0.6 - 1);
   }
+});
+
+test("dragging the vertical tab column's edge resizes it and the width is kept", async ({ workbench: page }) => {
+  await openFromTree(page, "settings.gradle.kts");
+  const placeLeft = () =>
+    page.evaluate(async () => {
+      const projectModule = "/src/platform/project.ts";
+      const schemaModule = "/src/features/settings/model/schema.ts";
+      const [{ useProject }, { DEFAULT_SETTINGS }] = await Promise.all([
+        import(/* @vite-ignore */ projectModule),
+        import(/* @vite-ignore */ schemaModule),
+      ]);
+      const base = useProject.getState().settings ?? DEFAULT_SETTINGS;
+      useProject.setState({
+        settings: { ...base, editor: { ...base.editor, tabs: { ...base.editor.tabs, placement: "left" } } },
+      });
+    });
+  await placeLeft();
+
+  const strip = page.getByRole("tablist", { name: "Editor tabs" });
+  const handle = page.getByRole("separator", { name: "Resize editor tabs" });
+  const before = (await strip.boundingBox())!.width;
+  const box = (await handle.boundingBox())!;
+  await page.mouse.move(box.x, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x - 60, box.y + box.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(async () => (await strip.boundingBox())!.width).toBeLessThan(before - 40);
+  const narrowed = (await strip.boundingBox())!.width;
+
+  // The next session starts with the dragged width.
+  await page.reload();
+  await openFromTree(page, "settings.gradle.kts");
+  await placeLeft();
+  await expect.poll(async () => Math.round((await strip.boundingBox())!.width)).toBe(Math.round(narrowed));
+});
+
+test("dragging the Markdown split divider resizes and reflows editor and preview content, keeps the ratio, and resets on double-click", async ({
+  workbench: page,
+}) => {
+  const applyDefaultSettings = () =>
+    page.evaluate(async () => {
+      const projectModule = "/src/platform/project.ts";
+      const schemaModule = "/src/features/settings/model/schema.ts";
+      const [{ useProject }, { DEFAULT_SETTINGS }] = await Promise.all([
+        import(/* @vite-ignore */ projectModule),
+        import(/* @vite-ignore */ schemaModule),
+      ]);
+      useProject.setState({ settings: useProject.getState().settings ?? DEFAULT_SETTINGS });
+    });
+  await applyDefaultSettings();
+
+  const editor = await openFromTree(page, "README.md");
+  await page.evaluate(async () => {
+    const controllerModule = "/src/editor/core/controller.ts";
+    const { editorController } = await import(/* @vite-ignore */ controllerModule);
+    const view = editorController().activeSlot!.view!;
+    view.dispatch({
+      changes: {
+        from: 0,
+        to: view.state.doc.length,
+        insert: [
+          "# Order Service",
+          "",
+          "Event-driven order processing API with idempotent checkout, inventory reservation, webhook delivery, and automatic retry policies.",
+          "",
+          "| Method | Path | Description |",
+          "| :--- | :--- | :--- |",
+          "| `POST` | `/v1/orders/{id}/cancel` | Release reserved stock and emit cancellation event |",
+        ].join("\n"),
+      },
+      selection: { anchor: 0 },
+    });
+  });
+
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  const handle = page.getByRole("separator", { name: "Resize Markdown preview" });
+  const cmContent = editor.locator(".cm-content");
+  await expect(preview).toContainText("Event-driven order processing API");
+  await expect(handle).toBeVisible();
+  await expect(cmContent).toHaveClass(/cm-lineWrapping/);
+
+  const initialEditor = (await editor.boundingBox())!.width;
+  const initialPreview = (await preview.boundingBox())!.width;
+  const initialContent = (await cmContent.boundingBox())!.width;
+  expect(Math.abs(initialEditor - initialPreview)).toBeLessThanOrEqual(2);
+  expect(initialContent).toBeLessThanOrEqual(initialEditor);
+
+  const box = (await handle.boundingBox())!;
+  const startX = box.x + box.width / 2;
+  const midY = box.y + box.height / 2;
+
+  await page.mouse.move(startX, midY);
+  await page.mouse.down();
+  await page.mouse.move(startX - 180, midY, { steps: 6 });
+  await expect(handle).toHaveAttribute("data-separator", "active");
+  await page.mouse.up();
+
+  await expect.poll(async () => (await editor.boundingBox())!.width).toBeLessThan(initialEditor - 150);
+  await expect.poll(async () => (await preview.boundingBox())!.width).toBeGreaterThan(initialPreview + 150);
+  const narrowedEditor = (await editor.boundingBox())!.width;
+  // Soft-wrapped editor content shrinks with the narrowed editor pane rather than overflowing.
+  await expect.poll(async () => (await cmContent.boundingBox())!.width).toBeLessThanOrEqual(narrowedEditor);
+
+  // Dragging right narrows the preview: table and prose stay within the preview content width.
+  const narrowedHandleBox = (await handle.boundingBox())!;
+  await page.mouse.move(narrowedHandleBox.x + narrowedHandleBox.width / 2, midY);
+  await page.mouse.down();
+  await page.mouse.move(narrowedHandleBox.x + narrowedHandleBox.width / 2 + 380, midY, { steps: 8 });
+  await page.mouse.up();
+  const widenedEditor = (await editor.boundingBox())!.width;
+  await expect.poll(async () => (await cmContent.boundingBox())!.width).toBeGreaterThan(initialContent + 140);
+  await expect.poll(async () => (await cmContent.boundingBox())!.width).toBeLessThanOrEqual(widenedEditor);
+  expect(await preview.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+
+  // Editor Only and Preview Only both expand content to full pane width.
+  await page.getByRole("button", { name: "Editor Only" }).click();
+  await expect.poll(async () => (await cmContent.boundingBox())!.width).toBeGreaterThan(widenedEditor);
+  await page.getByRole("button", { name: "Preview Only" }).click();
+  await expect.poll(async () => (await preview.boundingBox())!.width).toBeGreaterThan(initialPreview * 1.8);
+  await page.getByRole("button", { name: "Editor and Preview" }).click();
+  await expect.poll(async () => Math.round((await editor.boundingBox())!.width)).toBe(Math.round(widenedEditor));
+
+  // Persists across reload.
+  await page.reload();
+  await applyDefaultSettings();
+  const reopenedEditor = await openFromTree(page, "README.md");
+  await expect
+    .poll(async () => Math.round((await reopenedEditor.boundingBox())!.width))
+    .toBe(Math.round(widenedEditor));
+
+  // Double-clicking the divider resets the split back to 50/50.
+  const reopenedHandle = page.getByRole("separator", { name: "Resize Markdown preview" });
+  await reopenedHandle.dblclick();
+  await expect
+    .poll(async () => Math.round((await reopenedEditor.boundingBox())!.width))
+    .toBe(Math.round(initialEditor));
 });

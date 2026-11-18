@@ -18,6 +18,7 @@ import { call, commands } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import {
+  beginDrag,
   dragRequiresAlt,
   Icon,
   IconButton,
@@ -59,13 +60,9 @@ import {
   type ToolWindowViewMode,
 } from "./store";
 import { contentTabRegistry } from "./content";
+import { toolWindowTitle } from "./title";
 import styles from "./ToolWindows.module.css";
-import { tx } from "@/platform/i18n";
-
-/** The window's title in the UI language; a plugin's stays as written. */
-function titleOf(tw: ToolWindowContribution): string {
-  return tw.verbatim ? tw.title : tx(tw.title);
-}
+import { tx, useI18n } from "@/platform/i18n";
 
 function byOrder(a: ToolWindowContribution, b: ToolWindowContribution) {
   return (a.order ?? 100) - (b.order ?? 100) || a.title.localeCompare(b.title);
@@ -366,6 +363,7 @@ function startStripeDrag(e: PointerEvent<HTMLButtonElement>, id: string) {
   const button = e.currentTarget;
   const start = { x: e.clientX, y: e.clientY };
   let ghost: HTMLElement | null = null;
+  let endDrag: (() => void) | null = null;
   const place = (x: number, y: number) => {
     if (ghost) ghost.style.transform = `translate(${x - start.x}px, ${y - start.y}px)`;
   };
@@ -385,6 +383,7 @@ function startStripeDrag(e: PointerEvent<HTMLButtonElement>, id: string) {
         height: `${r.height}px`,
       });
       document.body.appendChild(ghost);
+      endDrag = beginDrag();
       useStripeDrag.setState({ id, drop: null });
     }
     if (!(ev.buttons & 1)) return;
@@ -400,6 +399,7 @@ function startStripeDrag(e: PointerEvent<HTMLButtonElement>, id: string) {
     window.removeEventListener("keydown", onKey, true);
     if (!ghost) return;
     ghost.remove();
+    endDrag?.();
     const { drop } = useStripeDrag.getState();
     useStripeDrag.setState({ id: null, drop: null });
     dragEnded = true;
@@ -451,10 +451,9 @@ function StripeButton({
         showName && styles.stripeNamed,
         active && styles.stripeActive,
         active && focused && styles.stripeFocused,
-        side === "right" && styles.stripeRight,
         dragged && styles.stripeDragged,
       )}
-      aria-label={titleOf(tw)}
+      aria-label={toolWindowTitle(tw)}
       aria-pressed={active}
       aria-keyshortcuts={shortcut}
       data-stripe-button={tw.id}
@@ -467,7 +466,7 @@ function StripeButton({
         showContextMenu(e, stripeButtonMenu(tw, showName));
       }}
       data-tooltip-stripe={side}
-      {...tooltipAttrs(titleOf(tw), shortcut, true)}
+      {...tooltipAttrs(toolWindowTitle(tw), shortcut, true)}
     >
       <span className={styles.stripeIcon}>
         <Icon name={tw.icon} size={20} />
@@ -475,7 +474,7 @@ function StripeButton({
       </span>
       {showName && (
         <span className={clsx(styles.stripeLabel, !/\s/.test(tw.title) && styles.stripeLabelWord)} aria-hidden="true">
-          {titleOf(tw)}
+          {toolWindowTitle(tw)}
         </span>
       )}
     </button>
@@ -736,7 +735,7 @@ function ToolWindowActionsBar({ tw, className }: { tw: ToolWindowContribution; c
         anchor={moreRef}
         items={more}
         placement="bottom-end"
-        aria-label={tx`${titleOf(tw)} options`}
+        aria-label={tx`${toolWindowTitle(tw)} options`}
       />
     </>
   );
@@ -756,6 +755,8 @@ function HeaderRow({
   const [titleOpen, setTitleOpen] = useState(false);
   const titleRef = useRef<HTMLButtonElement>(null);
   const showTitle = title && !(tw.headerContent && tw.tabsReplaceTitle);
+  // The title is translated here: show it in a language chosen while the window is open.
+  useI18n((s) => s.texts);
 
   const useHeaderMenu = typeof tw.headerMenu === "function" ? tw.headerMenu : staticHeaderMenu(tw.headerMenu);
   const own = useHeaderMenu(tw.id);
@@ -789,7 +790,7 @@ function HeaderRow({
             aria-expanded={titleOpen}
             onClick={() => setTitleOpen((v) => !v)}
           >
-            <span className={styles.title}>{titleMenu ? tx(titleMenu.label) : titleOf(tw)}</span>
+            <span className={styles.title}>{titleMenu ? tx(titleMenu.label) : toolWindowTitle(tw)}</span>
             <Icon name="chevron-down" size={12} className={styles.titleChevron} />
           </button>
           <Menu
@@ -797,11 +798,11 @@ function HeaderRow({
             onClose={() => setTitleOpen(false)}
             anchor={titleRef}
             items={titleItems}
-            aria-label={titleMenu ? tx`${titleOf(tw)} views` : tx`${titleOf(tw)} view options`}
+            aria-label={titleMenu ? tx`${toolWindowTitle(tw)} views` : tx`${toolWindowTitle(tw)} view options`}
           />
         </>
       ) : (
-        <span className={clsx(styles.title, styles.titlePlain)}>{titleOf(tw)}</span>
+        <span className={clsx(styles.title, styles.titlePlain)}>{toolWindowTitle(tw)}</span>
       )}
       {children && <div className={clsx(styles.headerContent, !showTitle && styles.headerContentOnly)}>{children}</div>}
       <div className={styles.headerSpacer} />
@@ -872,7 +873,7 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
       className={styles.window}
       data-toolwindow={tw.id}
       data-focus-scope=""
-      aria-label={titleOf(tw)}
+      aria-label={toolWindowTitle(tw)}
       hidden={hidden}
       tabIndex={-1}
       // WebKit doesn't focus a clicked button. A menu opened from this window would then hand

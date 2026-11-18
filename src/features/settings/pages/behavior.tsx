@@ -23,21 +23,28 @@ import { useLabelMatch, useSetting } from "../components/context";
 import {
   IDLE_LIMITS,
   type Antialiasing,
+  type BackgroundImageAnchor,
+  type BackgroundImageFill,
+  type BackgroundImageValid,
   type ConcreteTheme,
   type DateFormatValid,
   type NotificationDisplay,
   type NotificationGroupValid,
   type NavigationBarPosition,
   type OpenProjectIn,
+  PRESENTATION_ASSISTANT_DURATION,
+  type PresentationAssistantPosition,
+  type PresentationAssistantSize,
 } from "../model/behaviorSchema";
 import { ACCENT_PRESETS, LIMITS, type ThemeId } from "../model/schema";
 import type { PageSpec } from "./spec";
 import { HTTP_PROXY_PAGE } from "./httpProxy";
 import styles from "./Behavior.module.css";
-import { LOCALES, SUPPORTED_LOCALES, tx, useT } from "@/platform/i18n";
+import { LOCALES, SUPPORTED_LOCALES, tx, useT, useTx } from "@/platform/i18n";
 import { BUILTIN_THEMES, useContributedIconThemes } from "@/platform/themes";
 import { currentThemeChoice, originDetail, previewTheme, themeSelectOptions, useThemeChoices } from "@/workbench/theme";
 import { themePreview } from "@/workbench/quickSwitch";
+import { selectPage } from "../model/staging";
 
 const BUILTIN_THEME_LABELS = BUILTIN_THEMES.map((t) => t.label);
 
@@ -100,6 +107,10 @@ function ThemeRow() {
         className={styles.themeSelect}
         disabled={sync}
       />
+      {/* As in IntelliJ IDEA: most themes are plugins, so point at the marketplace's. */}
+      <button type="button" className={styles.link} onClick={() => selectPage("plugins#themes")}>
+        <T>Get more themes</T>
+      </button>
       <span className={clsx(styles.inline, matched && styles.matched)}>
         <Checkbox
           checked={sync}
@@ -367,10 +378,37 @@ function UiOptionsGrid() {
   );
 }
 
+/** Desktop only: the browser build always shows Settings in the page. */
+function SettingsWindowRow() {
+  if (!isTauri()) return null;
+  return (
+    <BoundToggle
+      k="appearance.settingsInSeparateWindow"
+      label="Open Settings in a separate window"
+      hint="When off, Settings opens as a dialog in the project window, which is faster"
+    />
+  );
+}
+
 const AA_OPTIONS: SelectOption<Antialiasing>[] = [
   { value: "subpixel", label: "Subpixel" },
   { value: "greyscale", label: "Greyscale" },
   { value: "none", label: "No antialiasing" },
+];
+
+const PRESENTATION_SIZE_OPTIONS: SelectOption<PresentationAssistantSize>[] = [
+  { value: "small", label: "Small" },
+  { value: "medium", label: "Medium" },
+  { value: "large", label: "Large" },
+];
+
+const PRESENTATION_POSITION_OPTIONS: SelectOption<PresentationAssistantPosition>[] = [
+  { value: "top-left", label: "Top left" },
+  { value: "top", label: "Top center" },
+  { value: "top-right", label: "Top right" },
+  { value: "bottom-left", label: "Bottom left" },
+  { value: "bottom", label: "Bottom center" },
+  { value: "bottom-right", label: "Bottom right" },
 ];
 
 const NAV_BAR_OPTIONS: SelectOption<NavigationBarPosition>[] = [
@@ -378,6 +416,113 @@ const NAV_BAR_OPTIONS: SelectOption<NavigationBarPosition>[] = [
   { value: "statusBar", label: "Status Bar" },
   { value: "hidden", label: "Don't show" },
 ];
+
+const FILL_OPTIONS: SelectOption<BackgroundImageFill>[] = [
+  { value: "scale", label: "Scale" },
+  { value: "plain", label: "Original size" },
+  { value: "tile", label: "Tile" },
+];
+
+const ANCHOR_OPTIONS: SelectOption<BackgroundImageAnchor>[] = [
+  { value: "center", label: "Center" },
+  { value: "top-left", label: "Top left" },
+  { value: "top", label: "Top" },
+  { value: "top-right", label: "Top right" },
+  { value: "left", label: "Left" },
+  { value: "right", label: "Right" },
+  { value: "bottom-left", label: "Bottom left" },
+  { value: "bottom", label: "Bottom" },
+  { value: "bottom-right", label: "Bottom right" },
+];
+
+const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"];
+
+/** Appearance › Background Image: an image shown through the project window. */
+function BackgroundImageRows() {
+  const [bg, setBg] = useSetting<BackgroundImageValid>("appearance.backgroundImage");
+  const set = (patch: Partial<BackgroundImageValid>) => setBg({ ...bg, ...patch });
+  const id = useId();
+  const tr = useTx();
+  const [preview, setPreview] = useState<{ path: string; url?: string; error?: string } | null>(null);
+  useEffect(() => {
+    if (!bg.path || !isTauri()) return;
+    let live = true;
+    call(commands.fsReadImage(bg.path)).then(
+      (url) => live && setPreview({ path: bg.path, url }),
+      (e: unknown) => live && setPreview({ path: bg.path, error: e instanceof Error ? e.message : String(e) }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [bg.path]);
+  const shown = preview?.path === bg.path ? preview : null;
+  const browse = async () => {
+    const { open } = await import("@/platform/dialog");
+    const picked = await open({
+      multiple: false,
+      title: tr("Background Image"),
+      defaultPath: bg.path || undefined,
+      filters: [{ name: tr("Image files"), extensions: IMAGE_EXTENSIONS }],
+    });
+    const path = Array.isArray(picked) ? picked[0] : picked;
+    if (path) set({ path });
+  };
+  const off = !bg.path;
+  return (
+    <>
+      <Row label="Image" htmlFor={id} hint={shown?.error ? tr`Cannot load the image: ${shown.error}` : undefined}>
+        <Input
+          id={id}
+          className={styles.pathInput}
+          value={bg.path}
+          placeholder={tr("None")}
+          onChange={(e) => set({ path: e.target.value })}
+        />
+        <IconButton
+          icon="folder-open"
+          size="small"
+          title="Browse…"
+          aria-label="Browse"
+          disabled={!isTauri()}
+          onClick={() => void browse()}
+        />
+        {shown?.url && <img className={styles.backgroundPreview} src={shown.url} alt="" />}
+      </Row>
+      <Indented>
+        <Row label="Opacity">
+          <NumberInput
+            value={bg.opacity}
+            min={0}
+            max={100}
+            integer
+            unit="%"
+            disabled={off}
+            aria-label="Opacity"
+            onChange={(opacity) => set({ opacity })}
+          />
+        </Row>
+        <Row label="Fill">
+          <Select
+            value={bg.fill}
+            options={FILL_OPTIONS}
+            disabled={off}
+            onChange={(fill) => set({ fill })}
+            aria-label="Fill"
+          />
+        </Row>
+        <Row label="Anchor">
+          <Select
+            value={bg.anchor}
+            options={ANCHOR_OPTIONS}
+            disabled={off}
+            onChange={(anchor) => set({ anchor })}
+            aria-label="Anchor"
+          />
+        </Row>
+      </Indented>
+    </>
+  );
+}
 
 function ToolWindowsGrid() {
   return (
@@ -730,7 +875,14 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           {
             kind: "custom",
             label: "Theme",
-            keywords: ["Sync with OS", ...BUILTIN_THEME_LABELS, "preferred theme"],
+            keywords: [
+              "Sync with OS",
+              ...BUILTIN_THEME_LABELS,
+              "preferred theme",
+              "Get more themes",
+              "marketplace",
+              "plugins",
+            ],
             component: ThemeRow,
           },
           {
@@ -747,6 +899,17 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           },
           { kind: "custom", label: "Accent color", keywords: ["accent colour", "highlight"], component: AccentRow },
           { kind: "custom", label: "Different tool window background", component: ToolWindowBackgroundRow },
+        ],
+      },
+      {
+        title: "Background Image",
+        options: [
+          {
+            kind: "custom",
+            label: "Image",
+            keywords: ["Background image", "wallpaper", "Opacity", "Fill", "Anchor", "Scale", "Tile"],
+            component: BackgroundImageRows,
+          },
         ],
       },
       {
@@ -793,6 +956,12 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             ],
             component: UiOptionsGrid,
           },
+          {
+            kind: "custom",
+            label: "Open Settings in a separate window",
+            keywords: ["settings window", "settings dialog"],
+            component: SettingsWindowRow,
+          },
         ],
       },
       {
@@ -810,6 +979,50 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             label: "Show tool window bars",
             keywords: ["Show tool window names", "Widescreen tool window layout", "stripes"],
             component: ToolWindowsGrid,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "appearance.presentationAssistant",
+    title: "Presentation Assistant",
+    order: 0,
+    keywords: ["action names", "shortcuts", "screencast", "demo", "presentation"],
+    sections: [
+      {
+        options: [
+          {
+            kind: "toggle",
+            key: "appearance.presentationAssistant.enabled",
+            label: "Show action names and shortcuts",
+            hint: "Each action you run shows its name and shortcut in a popup, for screencasts and demos.",
+          },
+          {
+            kind: "select",
+            key: "appearance.presentationAssistant.size",
+            label: "Popup size",
+            options: PRESENTATION_SIZE_OPTIONS,
+          },
+          {
+            kind: "number",
+            key: "appearance.presentationAssistant.durationSeconds",
+            label: "Duration",
+            ...PRESENTATION_ASSISTANT_DURATION,
+            integer: true,
+            unit: "seconds",
+          },
+          {
+            kind: "select",
+            key: "appearance.presentationAssistant.position",
+            label: "Popup position",
+            options: PRESENTATION_POSITION_OPTIONS,
+          },
+          {
+            kind: "toggle",
+            key: "appearance.presentationAssistant.alternateKeymap",
+            label: "Also show the other platform's shortcut",
+            hint: "macOS shortcuts on Windows and Linux, Windows/Linux shortcuts on macOS.",
           },
         ],
       },
@@ -953,12 +1166,42 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
     title: "Notifications",
     group: APPEARANCE_GROUP,
     order: 2,
-    keywords: ["balloon", "popup", "sound", "alerts"],
+    keywords: ["balloon", "popup", "sound", "alerts", "system", "os", "terminal", "command"],
     sections: [
       {
         options: [
           { kind: "toggle", key: "notifications.balloons", label: "Display balloon notifications" },
           { kind: "toggle", key: "notifications.sound", label: "Play sound" },
+          {
+            kind: "toggle",
+            key: "notifications.systemNotifications",
+            label: "Enable system notifications",
+          },
+        ],
+      },
+      {
+        title: "Terminal",
+        options: [
+          {
+            kind: "select",
+            key: "notifications.terminalCompletion",
+            label: "Notify when a terminal command finishes",
+            hint: "Only while the tab cannot be seen. A command stopped with Ctrl-C, shell startup and short commands stay quiet; a non-zero exit always reports its code.",
+            options: [
+              { value: "off", label: "Off" },
+              { value: "longRunning", label: "Long-running commands" },
+              { value: "all", label: "All commands" },
+            ],
+          },
+          {
+            kind: "number",
+            key: "notifications.terminalThresholdSeconds",
+            label: "Minimum run time of a long-running command",
+            min: 1,
+            max: 86_400,
+            integer: true,
+            unit: "seconds",
+          },
         ],
       },
       {

@@ -7,6 +7,7 @@ use super::output::OutputCollector;
 use super::process::{quote, split_words};
 use super::targets;
 use crate::Project;
+use crate::mcp::page::{OFFSET, Page};
 use crate::mcp::run::timeout;
 use crate::mcp::tool::{Call, Output, Param, ParamType, Tool};
 use ide_build::compile::BuildKind;
@@ -19,6 +20,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const DEFAULT_TIMEOUT_MS: usize = 10_000;
+/// Configurations `get_run_configurations` lists by default.
+const CONFIGURATIONS_LIMIT: usize = 100;
 /// Output of a failed before-launch process kept for the error message.
 const MAX_PROCESS_OUTPUT_LENGTH: usize = 20_000;
 /// A before-launch build gets this long.
@@ -50,7 +53,8 @@ fn describe_config(call: &Call, c: &RunConfig) -> Value {
         if let Some(cwd) = c.cwd.as_deref() {
             v["workingDirectory"] = call.display(&call.root().join(cwd)).into();
         }
-        if !c.env.is_empty() {
+        // A detected configuration's environment is the IDE's own (its tools on `PATH`).
+        if !c.env.is_empty() && !c.detected {
             v["environment"] = json!(c.env);
         }
     }
@@ -133,8 +137,28 @@ the whole command. Run points are found in Rust, JavaScript/TypeScript, Python a
                 .await?;
                 return Output::json(json!({ "filePath": file, "runPoints": points }));
             }
-            let list: Vec<Value> = configs.iter().map(|c| describe_config(&call, c)).collect();
-            Output::json(json!({ "configurations": list }))
+            let page = Page::of(&call, CONFIGURATIONS_LIMIT)?;
+            let query = call.opt_str("query")?.map(|q| q.to_lowercase());
+            let dir = crate::mcp::scope::Scope::of(&call)?;
+            let list: Vec<Value> = configs
+                .iter()
+                // A configuration belongs where it runs.
+                .filter(|c| {
+                    dir.contains(&c.cwd.as_deref().map_or_else(|| call.root().to_path_buf(), |d| call.root().join(d)))
+                })
+                .filter(|c| {
+                    query.as_ref().is_none_or(|q| {
+                        [c.name.as_str(), c.kind.as_str(), command_line(c).as_str()]
+                            .iter()
+                            .any(|s| s.to_lowercase().contains(q.as_str()))
+                    })
+                })
+                .map(|c| describe_config(&call, c))
+                .collect();
+            let mut out = Map::new();
+            let list = page.take(list, &mut out);
+            out.insert("configurations".into(), list.into());
+            Output::json(Value::Object(out))
         },
     )
     .write()
@@ -144,6 +168,10 @@ the whole command. Run points are found in Rust, JavaScript/TypeScript, Python a
         "Optional file path relative to the project root. When provided, returns run points (executable entry points) \
 in the file instead of project-wide run configurations.",
     ))
+    .param(Param::optional("query", ParamType::String, "Only configurations whose name, type or command contains it"))
+    .param(crate::mcp::scope::param())
+    .param(Param::optional("limit", ParamType::Integer, "Configurations to return at most (default 100)"))
+    .param(Param::optional("offset", ParamType::Integer, OFFSET))
 }
 
 /// What `execute_run_configuration` runs.
@@ -255,7 +283,7 @@ fn run_exit(host: &crate::Host, id: RunId) -> Option<Option<i32>> {
     match host.processes.exit_code(id) {
         Ok(exit) => exit,
         // Remote (SSH) runs, or a finished run already forgotten: the run list knows whether it runs.
-        Err(_) => match crate::ops::run::list(host).into_iter().find(|r| r.id == id) {
+        Err(_) => match crate::ops::run::run_list(host).into_iter().find(|r| r.id == id) {
             Some(r) if r.running => None,
             _ => Some(None),
         },
@@ -276,7 +304,7 @@ async fn wait_exit(call: &Call, id: RunId, deadline: Option<Instant>) -> IdeResu
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(50)) => {}
             _ = call.cancel.cancelled() => {
-                let _ = crate::ops::run::stop(&host, call.window(), id);
+                let _ = crate::ops::run::run_stop(&host, call.window(), id);
                 return Err(IdeError::cancelled());
             }
         }
@@ -285,9 +313,9 @@ async fn wait_exit(call: &Call, id: RunId, deadline: Option<Instant>) -> IdeResu
 
 /// An output callback that skips the IDE's own lines (`Process finished…`), as JetBrains
 /// skips `ProcessOutputType.SYSTEM`.
-fn process_output(mut f: impl FnMut(&str) + Send + 'static) -> crate::ops::Emit<OutputChunk> {
+fn process_output(mut f: impl FnMut(&str) + Send + 'static) -> crate::ops::Channel<OutputChunk> {
     let f = Mutex::new(move |t: &str| f(t));
-    Arc::new(move |chunk: OutputChunk| match &chunk {
+    crate::ops::Channel::new(move |chunk: OutputChunk| match &chunk {
         OutputChunk::Stdout { text } | OutputChunk::Stderr { text } => (f.lock())(text),
         OutputChunk::System { .. } => {}
     })
@@ -328,7 +356,7 @@ async fn run_to_end(call: &Call, config: RunConfig, errors: &mut BuildErrors) ->
             t.drain(..cut);
         }
     });
-    let info = crate::ops::run::start(&call.host(), call.window(), config, emit).await?;
+    let info = crate::ops::run::run_start(&call.host(), call.window(), config, emit, None).await?;
     let exit = wait_exit(call, info.id, None).await?.flatten();
     if exit == Some(0) {
         return Ok(true);
@@ -584,7 +612,7 @@ one by one",
             let output_path = collector.lock().path.clone();
             let sink = collector.clone();
             let emit = process_output(move |text| sink.lock().append(text));
-            let info = match crate::ops::run::start(&call.host(), call.window(), config, emit).await {
+            let info = match crate::ops::run::run_start(&call.host(), call.window(), config, emit, None).await {
                 Ok(info) => info,
                 Err(e) => {
                     let _ = std::fs::remove_file(&output_path);

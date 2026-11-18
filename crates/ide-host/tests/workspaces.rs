@@ -60,26 +60,27 @@ async fn linked_projects_share_navigation_but_keep_files_repositories_and_run_di
     ids.sort();
     ids.dedup();
     assert_eq!(ids.len(), configs.len());
-    let a = ops::doc::open(&host, "main", roots[0].join("same.txt")).await.unwrap();
-    let b = ops::doc::open(&host, "main", roots[1].join("same.txt")).await.unwrap();
+    let a = ops::doc::doc_open(&host, "main", roots[0].join("same.txt")).await.unwrap();
+    let b = ops::doc::doc_open(&host, "main", roots[1].join("same.txt")).await.unwrap();
     assert_ne!(a.id, b.id);
-    ops::doc::edit(
+    ops::doc::doc_edit(
         &host,
         "main",
         a.id,
         a.version,
         ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: "unsaved ".into() }] },
     )
+    .await
     .unwrap();
     let hits = Arc::new(Mutex::new(Vec::new()));
     let out = hits.clone();
     let query = serde_json::from_value(serde_json::json!({"pattern":"needle", "isRegex":false, "caseSensitive":false,"wholeWord":false,"include":[],"exclude":[],"scope":{"kind":"project"},"maxMatches":100})).unwrap();
-    ops::search::start(
+    ops::search::search_start(
         &host,
         "main",
         RequestId::next(),
         query,
-        Arc::new(move |event| {
+        ops::Channel::new(move |event| {
             if let ops::search::SearchEvent::File { file } = event {
                 out.lock().unwrap().push(file);
             }
@@ -102,6 +103,70 @@ async fn linked_projects_share_navigation_but_keep_files_repositories_and_run_di
     std::fs::write(invalid.join(ide_workspace::workspace::FILE), "broken").unwrap();
     assert!(host.open_project("main", &invalid).is_err());
     assert!(Arc::ptr_eq(&host.project("main").unwrap(), &project));
+    host.close_project("main");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_project_attached_inside_the_root_is_searched_and_indexed_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let root = base.join("app");
+    // `.wt/feature` is its own repository, which the outer one ignores; `lib` is not ignored.
+    let (ignored, covered) = (root.join(".wt/feature"), root.join("lib"));
+    for dir in [&root, &ignored, &covered] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    for repo in [&root, &ignored] {
+        assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(repo).status().unwrap().success());
+    }
+    std::fs::write(root.join(".git/info/exclude"), "/.wt/\n").unwrap();
+    std::fs::write(root.join("main.txt"), "needle\n").unwrap();
+    std::fs::write(ignored.join("feature.txt"), "needle\n").unwrap();
+    std::fs::write(covered.join("lib.txt"), "needle\n").unwrap();
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    for dir in [&root, &ignored, &covered] {
+        host.trust.decide(dir, true, false).unwrap();
+    }
+    let project = host.open_project("main", &root).unwrap();
+    ops::project::attach_workspace(&host, "main", &ignored).unwrap();
+    ops::project::attach_workspace(&host, "main", &covered).unwrap();
+    assert_eq!(project.content_roots(), vec![ignored.clone()], "the root's walk covers `lib`");
+
+    assert!(project.index.wait_idle(Duration::from_secs(10)));
+    let files = project.index.find_files(".txt", 100);
+    let mut indexed = files.iter().map(|f| f.rel_path.clone()).collect::<Vec<_>>();
+    indexed.sort();
+    assert_eq!(indexed, [".wt/feature/feature.txt", "lib/lib.txt", "main.txt"]);
+
+    let hits = Arc::new(Mutex::new(Vec::new()));
+    let out = hits.clone();
+    let query = serde_json::from_value(serde_json::json!({"pattern":"needle", "isRegex":false, "caseSensitive":false,"wholeWord":false,"include":[],"exclude":[],"scope":{"kind":"project"},"maxMatches":100})).unwrap();
+    ops::search::search_start(
+        &host,
+        "main",
+        RequestId::next(),
+        query,
+        ops::Channel::new(move |event| {
+            if let ops::search::SearchEvent::File { file } = event {
+                out.lock().unwrap().push(file.rel_path);
+            }
+        }),
+    )
+    .await
+    .unwrap();
+    let mut found = hits.lock().unwrap().clone();
+    found.sort();
+    assert_eq!(found, [".wt/feature/feature.txt", "lib/lib.txt", "main.txt"]);
     host.close_project("main");
 }
 
@@ -274,14 +339,15 @@ async fn attach_and_detach_preserve_the_primary_project_session() {
     let configs = ops::run::configs(&host, "main").unwrap();
     assert!(!configs.is_empty());
     let cache = project.build_cache_dir();
-    let doc = ops::doc::open(&host, "main", roots[0].join("same.txt")).await.unwrap();
-    ops::doc::edit(
+    let doc = ops::doc::doc_open(&host, "main", roots[0].join("same.txt")).await.unwrap();
+    ops::doc::doc_edit(
         &host,
         "main",
         doc.id,
         doc.version,
         ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: "unsaved ".into() }] },
     )
+    .await
     .unwrap();
     assert!(ops::project::attach_workspace(&host, "main", &roots[1]).is_err());
     host.trust.decide(&roots[1], false, false).unwrap();
@@ -329,12 +395,12 @@ async fn attach_and_detach_preserve_the_primary_project_session() {
     let hits = Arc::new(Mutex::new(Vec::new()));
     let out = hits.clone();
     let query = serde_json::from_value(serde_json::json!({"pattern":"needle", "isRegex":false,"caseSensitive":false,"wholeWord":false,"include":[],"exclude":[],"scope":{"kind":"project"},"maxMatches":100})).unwrap();
-    ops::search::start(
+    ops::search::search_start(
         &host,
         "main",
         RequestId::next(),
         query,
-        Arc::new(move |event| {
+        ops::Channel::new(move |event| {
             if let ops::search::SearchEvent::File { file } = event {
                 out.lock().unwrap().push(file);
             }

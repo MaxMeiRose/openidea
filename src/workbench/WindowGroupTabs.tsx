@@ -1,14 +1,20 @@
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import { reorderedTabs, useWindowGroup } from "@/platform/windowGroups";
 import { usePlatform } from "@/platform/platformInfo";
-import { Icon, IconButton, showContextMenu } from "@/ui";
+import { IconButton, showContextMenu } from "@/ui";
 import { notifications } from "./contributions";
 import styles from "./WindowGroupTabs.module.css";
 
 function run(work: Promise<unknown>) {
-  void work.catch((e) => notifications().notify({ level: "error", title: "Window group", body: String(e) }));
+  void work.catch((e) =>
+    notifications().notify({
+      level: "error",
+      title: "Window group",
+      body: String(e),
+    }),
+  );
 }
 
 export function WindowGroupTabs() {
@@ -17,9 +23,39 @@ export function WindowGroupTabs() {
   const [dragging, setDragging] = useState<string | null>(null);
   const tx = useTx();
   const native = usePlatform((state) => state.overlayTitleBar);
+  const bar = useRef<HTMLDivElement>(null);
+  const grouped = tabs.length > 1;
+  useLayoutEffect(() => {
+    const element = bar.current;
+    if (!element) return;
+    const frame = element.parentElement;
+    if (!frame) return;
+    const update = () => {
+      for (const side of ["left", "right"]) {
+        const stripe = frame.querySelector(`[data-stripe-side="${side}"]`);
+        element.style.setProperty(
+          `--window-tabs-${side}`,
+          stripe ? `${stripe.getBoundingClientRect().width}px` : "var(--island-gap)",
+        );
+      }
+    };
+    const resize = new ResizeObserver(update);
+    const observe = () => {
+      resize.disconnect();
+      frame.querySelectorAll("[data-stripe-side]").forEach((stripe) => resize.observe(stripe));
+      update();
+    };
+    const children = new MutationObserver(observe);
+    children.observe(frame, { childList: true, subtree: true });
+    observe();
+    return () => {
+      resize.disconnect();
+      children.disconnect();
+    };
+  }, [grouped]);
   if (tabs.length < 2 || native) return null;
   return (
-    <div className={styles.bar} data-window-group>
+    <div ref={bar} className={styles.bar} data-window-group>
       <div className={styles.tabs} role="tablist" aria-label={tx("Project windows")}>
         {tabs.map((tab) => (
           <div
@@ -68,12 +104,17 @@ export function WindowGroupTabs() {
               showContextMenu(e, [
                 {
                   label: "Move Tab to New Window",
-                  disabled: !tab.current,
-                  run: () => executeAction("window.detachTab"),
+                  run: () => executeAction("window.detachTab", tab.label),
                 },
                 { kind: "separator" },
-                { label: "Close Tab", run: () => executeAction("window.closeTab", tab.label) },
-                { label: "Close Other Tabs", run: () => executeAction("window.closeOtherTabs", tab.label) },
+                {
+                  label: "Close Tab",
+                  run: () => executeAction("window.closeTab", tab.label),
+                },
+                {
+                  label: "Close Other Tabs",
+                  run: () => executeAction("window.closeOtherTabs", tab.label),
+                },
                 {
                   label: "Close Tabs to the Left",
                   disabled: index <= 0,
@@ -107,19 +148,25 @@ export function WindowGroupTabs() {
                 run(executeAction("window.selectTab", tabs[next]!.label));
               }}
             >
-              <Icon name="folder" size={14} />
               <span>{tab.name}</span>
             </button>
             <IconButton
               icon="close"
               size="small"
+              className={styles.close}
               title={tx`Close ${tab.name}`}
               onClick={() => run(executeAction("window.closeTab", tab.label))}
+            />
+            <IconButton
+              icon="external-link"
+              size="small"
+              className={styles.detach}
+              title={tx`Move ${tab.name} to New Window`}
+              onClick={() => run(executeAction("window.detachTab", tab.label))}
             />
           </div>
         ))}
       </div>
-      <IconButton icon="external-link" title="Move Tab to New Window" action="window.detachTab" />
     </div>
   );
 }

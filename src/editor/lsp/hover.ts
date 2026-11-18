@@ -19,7 +19,7 @@ import {
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import { diagnosticsAt, type PlacedDiagnostic, type EditorDiagnostic } from "./diagnostics";
-import { isEmptyMarkup, languageForPath, renderMarkup } from "./markdown";
+import { isEmptyMarkup, languageForPath } from "./markdown";
 import { selectableText } from "@/ui/selectableText";
 import { docOf, lspRequest, reportLspError } from "./lsp";
 import { requestNavigation } from "./configurationNavigation";
@@ -28,10 +28,11 @@ import { showHint } from "./hint";
 import { caretAnchor, focusPopup, openPopup, useLspPopup, type DefinitionTarget, type DocEntry } from "./popupStore";
 import { selectedLookupDoc, showLookupDocs } from "./completion";
 import { readFileLines, targetLabel, withDocument } from "./files";
-import { docWindowVisible, moveDocPopupToWindow, showInDocWindow } from "./docs";
+import { docWindowVisible, hoverDoc, moveDocPopupToWindow, showInDocWindow } from "./docs";
+import { mountHoverDoc } from "./DocView";
 import { structure } from "@/editor/structure";
 import { basename } from "@/platform/project";
-import { iconNode } from "./iconMarkup";
+import { iconNode } from "@/ui/iconNode";
 import { applyCodeAction, quickFixesAt } from "./intentions";
 import { editorPrefs } from "@/platform/editorSettings";
 import { CONTRIBUTED_HOVER, contributedAt, type ContributedHover } from "@/editor/api";
@@ -178,7 +179,7 @@ export async function hoverSource(view: EditorView, pos: number) {
     const word = view.state.wordAt(pos);
     if (word) ({ from, to } = word);
   }
-  const lang = docOf(view)?.uiMode ?? null;
+  const entry = hover && docEntry(view, pos, hover);
   return {
     pos: from,
     end: to,
@@ -187,8 +188,11 @@ export async function hoverSource(view: EditorView, pos: number) {
       const dom = document.createElement("div");
       dom.className = `cm-lsp-hover ${selectableText}`;
       if (diags.length) dom.appendChild(renderDiagnostics(view, diags));
-      if (hover) dom.appendChild(renderMarkup(hover.contents, lang));
-      return { dom };
+      if (!entry) return { dom };
+      // The same documentation view as F1's popup: links open in place, ← / →, Edit Source.
+      dom.classList.add("cm-lsp-hover-doc");
+      const doc = hoverDoc(entry, () => view.dispatch({ effects: closeHoverTooltips }));
+      return { dom, destroy: mountHoverDoc(dom.appendChild(document.createElement("div")), doc) };
     },
   };
 }
@@ -216,7 +220,10 @@ const hoverYieldsToNavigation = ViewPlugin.fromClass(
 
 export function hoverExtension(): Extension {
   return [
-    hoverTooltip(hoverSource, { hoverTime: Math.max(100, editorPrefs().codeEditing.quickDocDelay) }),
+    hoverTooltip(hoverSource, {
+      hoverTime: Math.max(100, editorPrefs().codeEditing.quickDocDelay),
+      hideOnChange: true,
+    }),
     hoverYieldsToNavigation,
   ];
 }
@@ -234,6 +241,20 @@ function definitionOf(doc: number, pos: Pos): () => Promise<Location | null> {
       (locs) => locs[0] ?? null,
       () => null,
     ));
+}
+
+/** The documentation `hover` shows for `pos`, with its declaration for Edit Source. */
+function docEntry(view: EditorView, pos: number, hover: Hover): DocEntry {
+  const ctx = docOf(view);
+  return {
+    markup: hover.contents,
+    language: ctx?.uiMode ?? null,
+    file: ctx?.path,
+    source:
+      ctx && !constructAt(view.state, pos, ctx.language)
+        ? definitionOf(ctx.doc, offsetToPos(view.state.doc, pos))
+        : undefined,
+  };
 }
 
 function showDoc(view: EditorView, entry: DocEntry, at: number) {
@@ -284,19 +305,7 @@ export async function quickDocumentation(view: EditorView) {
       showHint(view, "No documentation found");
       return;
     }
-    const ctx = docOf(view);
-    showDoc(
-      view,
-      {
-        markup: hover.contents,
-        language: ctx?.uiMode ?? null,
-        source:
-          ctx && !constructAt(view.state, pos, ctx.language)
-            ? definitionOf(ctx.doc, offsetToPos(view.state.doc, pos))
-            : undefined,
-      },
-      hover.range ? rangeToOffsets(view.state.doc, hover.range).from : pos,
-    );
+    showDoc(view, docEntry(view, pos, hover), hover.range ? rangeToOffsets(view.state.doc, hover.range).from : pos);
   } catch (e) {
     reportLspError(view, e, true);
   }

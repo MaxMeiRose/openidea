@@ -5,7 +5,9 @@
 
 use crate::events::TauriSink;
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::{EventSink, IdeError, IdeResult};
+use ide_host::catalogue::TrustClass;
 use ide_host::rpc::{ChannelMessage, EventMessage, Invoke, ServerInfo};
 use ide_jsonrpc::{Handler, Peer};
 use parking_lot::Mutex;
@@ -18,6 +20,7 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, Window};
 
 /// Browse before connecting, using the desktop's SSH configuration even in a remote window.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn remote_bootstrap_list(
@@ -63,6 +66,8 @@ pub struct Connection {
     pub host: String,
     /// The server's `std::env::consts::OS`: where the project's commands run.
     pub os: String,
+    /// The version the server reports; another version than this app's lacks newer commands.
+    pub server_version: String,
     pub commands: Vec<String>,
     /// Streaming arguments by connection-wide id: the frontend channel and the id
     /// it expects (each webview numbers its own, and a settings window shares this
@@ -105,9 +110,10 @@ pub struct Connections(Mutex<HashMap<String, Arc<Connection>>>);
 
 impl Connection {
     /// Commands of a remote window that run on this machine follow this machine's decision about the
-    /// remote project, never the server's: the server only answers for what runs there.
-    pub fn authorize_command(&self, trust: &ide_host::trust::TrustStore, command: &str) -> IdeResult<()> {
-        if ide_host::trust::restricted_command_allowed(command) || self.trusted_here(trust) == Some(true) {
+    /// remote project, never the server's: the server only answers for what runs there. A remote
+    /// window always has a project, so only `Always` runs before it is trusted.
+    pub fn authorize(&self, trust: &ide_host::trust::TrustStore, class: TrustClass) -> IdeResult<()> {
+        if class == TrustClass::Always || self.trusted_here(trust) == Some(true) {
             Ok(())
         } else {
             Err(IdeError::unavailable("Project is in Restricted Mode"))
@@ -282,16 +288,11 @@ impl Handler for ClientHandler {
     }
 }
 
-/// The server binary for a remote `os`/`arch`: `OPENIDEA_SERVER_BINARY`, then
-/// `<data dir>/server/<os>-<arch>/openidea-server`, then one next to this app
-/// when the platforms match.
-fn local_server_binary(state: &AppState, os: &str, arch: &str) -> Option<std::path::PathBuf> {
+/// A server binary that is this build for a remote `os`/`arch`: `OPENIDEA_SERVER_BINARY`, then
+/// the one next to this app when the platforms match.
+fn local_server_binary(os: &str, arch: &str) -> Option<std::path::PathBuf> {
     if let Some(p) = std::env::var_os("OPENIDEA_SERVER_BINARY").map(std::path::PathBuf::from).filter(|p| p.is_file()) {
         return Some(p);
-    }
-    let bundled = state.local_data_dir.join("server").join(format!("{os}-{arch}")).join("openidea-server");
-    if bundled.is_file() {
-        return Some(bundled);
     }
     if os == std::env::consts::OS && arch == std::env::consts::ARCH {
         let exe = std::env::current_exe().ok()?;
@@ -302,6 +303,13 @@ fn local_server_binary(state: &AppState, os: &str, arch: &str) -> Option<std::pa
         }
     }
     None
+}
+
+/// `<data dir>/server/<os>-<arch>/openidea-server`, where earlier versions told users to put a
+/// server by hand. Nothing says which version it is, so it is only used when this version's server
+/// cannot be downloaded.
+fn unversioned_server_binary(data: &std::path::Path, os: &str, arch: &str) -> Option<std::path::PathBuf> {
+    Some(data.join("server").join(format!("{os}-{arch}")).join("openidea-server")).filter(|p| p.is_file())
 }
 
 /// The release build of the server for `os`/`arch`, downloaded once into the data dir.
@@ -361,26 +369,38 @@ pub(crate) async fn local_server(
     installed: &[String],
     progress: Arc<Progress>,
 ) -> IdeResult<LocalServer> {
-    let local = match local_server_binary(state, os, arch) {
+    // This version's server: this build, or the release download (kept per version, so an
+    // upgraded app never reuses an older one).
+    let local = match local_server_binary(os, arch) {
         Some(local) => local,
         None => match download_server(state, version, os, arch, progress).await {
             Ok(local) => local,
-            // Offline: any build of this version already on the host will do.
+            // Offline: any build of this version already on the host will do, then a server put
+            // in the old unversioned place by hand.
             Err(e) => {
-                return installed.first().cloned().map(LocalServer::Installed).ok_or_else(|| {
-                    IdeError::unavailable(format!(
-                        "no openidea-server {version} for {os}-{arch} ({}). Build it with \
-                         `cargo build --release -p ide-host --bin openidea-server` for that platform and put it at {} \
-                         (or set OPENIDEA_SERVER_BINARY)",
-                        e.message,
-                        state
-                            .local_data_dir
-                            .join("server")
-                            .join(format!("{os}-{arch}"))
-                            .join("openidea-server")
-                            .display()
-                    ))
-                });
+                if let Some(bin) = installed.first() {
+                    return Ok(LocalServer::Installed(bin.clone()));
+                }
+                match unversioned_server_binary(&state.local_data_dir, os, arch) {
+                    Some(local) => {
+                        tracing::warn!(
+                            "no openidea-server {version} for {os}-{arch} ({}); using {}, which may be another version",
+                            e.message,
+                            local.display()
+                        );
+                        local
+                    }
+                    None => {
+                        return Err(IdeError::unavailable(format!(
+                            "no openidea-server {version} for {os}-{arch} ({}). Download \
+                             openidea-server-{os}-{arch}.gz from the {version} release, unpack it and put it at {} \
+                             (or build it with `cargo build --release -p ide-host --bin openidea-server` for that \
+                             platform and set OPENIDEA_SERVER_BINARY)",
+                            e.message,
+                            ide_tools::server::cached_path(&state.local_data_dir, version, os, arch).display()
+                        )));
+                    }
+                }
             }
         },
     };
@@ -470,6 +490,7 @@ fn build_id(path: &std::path::Path) -> IdeResult<String> {
 /// File › Remote Development: opens `path` on `target` (an SSH host, a WSL distribution, or a
 /// dev container, whose project folder is the container's own) in this window (installs /
 /// starts the server as needed).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn remote_connect(
@@ -536,7 +557,14 @@ pub async fn remote_connect(
             ide_host::rpc::PROTOCOL_VERSION
         )));
     }
-    let commands: Vec<String> = ide_host::rpc::client_commands().into_iter().map(str::to_owned).collect();
+    if info.version != env!("CARGO_PKG_VERSION") {
+        tracing::warn!(
+            "{host}: openidea-server {} with OpenIDEA {}: commands added since are not available",
+            info.version,
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+    let commands: Vec<String> = crate::commands::routed().into_iter().map(str::to_owned).collect();
     let root = if path.trim().is_empty() || path.trim() == "~" {
         info.home.clone()
     } else if let Some(rest) = path.trim().strip_prefix("~/") {
@@ -560,6 +588,7 @@ pub async fn remote_connect(
         root: root.clone(),
         host: host.clone(),
         os: info.os.clone(),
+        server_version: info.version.clone(),
         commands: commands.clone(),
         channels,
         next_channel: std::sync::atomic::AtomicU64::new(1),
@@ -579,11 +608,19 @@ pub async fn remote_connect(
     let peer = connection.peer.clone();
     let auth_plugins = state.plugins.clone();
     let auth_window = label.clone();
+    let app = window.app_handle().clone();
     tauri::async_runtime::spawn(async move {
         peer.closed().await;
         auth_plugins.forget_remote_loopbacks(&auth_window);
-        if let Some(connection) = weak.upgrade() {
-            connection.forwards.lock().clear();
+        let Some(connection) = weak.upgrade() else { return };
+        connection.forwards.lock().clear();
+        // Still the window's connection: not a disconnect or a replacement, so the window learns
+        // its project is unreachable instead of failing every command with "connection closed".
+        let current = app.state::<AppState>().remote_dev.get(&auth_window);
+        if current.is_some_and(|c| Arc::ptr_eq(&c, &connection)) {
+            tracing::warn!("{}: the connection to openidea-server was lost", connection.host);
+            TauriSink { app, window: Some(auth_window) }
+                .emit(ide_core::IdeEvent::RemoteConnectionLost { host: connection.host.clone() });
         }
     });
     let plugins = state.plugins.clone();
@@ -596,12 +633,9 @@ pub async fn remote_connect(
 
 /// Sends the desktop's plugin languages, with the programs granted to them, to
 /// the window's server: `Workspace` contributions take effect where the project
-/// is. Servers without the command are left alone.
+/// is. A server without the command answers an error, which is logged.
 pub async fn sync_plugin_languages(plugins: &ide_host::plugins::PluginHost, c: &Connection, window: &str) {
     use ide_host::plugins::remote::{SYNC_COMMAND, SyncReport};
-    if !c.commands.iter().any(|cmd| cmd == SYNC_COMMAND) {
-        return;
-    }
     let call = Invoke {
         window: window.to_owned(),
         cmd: SYNC_COMMAND.into(),
@@ -625,9 +659,6 @@ pub async fn sync_plugin_languages(plugins: &ide_host::plugins::PluginHost, c: &
 /// then the files of the packages the server lacks, one per request.
 pub async fn sync_plugin_packages(plugins: &Arc<ide_host::plugins::PluginHost>, c: &Connection, window: &str) {
     use ide_host::plugins::remote_host::{PackageSyncReport, SYNC_PACKAGES};
-    if !c.commands.iter().any(|cmd| cmd == SYNC_PACKAGES) {
-        return;
-    }
     let host = plugins.clone();
     let Ok(packages) = tauri::async_runtime::spawn_blocking(move || host.remote_packages()).await else { return };
     let sync = |files: serde_json::Value| Invoke {
@@ -680,6 +711,7 @@ pub struct RemoteSession {
 }
 
 /// The remote session of this window (a settings window: its parent's), if any.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn remote_current(window: Window, state: State<'_, AppState>) -> Option<RemoteSession> {
@@ -693,7 +725,8 @@ pub fn remote_current(window: Window, state: State<'_, AppState>) -> Option<Remo
     })
 }
 
-/// This machine's trust decision for the window's remote project (see [`Connection::authorize_command`]).
+/// This machine's trust decision for the window's remote project (see [`Connection::authorize`]).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn remote_trust_status(window: Window, state: State<'_, AppState>) -> IdeResult<ide_host::trust::TrustStatus> {
@@ -707,6 +740,7 @@ pub fn remote_trust_status(window: Window, state: State<'_, AppState>) -> IdeRes
 }
 
 /// Records the user's trust decision for the window's remote project on this machine.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn remote_trust_set(window: Window, state: State<'_, AppState>, trusted: bool) -> IdeResult<()> {
@@ -741,6 +775,7 @@ fn connection(window: &Window, state: &AppState) -> IdeResult<Arc<Connection>> {
 }
 
 /// The remote ports this window forwards to this machine.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn remote_forwarded_ports(window: Window, state: State<'_, AppState>) -> Vec<ForwardedPort> {
@@ -749,6 +784,7 @@ pub fn remote_forwarded_ports(window: Window, state: State<'_, AppState>) -> Vec
 
 /// Forwards `localhost:<remote_port>` of the remote host to the same port here when it is free,
 /// else to a free one. Nothing needs to listen there yet; connections are opened per use.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn remote_forward_port(
@@ -858,6 +894,7 @@ async fn forward_configured_ports(c: &Connection, folder: &str, config: &str) {
 }
 
 /// Stops forwarding `remote_port` of `host` (`None`: the remote host itself).
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn remote_stop_forwarding(
@@ -878,6 +915,7 @@ pub async fn remote_stop_forwarding(
     Ok(())
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn remote_disconnect(window: Window, state: State<'_, AppState>) {
@@ -888,6 +926,7 @@ pub fn remote_disconnect(window: Window, state: State<'_, AppState>) {
 /// Runs a command on the window's remote server; `args` and the result are JSON
 /// text. Streaming arguments are `{ "$channel": id }`; their values arrive on
 /// `on_channel` tagged with the id.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn remote_invoke(
@@ -931,7 +970,9 @@ pub async fn remote_invoke(
     };
     let web_url = cmd == "web_url";
     let call = Invoke { window: label, cmd, args };
-    let mut result = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30)).await?;
+    let mut result = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30))
+        .await
+        .map_err(|e| lost_connection_error(older_server_error(e, &c.server_version, &c.host), &c))?;
     if web_url && let Some(url) = result.as_str() {
         result = Value::String(forward_web_url(&c, url).await?);
     }
@@ -951,6 +992,7 @@ pub async fn remote_invoke(
 }
 
 /// A client OS file belongs to this machine even when its destination is remote.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn remote_import_local(
@@ -965,7 +1007,6 @@ pub async fn remote_import_local(
     let Some(session) = c.session.clone() else {
         return Err(IdeError::unavailable("Importing local files is not supported in a WSL project yet"));
     };
-    c.authorize_command(&state.host.trust, "fs_copy")?;
     let cancel = state.host.begin_request(request);
     let result = async {
         let fs = ide_ssh::RemoteFs::new(session.sftp().await?);
@@ -976,6 +1017,26 @@ pub async fn remote_import_local(
     .await;
     state.host.end_request(request);
     result
+}
+
+/// A command the server does not know, from a server of another version than this app: says so,
+/// instead of the bare JSON-RPC error.
+fn older_server_error(e: IdeError, server_version: &str, host: &str) -> IdeError {
+    let app = env!("CARGO_PKG_VERSION");
+    if server_version == app || !e.message.contains("is not available remotely") {
+        return e;
+    }
+    IdeError::unavailable(format!(
+        "openidea-server {server_version} on {host} does not match OpenIDEA {app}: {}. Reopen the remote project to \
+         install the matching server",
+        e.message
+    ))
+}
+
+/// A request that failed because the transport is gone says so, instead of the bare JSON-RPC
+/// "connection closed".
+fn lost_connection_error(e: IdeError, c: &Connection) -> IdeError {
+    if c.peer.is_closed() { IdeError::unavailable(format!("Lost the connection to {}", c.host)) } else { e }
 }
 
 // Conversation reads are snapshots; a silent host must not leave them pending forever.
@@ -994,6 +1055,37 @@ async fn invoke_reply(peer: &Peer, call: Invoke, entries_timeout: std::time::Dur
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_command_missing_on_a_server_of_another_version_says_which_versions() {
+        let missing = || IdeError::unavailable("-32601: command web_url is not available remotely");
+        let e = older_server_error(missing(), "0.1.32", "box");
+        assert_eq!(e.kind, ide_core::error::ErrorKind::Unavailable);
+        assert!(
+            e.message.starts_with(&format!(
+                "openidea-server 0.1.32 on box does not match OpenIDEA {}",
+                env!("CARGO_PKG_VERSION")
+            )),
+            "{}",
+            e.message
+        );
+        assert!(e.message.contains("command web_url is not available remotely"), "{}", e.message);
+        // The same version, or another error: unchanged.
+        assert_eq!(older_server_error(missing(), env!("CARGO_PKG_VERSION"), "box").message, missing().message);
+        let other = older_server_error(IdeError::unavailable("No such file"), "0.1.32", "box");
+        assert_eq!(other.message, "No such file");
+    }
+
+    #[test]
+    fn a_server_put_in_the_unversioned_place_is_found_by_platform() {
+        let data = tempfile::tempdir().unwrap();
+        assert_eq!(unversioned_server_binary(data.path(), "linux", "x86_64"), None);
+        let bin = data.path().join("server/linux-x86_64/openidea-server");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, b"server").unwrap();
+        assert_eq!(unversioned_server_binary(data.path(), "linux", "x86_64"), Some(bin));
+        assert_eq!(unversioned_server_binary(data.path(), "linux", "aarch64"), None);
+    }
 
     #[tokio::test]
     async fn conversation_read_times_out_when_the_host_never_replies() {
@@ -1043,6 +1135,7 @@ mod tests {
             root: root.into(),
             host: "host".into(),
             os: "linux".into(),
+            server_version: env!("CARGO_PKG_VERSION").into(),
             commands: Vec::new(),
             channels: Arc::default(),
             next_channel: std::sync::atomic::AtomicU64::new(1),
@@ -1058,15 +1151,17 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let trust = ide_host::trust::TrustStore::load(&tmp.path().join("config"), &tmp.path().join("data"));
         let c = connected(RemoteTarget::Ssh { config: "box".into() }, "/srv/app");
-        let error = c.authorize_command(&trust, "plugin_grant").unwrap_err();
-        assert_eq!(error.kind, ide_core::error::ErrorKind::Unavailable);
-        assert!(c.authorize_command(&trust, "fs_read_text").is_ok());
+        for class in [TrustClass::OutsideRestricted, TrustClass::Trusted] {
+            let error = c.authorize(&trust, class).unwrap_err();
+            assert_eq!(error.kind, ide_core::error::ErrorKind::Unavailable);
+        }
+        assert!(c.authorize(&trust, TrustClass::Always).is_ok());
         trust.decide_remote(&c.location(), true).unwrap();
-        assert!(c.authorize_command(&trust, "plugin_grant").is_ok());
+        assert!(c.authorize(&trust, TrustClass::Trusted).is_ok());
         let other = connected(RemoteTarget::Ssh { config: "box".into() }, "/srv/other");
-        assert!(other.authorize_command(&trust, "plugin_grant").is_err());
+        assert!(other.authorize(&trust, TrustClass::Trusted).is_err());
         trust.decide_remote(&c.location(), false).unwrap();
-        assert!(c.authorize_command(&trust, "plugin_grant").is_err());
+        assert!(c.authorize(&trust, TrustClass::Trusted).is_err());
     }
 
     #[tokio::test]
@@ -1081,7 +1176,7 @@ mod tests {
         assert_eq!(c.trusted_here(&trust), None);
         trust.decide(&folder, true, false).unwrap();
         assert_eq!(c.trusted_here(&trust), Some(true));
-        assert!(c.authorize_command(&trust, "plugin_grant").is_ok());
+        assert!(c.authorize(&trust, TrustClass::Trusted).is_ok());
     }
 
     #[test]
@@ -1107,3 +1202,17 @@ mod tests {
         assert_eq!(serde_json::from_value::<RemoteTarget>(json).unwrap(), target);
     }
 }
+
+ide_command::desktop_domain!(
+    remote_bootstrap_list,
+    remote_connect,
+    remote_current,
+    remote_disconnect,
+    remote_forward_port,
+    remote_forwarded_ports,
+    remote_import_local,
+    remote_invoke,
+    remote_stop_forwarding,
+    remote_trust_set,
+    remote_trust_status,
+);

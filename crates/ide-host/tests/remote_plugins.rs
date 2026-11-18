@@ -367,6 +367,7 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn api14_remote_calls_keep_browser_listeners_and_secrets_on_the_desktop() {
+    use ide_core::{Diagnostic, Pos, Range, Severity};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let tmp = tempfile::tempdir().unwrap();
     let desktop = Arc::new(
@@ -426,42 +427,70 @@ async fn api14_remote_calls_keep_browser_listeners_and_secrets_on_the_desktop() 
             "severity": "warning", "message": message, "source": "remote-check", "code": null
         }]})
     };
+    let publish = |path: &Path, source: &str, message: Option<&str>| {
+        let items = message
+            .map(|message| Diagnostic {
+                range: Range::new(Pos::new(0, 1), Pos::new(0, 3)),
+                severity: Severity::Warning,
+                message: message.into(),
+                source: Some(source.into()),
+                code: None,
+                unnecessary: false,
+                deprecated: false,
+                server: None,
+            })
+            .into_iter()
+            .collect();
+        host.project("main").unwrap().sink.emit(IdeEvent::Diagnostics {
+            path: path.to_path_buf().into(),
+            source: source.into(),
+            items,
+        });
+    };
     let files = json!([
         problem(&remote_file, "remote warning"),
         problem(&other_file, "other warning"),
         problem(&outside_file, "outside warning")
     ]);
     invoke(&peer, "mcp_report_problems", json!({"reset": true, "files": files})).await.unwrap();
+    // UI reports are not the source of the plugin's host-owned snapshot.
+    assert_eq!(invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap(), json!("[]"));
+    publish(&remote_file, "remote-check", Some("remote warning"));
+    publish(&other_file, "remote-check", Some("other warning"));
+    publish(&outside_file, "remote-check", Some("outside warning"));
+
     let problems = invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap();
     let problems = problems.as_str().unwrap();
     assert!(problems.contains("remote warning"), "{problems}");
     assert!(problems.contains("other warning"), "{problems}");
-    assert!(!problems.contains("outside warning"), "{problems}");
+    assert!(problems.contains("outside warning"), "{problems}");
     for path in ["remote.txt", remote_file.to_str().unwrap()] {
         let problems = invoke(&peer, "plugin_run_command", run("problems", Some(path))).await.unwrap();
         let problems = problems.as_str().unwrap();
         assert!(problems.contains("remote warning"), "{problems}");
         assert!(!problems.contains("other warning"), "{problems}");
+        assert!(!problems.contains("outside warning"), "{problems}");
         assert!(problems.contains(remote_file.to_str().unwrap()), "{problems}");
     }
     assert_eq!(invoke(&peer, "plugin_run_command", run("problems", Some("missing.txt"))).await.unwrap(), json!("[]"));
-    invoke(&peer, "mcp_report_problems", json!({"reset": false, "files": [{"path": remote_file, "items": []}]}))
-        .await
-        .unwrap();
+    publish(&remote_file, "second-check", Some("second warning"));
+    invoke(&peer, "mcp_report_problems", json!({"reset": true, "files": []})).await.unwrap();
+    let problems = invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap();
+    assert!(problems.as_str().unwrap().contains("remote warning"));
+    assert!(problems.as_str().unwrap().contains("second warning"));
+    publish(&remote_file, "remote-check", None);
     let problems = invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap();
     assert!(!problems.as_str().unwrap().contains("remote warning"));
+    assert!(problems.as_str().unwrap().contains("second warning"));
     assert!(problems.as_str().unwrap().contains("other warning"));
-    invoke(
-        &peer,
-        "mcp_report_problems",
-        json!({"reset": true, "files": [problem(&remote_file, "replacement warning")]}),
-    )
-    .await
-    .unwrap();
+    publish(&remote_file, "second-check", Some("replacement warning"));
     let problems = invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap();
     assert!(problems.as_str().unwrap().contains("replacement warning"));
-    assert!(!problems.as_str().unwrap().contains("other warning"));
-    invoke(&peer, "mcp_report_problems", json!({"reset": true, "files": []})).await.unwrap();
+    assert!(!problems.as_str().unwrap().contains("second warning"));
+    assert!(problems.as_str().unwrap().contains("other warning"));
+    publish(&remote_file, "second-check", None);
+    publish(&other_file, "remote-check", None);
+    publish(&outside_file, "remote-check", None);
     assert_eq!(invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap(), json!("[]"));
     invoke(&peer, "plugin_run_command", run("open-editor", Some("remote.txt"))).await.unwrap();
     invoke(&peer, "plugin_run_command", run("decorations", remote_file.to_str())).await.unwrap();
@@ -513,11 +542,11 @@ async fn api14_remote_calls_keep_browser_listeners_and_secrets_on_the_desktop() 
     stream.read_to_string(&mut response).await.unwrap();
     assert!(response.contains("You can close this tab"));
     assert_eq!(oauth.await.unwrap().unwrap(), json!("code=desktop%2Bcode"));
-    invoke(&peer, "mcp_report_problems", json!({"reset": true, "files": files})).await.unwrap();
+    publish(&remote_file, "remote-check", Some("remote warning"));
     invoke(&peer, "close_project", json!({})).await.unwrap();
     invoke(&peer, "open_project", json!({"path": project})).await.unwrap();
     assert_eq!(invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap(), json!("[]"));
-    invoke(&peer, "mcp_report_problems", json!({"reset": true, "files": files})).await.unwrap();
+    publish(&remote_file, "remote-check", Some("remote warning"));
     peer.kill();
     tokio::time::timeout(Duration::from_secs(5), server).await.unwrap().unwrap();
     let plugin_host = plugins.host().clone();
@@ -537,7 +566,11 @@ async fn api14_remote_calls_keep_browser_listeners_and_secrets_on_the_desktop() 
     })
     .await
     .unwrap();
-    assert_eq!(result.as_deref(), Some("[]"));
+    // Disconnect clears desktop reports, not the still-live host project snapshot.
+    let problems = result.as_deref().unwrap();
+    assert!(problems.contains("remote warning"), "{problems}");
+    assert!(problems.contains("remote-check"), "{problems}");
+    assert!(problems.contains(remote_file.to_str().unwrap()), "{problems}");
     plugins.host().shutdown();
     desktop.shutdown();
 }
@@ -1045,5 +1078,37 @@ async fn cancelling_one_request_does_not_interrupt_another_running_command() {
     );
     assert_eq!(tokio::time::timeout(Duration::from_secs(1), active).await.unwrap().unwrap().unwrap(), "kept running");
     assert_eq!(plugins.host().info_of("jobs").unwrap().stats.crashes, 0);
+    plugins.host().shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_remote_command_reads_the_clipboard_of_the_desktop_window() {
+    let (_tmp, plugins, peer, client) = command_rpc_fixture().await;
+    plugins.host().install_from_dir(&fixture("clipboard"), &Consent::all()).unwrap();
+    let read = tokio::spawn({
+        let peer = peer.clone();
+        async move {
+            invoke(&peer, "plugin_run_command", json!({ "pluginId": "test.clipboard", "commandId": "read" })).await
+        }
+    });
+    until("the server asks the window for its clipboard", 5, || {
+        client.plugin_events.lock().iter().any(|m| matches!(m.event, PluginEvent::ClipboardRequested { .. }))
+    })
+    .await;
+    let (window, request) = client
+        .plugin_events
+        .lock()
+        .iter()
+        .find_map(|m| match &m.event {
+            PluginEvent::ClipboardRequested { request_id, .. } => Some((m.window.clone(), request_id.clone())),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(window.as_deref(), Some("main"), "the invoking window reads its own clipboard");
+    let answer = json!({ "kind": "content", "text": "from the desktop", "png": null });
+    let answered = invoke(&peer, "plugin_answer_clipboard", json!({ "requestId": request, "answer": answer }));
+    assert_eq!(answered.await.unwrap(), true);
+    let reply = tokio::time::timeout(Duration::from_secs(5), read).await.unwrap().unwrap().unwrap();
+    assert_eq!(reply, "text=from the desktop image=-");
     plugins.host().shutdown();
 }

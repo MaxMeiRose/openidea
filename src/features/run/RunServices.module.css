@@ -6,7 +6,7 @@
 .facts {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 4px 12px;
+  gap: var(--space-1) var(--space-3);
   padding: 12px;
   margin: 0;
 }
@@ -24,6 +24,12 @@
   font-family: var(--font-mono);
   font-size: var(--fs-code);
 }
+.actions {
+  display: flex;
+  gap: var(--space-1-5);
+  padding: 0 12px 12px;
+}
+
 .debugConsole {
   display: flex;
   flex-direction: column;

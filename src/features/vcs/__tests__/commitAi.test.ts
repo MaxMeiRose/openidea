@@ -93,6 +93,31 @@ describe("AI commit messages", () => {
     expect(mocks.working).not.toHaveBeenCalled();
   });
 
+  it("uses staged files instead of hidden checkboxes when the staging area is enabled", async () => {
+    useProject.setState({ settings: { vcs: { git: { stagingArea: true }, commit: { nonModal: true } } } as Settings });
+    useVcs.setState({ status: [{ ...file, staged: null }, other] });
+    const { repo, context } = await commitAiContext();
+    expect(repo).toBe("/p/b");
+    expect(JSON.parse(context).files).toMatchObject([{ path: "other.ts", selection: "staged" }]);
+    expect(mocks.fileAt).toHaveBeenCalledWith(other.path, ":0");
+    expect(mocks.working).not.toHaveBeenCalled();
+  });
+
+  it("describes tracked working changes for Commit All when nothing is staged", async () => {
+    useProject.setState({ settings: { vcs: { git: { stagingArea: true }, commit: { nonModal: true } } } as Settings });
+    useVcs.setState({
+      status: [
+        { ...file, staged: null },
+        { ...other, staged: null, unstaged: "untracked" },
+      ],
+    });
+    useCommit.setState({ checks: new Map() });
+    const { context } = await commitAiContext();
+    expect(JSON.parse(context).files).toMatchObject([{ path: "selected.ts", selection: "all" }]);
+    expect(mocks.working).toHaveBeenCalledWith(file.path);
+    expect(mocks.working).not.toHaveBeenCalledWith(other.path);
+  });
+
   it("uses the only checked repository even when another repository is active", async () => {
     useCommit.setState({
       checks: new Map([

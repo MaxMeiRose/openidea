@@ -115,7 +115,19 @@ const GENERAL = editorPage({
     {
       title: "Mouse Control",
       items: [
-        { t: "check", key: `${P}.general.wheelZoom`, label: "Change font size with Ctrl/Command+Mouse Wheel" },
+        {
+          t: "check",
+          key: `${P}.general.wheelZoom`,
+          label: "Change font size with Ctrl/Command+Mouse Wheel",
+          inline: {
+            kind: "select",
+            key: `${P}.general.wheelZoomScope`,
+            options: [
+              { value: "active", label: "Active editor" },
+              { value: "all", label: "All editors" },
+            ],
+          },
+        },
         { t: "check", key: `${P}.general.dragAndDrop`, label: "Enable drag-and-drop functionality in editor" },
       ],
     },
@@ -711,6 +723,7 @@ const SMART_KEYS = editorPage({
         { t: "check", key: `${P}.smartKeys.pairQuotes`, label: "Insert pair quote" },
         { t: "check", key: `${P}.smartKeys.surroundSelection`, label: "Surround selection on typing quote or brace" },
         { t: "check", key: `${P}.smartKeys.tabOutOfPair`, label: "Jump outside closing bracket/quote with Tab" },
+        { t: "check", key: `${P}.smartKeys.simultaneousTagEditing`, label: "Simultaneous <tag></tag> editing" },
         {
           t: "select",
           key: `${P}.smartKeys.reformatOnPaste`,
@@ -877,7 +890,7 @@ const INLAY_HINTS = editorPage({
   id: "editor.inlayHints",
   title: "Inlay Hints",
   order: 33,
-  keywords: ["hints", "code vision", "usages", "parameter hints", "type hints"],
+  keywords: ["hints", "code vision", "code lens", "usages", "code author", "parameter hints", "type hints"],
   sections: [
     { items: INLAY },
     {
@@ -885,28 +898,35 @@ const INLAY_HINTS = editorPage({
       items: [
         {
           t: "check",
-          key: `${P}.inlay.codeVisionUsages`,
-          label: "Usages",
+          key: `${P}.inlay.codeVision`,
+          label: "Show Code Vision",
           children: [
             {
-              t: "select",
-              key: `${P}.inlay.codeVisionUsagesPosition`,
-              label: "Position",
-              options: CODE_VISION_POSITIONS,
+              t: "check",
+              key: `${P}.inlay.codeVisionUsages`,
+              label: "Usages",
+              children: [
+                {
+                  t: "select",
+                  key: `${P}.inlay.codeVisionUsagesPosition`,
+                  label: "Position",
+                  options: CODE_VISION_POSITIONS,
+                },
+                { t: "check", key: `${P}.inlay.codeVisionNoUsages`, label: "Show “no usages”" },
+              ],
             },
-            { t: "check", key: `${P}.inlay.codeVisionNoUsages`, label: "Show “no usages”" },
-          ],
-        },
-        {
-          t: "check",
-          key: `${P}.inlay.codeVisionAuthor`,
-          label: "Code author",
-          children: [
             {
-              t: "select",
-              key: `${P}.inlay.codeVisionAuthorPosition`,
-              label: "Position",
-              options: CODE_VISION_POSITIONS,
+              t: "check",
+              key: `${P}.inlay.codeVisionAuthor`,
+              label: "Code author",
+              children: [
+                {
+                  t: "select",
+                  key: `${P}.inlay.codeVisionAuthorPosition`,
+                  label: "Position",
+                  options: CODE_VISION_POSITIONS,
+                },
+              ],
             },
           ],
         },

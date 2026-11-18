@@ -67,11 +67,16 @@ function cargoLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig 
   return {
     ...base(rc, adapter, cwd),
     args: programArgs,
-    extraJson: JSON.stringify({ cargo: filter ? { args, filter } : { args }, sourceLanguages: ["rust"] }),
+    extraJson: JSON.stringify({
+      cargo: filter ? { args, filter } : { args },
+      ...(adapter === "codelldb" ? { sourceLanguages: ["rust"] } : {}),
+      // lldb-dap takes the environment as `KEY=VALUE` strings.
+      ...(adapter === "lldb-dap" ? { env: Object.entries(rc.env).map(([k, v]) => `${k}=${v}`) } : {}),
+    }),
   };
 }
 
-const PYTHON_NAME = /^python[\d.]*(\.exe)?$/;
+const PYTHON_NAME = /^python[\d.]*(\.exe)?$/i;
 
 /** `python` on Windows (`python3` is at most a Store alias there, and venvs have no `python3.exe`), `python3` elsewhere. */
 function systemPython(): string {
@@ -80,10 +85,10 @@ function systemPython(): string {
 
 function pythonFor(rc: RunConfig, cwd: string): string {
   const cmd = rc.command;
-  const name = cmd.split("/").pop() ?? cmd;
-  if (PYTHON_NAME.test(name)) return resolveCommand(cmd, cwd);
-  // A venv tool such as `.venv/bin/pytest`: use the interpreter next to it.
-  if (cmd.includes("/")) return resolveCommand(cmd.slice(0, cmd.lastIndexOf("/") + 1) + "python", cwd);
+  if (PYTHON_NAME.test(commandName(cmd))) return resolveCommand(cmd, cwd);
+  // A venv tool such as `.venv/bin/pytest` or `.venv\Scripts\pytest.exe`: use the interpreter next to it.
+  const dir = cmd.slice(0, Math.max(cmd.lastIndexOf("/"), cmd.lastIndexOf("\\")) + 1);
+  if (dir) return resolveCommand(dir + (hostOs() === "windows" ? "python.exe" : "python"), cwd);
   return systemPython();
 }
 
@@ -95,13 +100,14 @@ function debugpyLaunch(rc: RunConfig, cwd: string): LaunchConfig {
   const dbg = workflowSettings().debugger;
   const extra: Record<string, unknown> = {
     python: pythonFor(rc, cwd),
-    console: "internalConsole",
+    // On a terminal the program reads what is typed in the debug console (`input()`); its
+    // output reaches the console from there, so debugpy doesn't capture it a second time.
+    console: "integratedTerminal",
     justMyCode: dbg.skipLibraryCode,
     subProcess: dbg.python.attachSubprocess,
-    redirectOutput: true,
   };
   if (dbg.python.gevent) extra.gevent = true;
-  const name = (rc.command.split("/").pop() ?? rc.command).replace(/\.exe$/, "");
+  const name = commandName(rc.command);
   let args = rc.args;
   let tool: string | null = PYTHON_NAME.test(name) ? null : name;
   if (PYTHON_RUNNERS.has(name) && args[0] === "run" && args[1]) {
@@ -181,8 +187,7 @@ function jsDebugLaunch(rc: RunConfig, cwd: string): LaunchConfig {
   const out = base(rc, "js-debug", cwd);
   const extra: Record<string, unknown> = {
     type: "pwa-node",
-    console: "internalConsole",
-    outputCapture: "std",
+    console: "integratedTerminal",
     skipFiles: workflowSettings().debugger.skipLibraryCode ? ["<node_internals>/**", "**/node_modules/**"] : [],
     autoAttachChildProcesses: true,
   };
@@ -354,6 +359,10 @@ function nativeLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig
       env: Object.entries(rc.env).map(([k, v]) => `${k}=${v}`),
       ...(from && to && from !== to ? { sourceMap: [[from, to]] } : {}),
     });
+  } else if (rc.kind === "zig-application" || rc.params?.language === "zig") {
+    // Zig under CodeLLDB: without a source language, evaluation stays LLDB's own
+    // (the default Rust mode would shape `Evaluate Expression` as Rust).
+    out.extraJson = JSON.stringify({ sourceLanguages: [] });
   }
   return out;
 }

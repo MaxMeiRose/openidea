@@ -4,6 +4,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { codeLenses } from "@/editor/api";
 import { codeLensExtension } from "@/editor/core/cm/codeLens";
+import { iconAreaExtension } from "@/editor/core/cm/iconArea";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { showContextMenu, type MenuItem } from "@/ui";
@@ -56,6 +57,7 @@ function editor(source = SOURCE, language = "java") {
       doc: source,
       extensions: [
         codeLensExtension,
+        iconAreaExtension,
         springEditorExtension({
           doc: 1,
           path: `/project/OrderController.${language === "kotlin" ? "kt" : "java"}`,
@@ -72,7 +74,7 @@ function editor(source = SOURCE, language = "java") {
 }
 
 function apiButtons(view: EditorView) {
-  return [...view.dom.querySelectorAll<HTMLButtonElement>(".cm-openidea-gutter-spring button")].filter((button) =>
+  return [...view.dom.querySelectorAll<HTMLButtonElement>('[data-icon-source="spring"]')].filter((button) =>
     button.getAttribute("aria-label")?.startsWith("API Call"),
   );
 }
@@ -82,7 +84,7 @@ it("renders one gutter icon per mapped method and opens its request without addi
   await waitFor(() => expect(apiButtons(view)).toHaveLength(2));
   expect(view.state.facet(codeLenses)).toHaveLength(0);
   expect(view.dom.querySelector(".cm-openidea-lensAction")).toBeNull();
-  expect(view.dom.querySelectorAll(".cm-openidea-gutter-spring button")).toHaveLength(3);
+  expect(view.dom.querySelectorAll('[data-icon-source="spring"]')).toHaveLength(3);
   const button = apiButtons(view)[0]!;
   expect(button.querySelector("svg")).not.toBeNull();
   expect(button.textContent).toBe("");

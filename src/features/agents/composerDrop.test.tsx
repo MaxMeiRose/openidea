@@ -7,6 +7,7 @@ import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import * as tauriCore from "@/platform/tauriCore";
 import { Composer } from "./Composer";
+import { textOf } from "./composerTesting";
 import styles from "./Composer.module.css";
 import { composerDraft, updateComposer, useAgents } from "./store";
 
@@ -52,7 +53,7 @@ function setup(root = "/project", projectRoot = "/project") {
       />
     </div>,
   );
-  const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+  const input = screen.getByRole("textbox");
   document.elementFromPoint = () => input;
   return {
     ...view,
@@ -78,17 +79,17 @@ describe("Composer file drops", () => {
       act(() => {
         expect(drag.move(20, 20)).toBe(true);
       });
-      expect(box.className).toMatch(/dropOver/);
+      expect(box.className).toMatch(/fileOver/);
       act(() => {
         expect(drag.drop(20, 20)).toBe(true);
       });
-      expect(input).toHaveValue("Review this @src/main.ts @README.md ");
+      expect(textOf(input)).toBe("Review this @src/main.ts @README.md ");
       expect(composerDraft("drop-test").files).toEqual([
         { path: "/project/src/main.ts", rel: "src/main.ts" },
         { path: "/project/README.md", rel: "README.md" },
       ]);
       expect(openInEditor).not.toHaveBeenCalled();
-      expect(box.className).not.toMatch(/dropOver/);
+      expect(box.className).not.toMatch(/fileOver/);
       await waitFor(() => expect(input).toHaveFocus());
     } finally {
       unregister();
@@ -102,22 +103,19 @@ describe("Composer file drops", () => {
       drag.move(20, 20);
       drag.cancel();
     });
-    expect(box.className).not.toMatch(/dropOver/);
+    expect(box.className).not.toMatch(/fileOver/);
     expect(composerDraft("drop-test").files).toEqual([]);
   });
 
-  it("maps dropped project files into the task worktree and keeps other paths intact", () => {
+  it("maps dropped project files into the task worktree and skips paths outside the workspace", () => {
     const { input } = setup("/worktrees/project", "/project");
     const drag = dragSession({ type: FILES_DRAG, payload: "/project/src/main.ts\n/other/notes.md" });
     act(() => {
       drag.move(20, 20);
       expect(drag.drop(20, 20)).toBe(true);
     });
-    expect(input).toHaveValue("@src/main.ts @/other/notes.md ");
-    expect(composerDraft("drop-test").files).toEqual([
-      { path: "/worktrees/project/src/main.ts", rel: "src/main.ts" },
-      { path: "/other/notes.md", rel: "/other/notes.md" },
-    ]);
+    expect(textOf(input)).toBe("@src/main.ts ");
+    expect(composerDraft("drop-test").files).toEqual([{ path: "/worktrees/project/src/main.ts", rel: "src/main.ts" }]);
   });
 
   it("keeps project-tree images as file references and ignores virtual documents", () => {
@@ -127,7 +125,7 @@ describe("Composer file drops", () => {
       drag.move(20, 20);
       expect(drag.drop(20, 20)).toBe(true);
     });
-    expect(input).toHaveValue("@design.png ");
+    expect(textOf(input)).toBe("@design.png ");
     expect(composerDraft("drop-test").files).toEqual([{ path: "/project/design.png", rel: "design.png" }]);
     expect(composerDraft("drop-test").images).toEqual([]);
   });
@@ -146,7 +144,7 @@ describe("Composer file drops", () => {
       expect(composerDraft("drop-test").images).toEqual([{ mimeType: "image/png", data: "cG5n", name: "design.png" }]),
     );
     expect(readImage).toHaveBeenCalledWith("fs_read_image", { path: "/project/design.png" });
-    expect(input).toHaveValue("");
+    expect(textOf(input)).toBe("");
     expect(composerDraft("drop-test").files).toEqual([]);
   });
 
@@ -159,13 +157,13 @@ describe("Composer file drops", () => {
         payload: { type: "drop", paths: ["/project/outside.ts"], position: new PhysicalPosition(300, 20) },
       }),
     );
-    expect(input).toHaveValue("");
+    expect(textOf(input)).toBe("");
     act(() =>
       onNativeDrop({
         payload: { type: "drop", paths: ["/project/inside.ts"], position: new PhysicalPosition(30, 20) },
       }),
     );
-    expect(input).toHaveValue("@inside.ts ");
+    expect(textOf(input)).toBe("@inside.ts ");
     expect(composerDraft("drop-test").files).toEqual([{ path: "/project/inside.ts", rel: "inside.ts" }]);
   });
 });

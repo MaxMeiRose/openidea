@@ -35,12 +35,12 @@ pub struct RunInput<'a> {
 /// variables, missing includes) fail; transport errors are part of the exchange.
 pub async fn run(input: RunInput<'_>, cancel: &CancellationToken) -> IdeResult<HttpExchange> {
     let request = prepare(&input)?;
-    run_prepared(request, input.file, cancel).await
+    send(request, input.file, cancel).await
 }
 
-/// Executes a literal request from a visual client, without parsing file includes,
-/// variable placeholders, scripts or request separators in its body.
-pub async fn run_prepared(
+/// Sends an already prepared request (one the user approved as shown); `file` is the
+/// request file it came from, for the history.
+pub async fn send(
     request: PreparedRequest,
     file: Option<&Path>,
     cancel: &CancellationToken,
@@ -147,7 +147,7 @@ mod prepared_tests {
             headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
             body: Some(body),
         };
-        let exchange = run_prepared(prepared, None, &CancellationToken::new()).await.unwrap();
+        let exchange = send(prepared, None, &CancellationToken::new()).await.unwrap();
         assert_eq!(received.await.unwrap(), expected);
         assert_eq!(exchange.request.body.as_deref(), Some(expected.as_str()));
         assert_eq!(exchange.response.unwrap().status, 200);

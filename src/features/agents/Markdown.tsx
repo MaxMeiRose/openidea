@@ -1,25 +1,37 @@
 /**
  * Agent messages: Markdown → sanitized HTML (marked + DOMPurify). Fenced code is
- * highlighted and gets a Copy button; inline code naming a file of the task opens it.
+ * highlighted and gets a Copy button; inline code naming a file of the task, or a symbol
+ * the index has, opens it.
  * Mermaid fences become `[data-mermaid]` placeholders drawn by the Markdown viewer's
  * shared renderer after each render; the block keeps a Copy button of its own, since
  * the drawn diagram hides the code block, and `onDiagramDrawn` lets the conversation
  * follow the end when a diagram draws after the last streamed chunk.
  */
-import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { Marked } from "marked";
 import DOMPurify from "dompurify";
 import { highlightInto } from "@/editor/lsp/markdown";
-import { iconNode } from "@/editor/lsp/iconMarkup";
-import { call, commands, onIdeEvent } from "@/platform/ipc";
+import { iconNode } from "@/ui/iconNode";
+import { onIdeEvent } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
+import { useProject } from "@/platform/project";
 import { copyText } from "@/ui";
-import { editorService } from "@/workbench/contributions";
+import { editorService, type DeclarationChoice } from "@/workbench/contributions";
 import { hasMermaid, renderMermaidIn } from "@/features/viewers/markdown/mermaid";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
-import { fileHref, filePathTokens, localFileUriPath, pathLink, type PathLink } from "./conversation";
+import {
+  fileHref,
+  filePathTokens,
+  localFileUriPath,
+  pathLink,
+  symbolRef,
+  type PathLink,
+  type SymbolRef,
+} from "./conversation";
 import { loadImages, type MessageImages } from "./markdownImages";
+import { fileExists, invalidateFileExists } from "./ReferenceChip";
+import { inTaskFolder, lookupSymbols, symbolTargets } from "./symbolLinks";
 import styles from "./Session.module.css";
 
 const escapeHtml = (s: string) =>
@@ -53,7 +65,12 @@ function purify(): ReturnType<typeof DOMPurify> {
   // `poster`, `background` and the `src` of other tags would fetch as soon as the reply renders.
   p.addHook("uponSanitizeAttribute", (node, data) => {
     if (data.attrName === "alt" || data.attrName === "title") return;
-    if (data.attrName === "href" && node.tagName === "A") return;
+    if (data.attrName === "href" && node.tagName === "A") {
+      // A drive letter looks like a URL scheme to DOMPurify. Keep only validated local paths.
+      const link = fileHref(data.attrValue, "");
+      if (link && /^[a-z]:\//i.test(link.path)) data.forceKeepAttr = true;
+      return;
+    }
     if (namesHost(data.attrValue)) data.keepAttr = false;
   });
   const sources = new WeakMap<Node, string>();
@@ -178,31 +195,62 @@ function wrapLooseText(li: Element) {
   flush();
 }
 
-/** Whether a path names an existing file, per path (agents name the same files again and again). */
-const existing = new Map<string, Promise<boolean>>();
-const MAX_CACHED_FILES = 512;
-function fileExists(path: string): Promise<boolean> {
-  let known = existing.get(path);
-  if (!known) {
-    known = Promise.resolve()
-      .then(() => call(commands.fsProbe(path)))
-      .then(
-        () => true,
-        () => false,
-      );
-    if (existing.size >= MAX_CACHED_FILES) existing.delete(existing.keys().next().value!);
-    existing.set(path, known);
-    const pending = known;
-    void pending.then((found) => {
-      if (!found && existing.get(path) === pending) existing.delete(path);
-    });
-  }
-  return known;
-}
-
 export function openPathLink(link: PathLink) {
   const selection = link.line === undefined ? undefined : { line: link.line, col: link.col ?? 0 };
   void editorService().openFile(link.path, { selection, focus: true });
+}
+
+/** The symbol each inline code span names. */
+const symbolRefs = new WeakMap<Element, SymbolRef>();
+/** Whether inline code that names a symbol also names an existing file (which it then opens). */
+const fileChecks = new WeakMap<Element, Promise<boolean>>();
+/** Inline code naming a symbol defined in several places: the chooser's targets. */
+const choices = new WeakMap<Element, DeclarationChoice[]>();
+/** How long a reply's text stays unchanged before its symbols are looked up. */
+const SETTLE_MS = 400;
+
+function mentionedPaths(root: HTMLElement): string[] {
+  const codePaths = [...root.querySelectorAll("code")].map((code) => pathLink(code.textContent ?? "", "")?.path);
+  const linkPaths = [...root.querySelectorAll("a[href]")].map(
+    (anchor) => fileHref(anchor.getAttribute("href") ?? "", "")?.path,
+  );
+  return [...codePaths, ...linkPaths].filter((path): path is string => !!path);
+}
+
+function markPath(element: HTMLElement, link: PathLink) {
+  element.classList.add(styles.fileLink!);
+  element.dataset.path = link.path;
+  element.dataset.agentPath = link.path;
+  if (link.line !== undefined) element.dataset.line = String(link.line);
+  if (link.col !== undefined) element.dataset.col = String(link.col);
+  element.title = tx`Open ${link.path}`;
+}
+
+/** Links `spans` of the reply in `root` to their definitions: one index lookup for all their names. */
+async function linkSymbols(root: HTMLElement, spans: HTMLElement[], cwd: string) {
+  const projectRoot = useProject.getState().project?.root ?? cwd;
+  const refs = spans.map((code) => symbolRefs.get(code)!);
+  const answers = lookupSymbols(
+    projectRoot,
+    refs.map((ref) => ref.name),
+  );
+  const mentioned = mentionedPaths(root);
+  await Promise.all(
+    spans.map(async (code, at) => {
+      if (await fileChecks.get(code)) return;
+      const ref = refs[at]!;
+      const found = (await answers.get(ref.name)!).map((symbol) => inTaskFolder(symbol, projectRoot, cwd));
+      const targets = symbolTargets(ref, found, mentioned, cwd);
+      if (!code.isConnected || !targets.length) return;
+      if (targets.length > 1) {
+        code.classList.add(styles.fileLink!);
+        choices.set(code, targets);
+        return;
+      }
+      const { path, range } = targets[0]!;
+      markPath(code, { path, line: range.start.line, col: range.start.col });
+    }),
+  );
 }
 
 /** Highlighting, Copy buttons and file links over freshly rendered `root`. */
@@ -252,6 +300,14 @@ function enhance(root: HTMLElement, cwd: string, images: MessageImages): () => v
     update(candidate);
   };
   const disposeImages = loadImages(root, cwd, images);
+  root.querySelectorAll<HTMLAnchorElement>("a[href]").forEach((anchor) => {
+    const href = anchor.getAttribute("href")!;
+    const link = fileHref(href, cwd);
+    const location =
+      link?.line === undefined ? "" : `:${link.line + 1}${link.col === undefined ? "" : `:${link.col + 1}`}`;
+    const target = link ? `${link.path}${location}` : href;
+    anchor.title = anchor.title && anchor.title !== target ? `${anchor.title}\n${target}` : target;
+  });
   const copies: HTMLButtonElement[] = [];
   root.querySelectorAll<HTMLElement>("pre > code").forEach((code) => {
     const pre = code.parentElement!;
@@ -277,8 +333,16 @@ function enhance(root: HTMLElement, cwd: string, images: MessageImages): () => v
   });
   root.querySelectorAll<HTMLElement>("code").forEach((code) => {
     if (code.parentElement?.tagName === "PRE" || code.closest("a")) return;
-    const link = pathLink(code.textContent ?? "", cwd);
+    const text = code.textContent ?? "";
+    const ref = symbolRef(text);
+    if (ref) symbolRefs.set(code, ref);
+    const link = pathLink(text, cwd);
     if (!link) return;
+    const exists = fileExists(link.path);
+    if (ref) fileChecks.set(code, exists);
+    void exists.then((found) => {
+      if (alive && found) markPath(code, link);
+    });
     register(code, link);
   });
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -312,7 +376,7 @@ function enhance(root: HTMLElement, cwd: string, images: MessageImages): () => v
         const changed = [...event.created, ...event.modified, ...event.removed];
         for (const [path, list] of candidates) {
           if (!changed.some((item) => path === item || path.startsWith(item + "/"))) continue;
-          existing.delete(path);
+          invalidateFileExists(path);
           list.forEach(update);
         }
       })
@@ -322,7 +386,7 @@ function enhance(root: HTMLElement, cwd: string, images: MessageImages): () => v
     alive = false;
     off?.();
     for (const [path, list] of candidates) {
-      existing.delete(path);
+      invalidateFileExists(path);
       for (const candidate of list) clearTimeout(candidate.timer);
     }
     copies.forEach((copy) => copy.remove());
@@ -398,6 +462,9 @@ export function Markdown({
   // Diagrams are drawn in the active theme's colours: a theme change redraws them.
   const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
   useLayoutEffect(() => {
+    images.current.onLoaded = onDiagramDrawn;
+  }, [onDiagramDrawn]);
+  useLayoutEffect(() => {
     const root = ref.current;
     if (!root) return;
     if (paintedCwd.current !== cwd) {
@@ -414,6 +481,39 @@ export function Markdown({
     const blocks = painted.current;
     return () => clearBlocks(blocks, 0);
   }, []);
+  /** Symbol spans already looked up (or being looked up). */
+  const looked = useRef(new WeakSet<Element>());
+  // Symbols: once the text stops changing (a streamed reply changes its last block on every
+  // chunk), the spans not looked up yet, as they come into view.
+  useEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    let observer: IntersectionObserver | null = null;
+    const lookUp = (spans: HTMLElement[]) => {
+      spans.forEach((span) => looked.current.add(span));
+      if (spans.length) void linkSymbols(root, spans, cwd);
+    };
+    const timer = setTimeout(() => {
+      const spans = [...root.querySelectorAll<HTMLElement>("code")].filter(
+        (code) => symbolRefs.has(code) && !looked.current.has(code),
+      );
+      if (!spans.length) return;
+      if (typeof IntersectionObserver === "undefined") {
+        lookUp(spans);
+        return;
+      }
+      observer = new IntersectionObserver((entries) => {
+        const shown = entries.filter((entry) => entry.isIntersecting).map((entry) => entry.target as HTMLElement);
+        shown.forEach((span) => observer!.unobserve(span));
+        lookUp(shown);
+      });
+      spans.forEach((span) => observer!.observe(span));
+    }, SETTLE_MS);
+    return () => {
+      clearTimeout(timer);
+      observer?.disconnect();
+    };
+  }, [text, cwd]);
   // Mermaid diagrams: before paint, so cached ones don't flash their source. Only a
   // draw that lands after the render needs the follow — cached ones are in place by
   // the time the conversation's own render pass scrolls.
@@ -444,6 +544,14 @@ export function Markdown({
         const copy = target.closest<HTMLElement>("button[data-copy]");
         if (copy) {
           void copyText(copy.dataset.copy ?? "");
+          return;
+        }
+        const code = target.closest<HTMLElement>("code");
+        const targets = code && choices.get(code);
+        if (targets && !window.getSelection()?.toString()) {
+          const rect = code.getBoundingClientRect();
+          const name = symbolRefs.get(code)!.name;
+          void editorService().chooseDeclaration?.(targets, name, { x: rect.left, y: rect.bottom + 2 });
           return;
         }
         const file = target.closest<HTMLElement>("[data-agent-path]");

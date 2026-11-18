@@ -62,6 +62,8 @@ import { useProject } from "@/platform/project";
 import { openExternalUrl } from "@/platform/openUrl";
 import { importIntellijTheme, showInstalledIntellijThemes } from "./intellijImport";
 import { promptInput } from "@/workbench/inputDialogs";
+import { useSettingsHeaderSlot, useSettingsPageFocus } from "@/workbench/contributions";
+import { createPortal } from "react-dom";
 import styles from "./PluginsPage.module.css";
 import { pluginsBackend } from "./backend";
 import { confirm } from "@/workbench/messages";
@@ -98,6 +100,7 @@ const POINT_TITLES: Record<string, string> = {
   iconThemes: "File Icon Themes",
   languages: "Languages",
   providers: "Editor Providers",
+  javaAgents: "Java Agents",
   locales: "Translations",
 };
 
@@ -159,30 +162,25 @@ function useMarketUpdate(plugin: PluginInfo): MarketPlugin | undefined {
 function PluginIcon({
   id,
   icon,
-  large,
   name,
 }: {
   id: string;
   icon: PluginIconData | null | undefined;
-  large?: boolean;
   /** Without an icon: its first letter on a tint of its own instead of the generic icon. */
   name?: string;
 }) {
   if (!icon && name) {
     const { letter, tone } = monogram(id, name);
     return (
-      <span
-        className={clsx(styles.icon, large && styles.iconLarge, styles.monogram, styles[`tone${tone}`])}
-        aria-hidden
-      >
+      <span className={clsx(styles.icon, styles.monogram, styles[`tone${tone}`])} aria-hidden>
         {letter}
       </span>
     );
   }
   // A plugin's own icon fills the tile, as the initials do; the generic one sits on a plate.
   return (
-    <span className={clsx(styles.icon, large && styles.iconLarge, icon && styles.ownIcon)} aria-hidden>
-      <Icon name={pluginIconName(id, icon)} size={icon ? (large ? 56 : 32) : large ? 32 : 20} />
+    <span className={clsx(styles.icon, icon && styles.ownIcon)} aria-hidden>
+      <Icon name={pluginIconName(id, icon)} size={icon ? 40 : 20} />
     </span>
   );
 }
@@ -197,13 +195,45 @@ function ExampleTag() {
 
 const exampleNote = () => tx("Shows how to use the plugin API; not maintained as a product.");
 
-function ListHeader({ title, count }: { title: string; count: number }) {
+function ListHeader({
+  title,
+  count,
+  collapsed,
+  onToggle,
+}: {
+  title: string;
+  count: number;
+  collapsed?: boolean;
+  onToggle?: () => void;
+}) {
+  if (!onToggle)
+    return (
+      <li className={styles.groupHeader} aria-hidden>
+        <span>{title}</span>
+        <span className={styles.groupCount}>{count}</span>
+      </li>
+    );
   return (
-    <li className={styles.groupHeader} aria-hidden>
-      <span>{title}</span>
-      <span className={styles.groupCount}>{count}</span>
+    <li className={styles.groupHeader} role="presentation">
+      <button type="button" className={styles.groupToggle} aria-expanded={!collapsed} onClick={onToggle}>
+        <Icon name={collapsed ? "chevron-right" : "chevron-down"} size={12} />
+        <span>{title}</span>
+        <span className={styles.groupCount}>{count}</span>
+      </button>
     </li>
   );
+}
+
+/** Group titles the user folded in the plugin list (per page instance). */
+function useCollapsed(): [ReadonlySet<string>, (key: string) => void] {
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const toggle = (key: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+  return [collapsed, toggle];
 }
 
 function InstalledRow({ plugin, selected, onSelect }: { plugin: PluginInfo; selected: boolean; onSelect: () => void }) {
@@ -225,25 +255,25 @@ function InstalledRow({ plugin, selected, onSelect }: { plugin: PluginInfo; sele
             {plugin.source === "installed" && isExample(plugin) && <ExampleTag />}
           </span>
           <span className={styles.rowMeta}>
-            <span className={styles.rowVendor}>{vendorOf(plugin.authors) || plugin.id}</span>
             <span>{plugin.version}</span>
+            <span className={styles.rowVendor}>{vendorOf(plugin.authors) || plugin.id}</span>
             {plugin.source !== "installed" && (
               <span className={styles.devTag}>{plugin.source === "linked" ? tx("linked") : tx("dev")}</span>
             )}
-            {update && <Badge tone="accent">{tx("Update")}</Badge>}
             {plugin.status === "failed" && (
               <Badge dot tone="danger">
-                <T>Failed</T>
+                {tx("Failed")}
               </Badge>
             )}
             {plugin.status === "needsConsent" && (
               <Badge dot tone="warning">
-                <T>Needs permission</T>
+                {tx("Needs permission")}
               </Badge>
             )}
           </span>
         </span>
       </button>
+      {update && <MarketAction entry={update} compact />}
       <Checkbox
         className={styles.rowCheck}
         checked={plugin.enabled}
@@ -294,8 +324,8 @@ function CatalogRow({ entry, selected, onSelect }: { entry: CatalogPlugin; selec
         <span className={styles.rowText}>
           <span className={styles.rowName}>{entry.name}</span>
           <span className={styles.rowMeta}>
-            <span className={styles.rowVendor}>{vendorOf(entry.authors) || entry.id}</span>
             <span>{entry.version}</span>
+            <span className={styles.rowVendor}>{vendorOf(entry.authors) || entry.id}</span>
           </span>
         </span>
       </button>
@@ -548,7 +578,11 @@ function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean })
           key={c.id}
           cap={c}
           program={
-            c.id.startsWith("process:") && <ProgramPermission plugin={plugin} cap={c} disabled={busy || !confirmed} />
+            c.id.startsWith("process:") ? (
+              <ProgramPermission plugin={plugin} cap={c} disabled={busy || !confirmed} />
+            ) : (
+              c.id === "java.agent" && <JavaAgentDetail plugin={plugin} cap={c} disabled={busy || !confirmed} />
+            )
           }
         >
           <Checkbox
@@ -563,6 +597,36 @@ function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean })
         <NetHostRow key={host} plugin={plugin} host={host} disabled={busy || !confirmed} />
       ))}
     </ul>
+  );
+}
+
+/** The agent a `java.agent` grant loads: its jar's file name and arguments, as `-javaagent:` takes them. */
+function JavaAgentDetail({ plugin, cap, disabled }: { plugin: PluginInfo; cap: CapabilityInfo; disabled: boolean }) {
+  const agent = plugin.javaAgent;
+  if (!agent) return null;
+  const approve = async () => {
+    // Revoking and granting again recomputes the jar's hash in the host.
+    if (await setPluginCapability(plugin.id, cap.id, false)) {
+      await setPluginCapability(plugin.id, cap.id, true);
+    }
+  };
+  return (
+    <div className={styles.programPermission}>
+      <span className={clsx(styles.mono, styles.programPath)} aria-label={tx("Java agent")}>
+        {agent.fileName}
+        {agent.args ? `=${agent.args}` : ""}
+      </span>
+      {cap.granted && !agent.approved && (
+        <div className={styles.error} role="alert">
+          <p>
+            <T>The agent jar changed since you approved it. Approve the new jar before the next launch.</T>
+          </p>
+          <Button size="small" variant="primary" disabled={disabled} onClick={() => void approve()}>
+            <T>Approve new jar</T>
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -701,27 +765,22 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
   return (
     <div className={styles.details} aria-label={`${plugin.name} details`}>
       <header className={styles.header}>
-        <PluginIcon id={plugin.id} icon={plugin.icon} large />
-        <div className={styles.headerText}>
-          <h2 className={styles.title}>{plugin.name}</h2>
-          {plugin.authors.length > 0 && <div className={styles.authors}>{vendorOf(plugin.authors)}</div>}
-          <div className={styles.titleLine}>
-            <span className={styles.version}>{plugin.version}</span>
-            <Badge tone={status.tone}>{status.label}</Badge>
-            {plugin.source !== "installed" && (
-              <Badge tone="warning">{plugin.source === "linked" ? tx("Linked plugin") : tx("Project plugin")}</Badge>
-            )}
-            {plugin.source === "installed" && isExample(plugin) && <ExampleTag />}
-            {plugin.source === "installed" &&
-              (plugin.publisher ? (
-                <Badge tone="success">{tx`Signed by ${plugin.publisher}`}</Badge>
-              ) : (
-                <Badge tone="neutral">{tx("Unsigned")}</Badge>
-              ))}
-          </div>
+        <div className={styles.titleLine}>
+          <Badge tone={status.tone}>{status.label}</Badge>
+          {plugin.source !== "installed" && (
+            <Badge tone="warning">{plugin.source === "linked" ? tx("Linked plugin") : tx("Project plugin")}</Badge>
+          )}
+          {plugin.source === "installed" && isExample(plugin) && <ExampleTag />}
+          {plugin.source === "installed" &&
+            (plugin.publisher ? (
+              <Badge tone="success">{tx`Signed by ${plugin.publisher}`}</Badge>
+            ) : (
+              <Badge tone="neutral">{tx("Unsigned")}</Badge>
+            ))}
         </div>
+        <h2 className={styles.title}>{plugin.name}</h2>
+        {plugin.authors.length > 0 && <div className={styles.authors}>{vendorOf(plugin.authors)}</div>}
         <div className={styles.headerActions}>
-          {busy && <Spinner size={14} label="Working" />}
           {update && (
             <Button
               size="small"
@@ -772,6 +831,8 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
                 <T>Uninstall…</T>
               </Button>
             ))}
+          <span className={styles.version}>{plugin.version}</span>
+          {busy && <Spinner size={14} label="Working" />}
         </div>
       </header>
       <DetailTabs notes={plugin.changeNotes} overview={overview} />
@@ -835,16 +896,11 @@ function CatalogDetails({ entry }: { entry: CatalogPlugin }) {
   return (
     <div className={styles.details} aria-label={`${entry.name} details`}>
       <header className={styles.header}>
-        <PluginIcon id={entry.id} icon={entry.icon} large />
-        <div className={styles.headerText}>
-          <h2 className={styles.title}>{entry.name}</h2>
-          {entry.authors.length > 0 && <div className={styles.authors}>{vendorOf(entry.authors)}</div>}
-          <div className={styles.titleLine}>
-            <span className={styles.version}>{entry.version}</span>
-          </div>
-        </div>
+        <h2 className={styles.title}>{entry.name}</h2>
+        {entry.authors.length > 0 && <div className={styles.authors}>{vendorOf(entry.authors)}</div>}
         <div className={styles.headerActions}>
           <CatalogButton entry={entry} />
+          <span className={styles.version}>{entry.version}</span>
         </div>
       </header>
       <DetailTabs notes={entry.changeNotes} overview={overview} />
@@ -1047,7 +1103,7 @@ function MarketAction({
 
 function MarketRow({ entry, selected, onSelect }: { entry: MarketPlugin; selected: boolean; onSelect: () => void }) {
   return (
-    <li className={clsx(styles.row, styles.marketRow, selected && styles.rowSelected)}>
+    <li className={clsx(styles.row, selected && styles.rowSelected)}>
       <button
         type="button"
         className={styles.rowMain}
@@ -1061,15 +1117,15 @@ function MarketRow({ entry, selected, onSelect }: { entry: MarketPlugin; selecte
             <span className={styles.rowName}>{entry.name}</span>
             {isExample(entry) && <ExampleTag />}
           </span>
-          {entry.description && <span className={styles.rowDescription}>{entry.description}</span>}
           <span className={styles.rowMeta}>
-            {!isExample(entry) && <span className={styles.rowVendor}>{publisherOf(entry)}</span>}
             {entry.downloads != null && (
               <span className={styles.downloads} title={tx`${entry.downloads} downloads`}>
                 <Icon name="download" size={12} />
                 {formatDownloads(entry.downloads)}
               </span>
             )}
+            <span>{entry.version}</span>
+            {!isExample(entry) && <span className={styles.rowVendor}>{publisherOf(entry)}</span>}
           </span>
         </span>
       </button>
@@ -1085,6 +1141,8 @@ function MarketGroup({
   onSelect,
   note,
   idPrefix,
+  collapsed,
+  onToggle,
 }: {
   title: string;
   entries: readonly MarketPlugin[];
@@ -1092,20 +1150,23 @@ function MarketGroup({
   onSelect: (id: string) => void;
   note?: string;
   idPrefix: string;
+  collapsed: boolean;
+  onToggle: () => void;
 }) {
   if (entries.length === 0) return null;
   return (
     <>
-      <ListHeader title={title} count={entries.length} />
-      {note && <li className={styles.groupNote}>{note}</li>}
-      {entries.map((m) => (
-        <MarketRow
-          key={`${idPrefix}:${m.id}`}
-          entry={m}
-          selected={m.id === selectedId}
-          onSelect={() => onSelect(m.id)}
-        />
-      ))}
+      <ListHeader title={title} count={entries.length} collapsed={collapsed} onToggle={onToggle} />
+      {!collapsed && note && <li className={styles.groupNote}>{note}</li>}
+      {!collapsed &&
+        entries.map((m) => (
+          <MarketRow
+            key={`${idPrefix}:${m.id}`}
+            entry={m}
+            selected={m.id === selectedId}
+            onSelect={() => onSelect(m.id)}
+          />
+        ))}
     </>
   );
 }
@@ -1165,24 +1226,21 @@ function MarketDetails({
   return (
     <div className={styles.details} aria-label={`${entry.name} details`}>
       <header className={styles.header}>
-        <PluginIcon id={entry.id} icon={entry.icon} name={entry.name} large />
-        <div className={styles.headerText}>
-          <h2 className={styles.title}>{entry.name}</h2>
-          <div className={styles.authors}>{entry.authors?.length ? vendorOf(entry.authors) : publisherOf(entry)}</div>
-          <div className={styles.titleLine}>
-            <span className={styles.version}>{entry.version}</span>
-            {example && <ExampleTag />}
-            <Badge tone="success">{tx`Signed by ${publisherOf(entry)}`}</Badge>
-            {entry.downloads != null && (
-              <span className={styles.downloads}>
-                <Icon name="download" size={12} />
-                {tx`${formatDownloads(entry.downloads)} downloads`}
-              </span>
-            )}
-          </div>
+        <div className={styles.titleLine}>
+          {example && <ExampleTag />}
+          <Badge tone="success">{tx`Signed by ${publisherOf(entry)}`}</Badge>
+          {entry.downloads != null && (
+            <span className={styles.downloads}>
+              <Icon name="download" size={12} />
+              {tx`${formatDownloads(entry.downloads)} downloads`}
+            </span>
+          )}
         </div>
+        <h2 className={styles.title}>{entry.name}</h2>
+        <div className={styles.authors}>{entry.authors?.length ? vendorOf(entry.authors) : publisherOf(entry)}</div>
         <div className={styles.headerActions}>
           <MarketAction entry={entry} onInstalled={onInstalled} />
+          <span className={styles.version}>{entry.version}</span>
         </div>
       </header>
       {!entry.compatible && (
@@ -1233,11 +1291,15 @@ function useSuggestions(market: readonly MarketPlugin[] | null): Map<string, str
   return useMemo(() => suggestedFor(market ?? [], present), [market, present]);
 }
 
-/** Opens on Available, where plugins are found; `initialTab` picks another. */
+/**
+ * Marketplace / Installed tabs in the page header; each lists its plugins in foldable groups.
+ * `initialTab` picks the one shown first (the marketplace by default).
+ */
 export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab } = {}) {
   const { plugins, loaded, loading, error, installing, catalog, catalogError, market, marketUrl, marketError } =
     usePlugins();
   const [tab, setTab] = useState<Tab>(initialTab);
+  const [collapsed, toggleGroup] = useCollapsed();
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedCatalogId, setSelectedCatalogId] = useState<string | null>(null);
@@ -1249,6 +1311,14 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
   }, []);
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
   const [category, setCategory] = useState<Category | "all">("all");
+  // Opened as `plugins#themes` (Appearance › Get more themes): browse the marketplace's themes.
+  const { focus, consume } = useSettingsPageFocus();
+  useEffect(() => {
+    if (focus !== "themes") return;
+    setTab("marketplace");
+    setCategory("themes");
+    consume();
+  }, [focus, consume]);
   const marketShown = useMemo(
     () =>
       (market ?? []).filter((m) => {
@@ -1283,10 +1353,27 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
     ? null
     : (marketShown.find((m) => m.id === selectedMarketId) ?? marketOrder[0] ?? null);
   const selectedEntry = selectedMarket ? null : (pickedCatalog ?? catalogShown[0] ?? null);
+  const updates = (market ?? []).filter(isUpdate).length;
   const selectMarket = (id: string) => {
     setSelectedCatalogId(null);
     setSelectedMarketId(id);
   };
+  /** An installed group: its header folds it. */
+  const installedGroup = (key: string, title: string, list: readonly PluginInfo[]) =>
+    list.length > 0 && (
+      <>
+        <ListHeader
+          title={title}
+          count={list.length}
+          collapsed={collapsed.has(key)}
+          onToggle={() => toggleGroup(key)}
+        />
+        {!collapsed.has(key) &&
+          list.map((p) => (
+            <InstalledRow key={p.id} plugin={p} selected={p.id === selected?.id} onSelect={() => setSelectedId(p.id)} />
+          ))}
+      </>
+    );
 
   const showInstalled = (id: string | null) => {
     if (!id) return;
@@ -1298,7 +1385,7 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
     const r = e.currentTarget.getBoundingClientRect();
     showContextMenu(
       { x: r.left, y: r.bottom + 2 },
-      gearMenu(plugins, (market ?? []).filter(isUpdate).length, {
+      gearMenu(plugins, updates, {
         canImport: useProject.getState().project?.trusted === true,
         install: (packageFile) => void installFromDisk(undefined, packageFile).then(showInstalled),
         importIntellijFile: () => void importIntellijTheme().then(showInstalled),
@@ -1308,28 +1395,32 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
     );
   };
 
+  const headerSlot = useSettingsHeaderSlot();
+  const header = (
+    <>
+      <Tabs
+        variant="compact"
+        className={styles.sourceTabs}
+        aria-label="Plugin sources"
+        activeId={tab}
+        onSelect={(id) => setTab(id as Tab)}
+        items={[
+          { id: "marketplace", label: "Marketplace" },
+          {
+            id: "installed",
+            label: "Installed",
+            trailing: updates > 0 ? <span className={styles.tabCount}>{updates}</span> : undefined,
+          },
+        ]}
+      />
+      {(loading || installing) && <Spinner size={14} label={installing ? "Installing plugin" : "Loading plugins"} />}
+      <IconButton icon="settings" title="Manage Plugins" aria-haspopup="menu" onClick={openGear} />
+    </>
+  );
+
   return (
     <div className={styles.page}>
-      <div className={styles.topBar}>
-        <Tabs
-          variant="compact"
-          className={styles.tabs}
-          aria-label="Plugin sources"
-          activeId={tab}
-          onSelect={(id) => setTab(id as Tab)}
-          items={[
-            { id: "marketplace", label: "Available" },
-            {
-              id: "installed",
-              label: "Installed",
-              trailing: <span className={styles.tabCount}>{plugins.length}</span>,
-            },
-          ]}
-        />
-        <span className={styles.spacer} />
-        {(loading || installing) && <Spinner size={14} label={installing ? "Installing plugin" : "Loading plugins"} />}
-        <IconButton icon="settings" title="Manage Plugins" aria-haspopup="menu" onClick={openGear} />
-      </div>
+      {headerSlot ? createPortal(header, headerSlot) : <div className={styles.topBar}>{header}</div>}
 
       {error && (
         <div className={styles.error} role="alert">
@@ -1353,33 +1444,9 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
           </div>
           {tab === "installed" ? (
             <ul className={styles.list} aria-label={tx("Installed plugins")}>
-              {downloaded.length > 0 && <ListHeader title="Downloaded" count={downloaded.length} />}
-              {downloaded.map((p) => (
-                <InstalledRow
-                  key={p.id}
-                  plugin={p}
-                  selected={p.id === selected?.id}
-                  onSelect={() => setSelectedId(p.id)}
-                />
-              ))}
-              {linked.length > 0 && <ListHeader title="Linked for development" count={linked.length} />}
-              {linked.map((p) => (
-                <InstalledRow
-                  key={p.id}
-                  plugin={p}
-                  selected={p.id === selected?.id}
-                  onSelect={() => setSelectedId(p.id)}
-                />
-              ))}
-              {dev.length > 0 && <ListHeader title="Project (.openidea/plugins)" count={dev.length} />}
-              {dev.map((p) => (
-                <InstalledRow
-                  key={p.id}
-                  plugin={p}
-                  selected={p.id === selected?.id}
-                  onSelect={() => setSelectedId(p.id)}
-                />
-              ))}
+              {installedGroup("installed", "Installed", downloaded)}
+              {installedGroup("linked", "Linked for development", linked)}
+              {installedGroup("dev", "Project (.openidea/plugins)", dev)}
               {loaded && shown.length === 0 && (
                 <li className={styles.listEmpty}>
                   {plugins.length === 0 ? tx("No plugins installed.") : tx("No plugins match.")}
@@ -1391,6 +1458,8 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
               {marketError && <li className={clsx(styles.listEmpty, styles.errorText)}>{marketError}</li>}
               <MarketGroup
                 idPrefix="suggested"
+                collapsed={collapsed.has("suggested")}
+                onToggle={() => toggleGroup("suggested")}
                 title={tx("Suggested for This Project")}
                 entries={groups.suggested}
                 selectedId={selectedMarket?.id}
@@ -1398,6 +1467,8 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
               />
               <MarketGroup
                 idPrefix="featured"
+                collapsed={collapsed.has("featured")}
+                onToggle={() => toggleGroup("featured")}
                 title={tx("Featured")}
                 entries={groups.featured}
                 selectedId={selectedMarket?.id}
@@ -1405,6 +1476,8 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
               />
               <MarketGroup
                 idPrefix="community"
+                collapsed={collapsed.has("community")}
+                onToggle={() => toggleGroup("community")}
                 title={browsing ? tx("All Plugins") : tx("Marketplace")}
                 entries={groups.community}
                 selectedId={selectedMarket?.id}
@@ -1412,24 +1485,34 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
               />
               <MarketGroup
                 idPrefix="examples"
+                collapsed={collapsed.has("examples")}
+                onToggle={() => toggleGroup("examples")}
                 title={tx("Examples")}
                 note={exampleNote()}
                 entries={groups.examples}
                 selectedId={selectedMarket?.id}
                 onSelect={selectMarket}
               />
-              {catalogShown.length > 0 && <ListHeader title="Local" count={catalogShown.length} />}
-              {catalogShown.map((c) => (
-                <CatalogRow
-                  key={c.id}
-                  entry={c}
-                  selected={c.id === selectedEntry?.id}
-                  onSelect={() => {
-                    setSelectedMarketId(null);
-                    setSelectedCatalogId(c.id);
-                  }}
+              {catalogShown.length > 0 && (
+                <ListHeader
+                  title="Local"
+                  count={catalogShown.length}
+                  collapsed={collapsed.has("local")}
+                  onToggle={() => toggleGroup("local")}
                 />
-              ))}
+              )}
+              {!collapsed.has("local") &&
+                catalogShown.map((c) => (
+                  <CatalogRow
+                    key={c.id}
+                    entry={c}
+                    selected={c.id === selectedEntry?.id}
+                    onSelect={() => {
+                      setSelectedMarketId(null);
+                      setSelectedCatalogId(c.id);
+                    }}
+                  />
+                ))}
               {catalog && category === "all" && catalogShown.length === 0 && (
                 <li className={styles.listEmpty}>
                   {catalog.length === 0 ? tx("No local plugin packages.") : tx("No plugins match.")}

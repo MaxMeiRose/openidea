@@ -15,10 +15,10 @@ import {
 import { AgentsView } from "./AgentsView";
 import { AgentsStatus } from "./AgentsStatus";
 import { activate } from "./index";
-import { openChangeDiff } from "./SessionEditor";
+import { openChangeDiff } from "./session/ChangesPane";
 import * as actions from "@/platform/actions";
 import { registerActions } from "@/platform/actions";
-import { TASK_DRAG } from "./model";
+import { SESSION_KIND, sessionKey, TASK_DRAG } from "./model";
 import { taskActions } from "./taskActions";
 import { sendPaths, sendSelection } from "./references";
 import { toPrompt } from "./composerModel";
@@ -194,14 +194,26 @@ describe("agent unread activity", () => {
     expect([...useAgents.getState().unread]).toEqual(["one"]);
   });
 
-  it.each(["ready", "needsInput", "failed", "limited"] as const)("marks background %s transitions unread", (status) => {
+  it.each([
+    ["finished", "ready"],
+    ["input", "needsInput"],
+    ["failed", "failed"],
+    ["failed", "limited"],
+  ] as const)("marks background attention %s unread", (reason, status) => {
     emit({ type: "task", task: task("one", status) });
+    emit({ type: "attention", task: "one", eventId: `one:${reason}:1`, reason });
     expect(useAgents.getState().unread.has("one")).toBe(true);
     expect(backend.notify).toHaveBeenCalledTimes(1);
     show();
-    emit({ type: "task", task: task("one", status) });
+    emit({ type: "attention", task: "one", eventId: `one:${reason}:2`, reason });
     expect(useAgents.getState().unread.size).toBe(0);
     expect(backend.notify).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not notify from status alone once Attention exists", () => {
+    emit({ type: "task", task: task("one", "ready") });
+    expect(backend.notify).not.toHaveBeenCalled();
+    expect(useAgents.getState().unread.has("one")).toBe(false);
   });
 
   it("keeps the latest usage limits per provider without marking anything unread", () => {
@@ -284,11 +296,94 @@ describe("agent unread activity", () => {
     expect(useAgents.getState().unread.size).toBe(0);
     expect([...useAgents.getState().tasks.keys()]).toEqual(["other"]);
   });
+
+  it("evicts entries, subagent entries, changes, and scroll positions when a task is removed or archived", () => {
+    backend.tabs = [
+      {
+        input: { kind: SESSION_KIND, key: sessionKey("open"), data: { task: "open" } },
+        title: "open",
+        icon: "toolwindow-agents",
+        lastActive: 1,
+      },
+    ];
+    useAgents.setState((s) => ({
+      tasks: new Map(s.tasks).set("two", task("two", "ready")).set("open", task("open", "ready")),
+      entries: new Map(s.entries)
+        .set("one", [{ type: "agent", text: "Answer one" }])
+        .set("one/child", [{ type: "agent", text: "Child one" }])
+        .set("one1", [{ type: "agent", text: "Answer one1" }])
+        .set("two", [{ type: "agent", text: "Answer two" }])
+        .set("open", [{ type: "agent", text: "Answer open" }]),
+      changes: new Map(s.changes)
+        .set("one", [{ path: "a.ts", relPath: "a.ts", oldPath: null, kind: "modified", added: 1, removed: 0 }])
+        .set("two", [{ path: "b.ts", relPath: "b.ts", oldPath: null, kind: "modified", added: 1, removed: 0 }]),
+      groupedChanges: new Map(s.groupedChanges)
+        .set("one", { uncommitted: [], commits: [] })
+        .set("two", { uncommitted: [], commits: [] }),
+      scrollPositions: new Map(s.scrollPositions)
+        .set("one", { top: 100, stick: false })
+        .set("one/child", { top: 50, stick: false }),
+    }));
+    emit({ type: "removed", id: "one" });
+    const afterRemoved = useAgents.getState();
+    expect(afterRemoved.entries.has("one")).toBe(false);
+    expect(afterRemoved.entries.has("one/child")).toBe(false);
+    expect(afterRemoved.changes.has("one")).toBe(false);
+    expect(afterRemoved.groupedChanges.has("one")).toBe(false);
+    expect(afterRemoved.scrollPositions.has("one")).toBe(false);
+    expect(afterRemoved.scrollPositions.has("one/child")).toBe(false);
+    expect(afterRemoved.entries.has("one1")).toBe(true);
+    expect(afterRemoved.entries.has("two")).toBe(true);
+
+    emit({ type: "task", task: task("two", "archived") });
+    const afterArchived = useAgents.getState();
+    expect(afterArchived.entries.has("two")).toBe(false);
+    expect(afterArchived.changes.has("two")).toBe(false);
+    expect(afterArchived.groupedChanges.has("two")).toBe(false);
+
+    // An archived task that is still open in a tab keeps its entries until closed.
+    emit({ type: "task", task: task("open", "archived") });
+    expect(useAgents.getState().entries.has("open")).toBe(true);
+    backend.tabs = [];
+    const dispose = activate();
+    try {
+      const sessionKind = useContributions.getState().editorKinds.get(SESSION_KIND);
+      sessionKind?.onClose?.({ kind: SESSION_KIND, key: sessionKey("open"), data: { task: "open" } });
+      expect(useAgents.getState().entries.has("open")).toBe(false);
+    } finally {
+      dispose();
+    }
+  });
+
+  it.each([false, true])(
+    "releases the previously docked task when another task or New Task replaces it (via New Task: %s)",
+    (viaHome) => {
+      setSessionLocation("toolWindow");
+      const tasks = new Map<string, AgentTask>();
+      const entries = new Map<string, AgentEntry[]>();
+      for (let i = 1; i <= 7; i++) {
+        const id = `D${i}`;
+        tasks.set(id, task(id, "ready"));
+        entries.set(id, [{ type: "agent", text: `Reply ${id}` }]);
+      }
+      useAgents.setState({ tasks, entries });
+      for (let i = 1; i <= 7; i++) {
+        if (viaHome) openHome();
+        openTask(`D${i}`);
+      }
+      const state = useAgents.getState();
+      expect(state.docked).toBe("D7");
+      expect(state.entries.has("D1")).toBe(false);
+      expect(state.entries.has("D7")).toBe(true);
+      expect(state.entries.size).toBe(6); // D7 docked + 5 most recently un-docked (D2..D6)
+    },
+  );
 });
 
 describe("agent unread indicators", () => {
   it("shows a dot on the task and a clickable status count even when all tasks are idle", () => {
     emit({ type: "task", task: task("one", "ready") });
+    emit({ type: "attention", task: "one", eventId: "one:finished:1", reason: "finished" });
     render(
       <>
         <AgentsView />

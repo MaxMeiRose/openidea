@@ -400,6 +400,57 @@ fn spring_boot_applications_need_the_plugin_and_a_main() {
 }
 
 #[test]
+fn spring_boot_modules_inherit_the_plugin_from_their_parent_build() {
+    let main = |pkg: &str, ann: &str, cls: &str| {
+        format!("package {pkg};\n{ann}\npublic class {cls} {{\n  public static void main(String[] a) {{}}\n}}\n")
+    };
+    let parent = "<project><packaging>pom</packaging><modules><module>order</module><module>user</module>\
+                  <module>gateway</module></modules><build><plugins><plugin>\
+                  <artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build></project>";
+    let order = main("shop.order", "@SpringBootApplication", "OrderApp");
+    let user = main("shop.user", "@SpringCloudApplication", "UserApp");
+    // A project annotation carrying @SpringBootApplication, declared in another module.
+    let gateway = main("shop.gateway", "@ShopApplication", "GatewayApp")
+        .replace("package shop.gateway;\n", "package shop.gateway;\nimport shop.common.ShopApplication;\n");
+    let annotation = "package shop.common;\n\nimport org.springframework.boot.autoconfigure.SpringBootApplication;\n\
+                      @Target(ElementType.TYPE)\n@SpringBootApplication\npublic @interface ShopApplication {}\n";
+    let files = [
+        ("pom.xml", parent.to_owned()),
+        ("order/pom.xml", "<project><artifactId>order</artifactId></project>".to_owned()),
+        ("order/src/main/java/shop/order/OrderApp.java", order),
+        ("user/pom.xml", "<project><artifactId>user</artifactId></project>".to_owned()),
+        ("user/src/main/java/shop/user/UserApp.java", user),
+        ("gateway/pom.xml", "<project><artifactId>gateway</artifactId></project>".to_owned()),
+        ("gateway/src/main/java/shop/gateway/GatewayApp.java", gateway),
+        ("common/src/main/java/shop/common/ShopApplication.java", annotation.to_owned()),
+    ];
+    let files: Vec<(&str, &str)> = files.iter().map(|(p, t)| (*p, t.as_str())).collect();
+    let c = detect(project(&files).path());
+    for id in [
+        "application:order:shop.order.OrderApp",
+        "application:user:shop.user.UserApp",
+        "application:gateway:shop.gateway.GatewayApp",
+    ] {
+        assert_eq!(find(&c, id).kind, "spring-boot", "{id}");
+    }
+
+    // A parent that only manages the plugin doesn't apply it; Gradle applies it from `subprojects`.
+    let dir = project(&[
+        ("pom.xml", PARENT_POM),
+        ("app/pom.xml", "<project/>"),
+        ("app/src/main/java/demo/App.java", &main("demo", "@SpringBootApplication", "App")),
+    ]);
+    assert!(!detect(dir.path()).iter().any(|c| c.kind == "spring-boot"));
+    let dir = project(&[
+        ("settings.gradle", "include 'app'\n"),
+        ("build.gradle", "subprojects {\n  apply plugin: 'org.springframework.boot'\n}\n"),
+        ("app/build.gradle", "dependencies {}\n"),
+        ("app/src/main/java/demo/App.java", &main("demo", "@SpringBootApplication", "App")),
+    ]);
+    assert_eq!(find(&detect(dir.path()), "application:app:demo.App").kind, "spring-boot");
+}
+
+#[test]
 fn go_projects() {
     let dir = project(&[
         ("go.mod", "module example.com/x\n"),
@@ -1172,4 +1223,55 @@ fn a_django_project_in_src_uses_the_environment_next_to_it() {
     let c = detect(dir.path());
     assert!(c.iter().any(|c| c.id == "pytest"));
     assert!(!c.iter().any(|c| c.id.starts_with("pytest:")), "{:?}", c.iter().map(|c| &c.id).collect::<Vec<_>>());
+}
+
+#[test]
+fn rebar3_projects() {
+    let dir = project(&[("rebar.config", "{erl_opts, [debug_info]}.\n"), ("src/app.erl", "-module(app).\n")]);
+    let c = detect(dir.path());
+    assert_eq!(ids(&c), ["rebar3:shell", "rebar3:eunit"]);
+    assert_eq!(cmdline(&c[0]), "rebar3 shell");
+    assert!(c[1].is_test);
+
+    // Common Test suites in an umbrella app; the project's own rebar3 script.
+    let dir = project(&[
+        ("rebar.config", ""),
+        ("rebar3", "#!/usr/bin/env escript\n"),
+        ("apps/core/test/core_SUITE.erl", "-module(core_SUITE).\n"),
+    ]);
+    let c = detect(dir.path());
+    assert_eq!(ids(&c), ["rebar3:shell", "rebar3:eunit", "rebar3:ct"]);
+    if !cfg!(windows) {
+        assert_eq!(cmdline(find(&c, "rebar3:ct")), "./rebar3 ct");
+    }
+}
+
+#[test]
+fn mix_projects() {
+    let dir = project(&[("mix.exs", "defmodule App.MixProject do\n  defp deps, do: []\nend\n")]);
+    let c = detect(dir.path());
+    assert_eq!(ids(&c), ["mix:iex", "mix:test"]);
+    assert_eq!(cmdline(&c[0]), "iex -S mix");
+    assert!(c[1].is_test);
+
+    let dir = project(&[("mix.exs", "defp deps do\n  [{:phoenix, \"~> 1.7\"}]\nend\n")]);
+    assert_eq!(cmdline(&detect(dir.path())[0]), "iex -S mix phx.server");
+}
+
+#[test]
+fn sbt_projects() {
+    let dir = project(&[
+        ("build.sbt", "lazy val core = project\n"),
+        ("core/build.sbt", "libraryDependencies += \"a\" % \"b\" % \"1\"\n"),
+        ("core/src/main/scala/App.scala", "object App\n"),
+    ]);
+    let c = detect(dir.path());
+    assert_eq!(ids(&c), ["sbt:run", "sbt:test"]);
+    assert_eq!(cmdline(&c[0]), "sbt run");
+    assert!(c[1].is_test && c.iter().all(|c| c.kind == "sbt"));
+
+    let dir = project(&[("build.sbt", ""), ("sbt", "#!/bin/sh\n")]);
+    if !cfg!(windows) {
+        assert_eq!(cmdline(&detect(dir.path())[1]), "./sbt test");
+    }
 }

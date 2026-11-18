@@ -7,6 +7,8 @@ import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "rea
 import clsx from "clsx";
 import { Checkbox, IconButton, Input, Select as UiSelect, type SelectOption, T } from "@/ui";
 import { tx, useTx } from "@/platform/i18n";
+import { choosePath } from "@/platform/choosePath";
+import { isTauri } from "@/platform/ipc";
 import { highlightIndices } from "../model/pages";
 import { HEX_COLOR } from "../model/schema";
 import { useLabelMatch, useSearchQuery, useSetting } from "./context";
@@ -128,6 +130,7 @@ export interface NumberInputProps {
   /** Integer-only input. */
   integer?: boolean;
   unit?: string;
+  disabled?: boolean;
   "aria-label"?: string;
 }
 
@@ -143,7 +146,18 @@ export function parseNumberInput(
 }
 
 /** Number field: edits commit while valid; invalid text is flagged and reverted on blur. */
-export function NumberInput({ id, value, onChange, min, max, step = 1, integer, unit, ...aria }: NumberInputProps) {
+export function NumberInput({
+  id,
+  value,
+  onChange,
+  min,
+  max,
+  step = 1,
+  integer,
+  unit,
+  disabled,
+  ...aria
+}: NumberInputProps) {
   const [draft, setDraft] = useState<string | null>(null);
   const text = draft ?? String(value);
   const invalid = draft !== null && parseNumberInput(draft, { min, max, integer }) === null;
@@ -155,6 +169,7 @@ export function NumberInput({ id, value, onChange, min, max, step = 1, integer, 
         inputMode={integer ? "numeric" : "decimal"}
         value={text}
         invalid={invalid}
+        disabled={disabled}
         aria-label={aria["aria-label"]}
         aria-valuemin={min}
         aria-valuemax={max}
@@ -212,7 +227,8 @@ export function Select<V extends string>({
 
 export interface ColorSwatchesProps {
   value: string;
-  presets: readonly { value: string; label: string }[];
+  /** `css`: how the swatch is drawn when `value` is a name rather than a colour. */
+  presets: readonly { value: string; label: string; css?: string }[];
   onChange: (value: string) => void;
   /** Offer a custom colour picker + hex field. */
   allowCustom?: boolean;
@@ -240,7 +256,7 @@ export function ColorSwatches({ value, presets, onChange, allowCustom = true, ..
             className={clsx(styles.swatch, on && styles.swatchOn)}
             onClick={() => onChange(p.value)}
           >
-            <span className={styles.swatchColor} style={{ background: p.value }} />
+            <span className={styles.swatchColor} style={{ background: p.css ?? p.value }} />
           </button>
         );
       })}
@@ -289,6 +305,8 @@ export interface GlobListEditorProps {
   emptyText?: string;
   /** Accessible name of the inline editor. */
   itemLabel?: string;
+  /** Entries are paths: + opens this chooser (Edit still takes typing). */
+  browse?: { directory: boolean; title: string };
 }
 
 /** Editable list of glob patterns (+ / − / edit toolbar, inline editing); also plain string lists. */
@@ -298,6 +316,7 @@ export function GlobListEditor({
   placeholder = "**/pattern",
   emptyText = "No patterns",
   itemLabel = "Pattern",
+  browse,
   ...aria
 }: GlobListEditorProps) {
   const [selected, setSelected] = useState<number | null>(null);
@@ -324,6 +343,19 @@ export function GlobListEditor({
     onChange([...new Set(next)]);
     setSelected(Math.min(editing.index, next.length - 1));
     setEditing(null);
+  };
+
+  const add = async () => {
+    // Outside the desktop app there is no chooser: type the path instead.
+    if (!browse || !isTauri()) {
+      setEditing({ index: value.length, text: "" });
+      return;
+    }
+    const picked = await choosePath({ ...browse, title: tx(browse.title) });
+    if (!picked) return;
+    const next = [...new Set([...value, picked])];
+    onChange(next);
+    setSelected(next.indexOf(picked));
   };
 
   const remove = () => {
@@ -366,12 +398,7 @@ export function GlobListEditor({
   return (
     <div className={styles.globEditor}>
       <div className={styles.listToolbar} role="toolbar" aria-controls={listId}>
-        <IconButton
-          icon="plus"
-          title="Add"
-          size="small"
-          onClick={() => setEditing({ index: value.length, text: "" })}
-        />
+        <IconButton icon="plus" title="Add" size="small" onClick={() => void add()} />
         <IconButton icon="minus" title="Remove" size="small" disabled={selected === null} onClick={remove} />
         <IconButton
           icon="edit"
