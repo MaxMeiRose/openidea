@@ -101,6 +101,8 @@ export interface DebugSession {
   jvmBackend?: JvmBackendState;
   /** A cancelled JDT build may have lost class-file deltas needed by this session. */
   hotSwapNeedsRestart?: boolean;
+  /** `flutter debug_adapter` reported the app as started: it can take a hot reload. */
+  flutterAppStarted?: boolean;
 }
 
 export interface ConsoleLine {
@@ -1403,6 +1405,9 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
     }
     case "initialized":
       if (s.status === "starting") patch(id, { status: "running" });
+      break;
+    case "flutterAppStarted":
+      patch(id, { flutterAppStarted: true });
       break;
     case "stopped": {
       const isBp = event.reason === "breakpoint" || event.reason === "function breakpoint";

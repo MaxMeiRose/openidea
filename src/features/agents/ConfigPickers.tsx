@@ -79,10 +79,12 @@ const selected = (option: AgentConfigOption, value: string | null) =>
   option.values.find((v) => v.value === value) ?? null;
 
 interface ModelRefresh {
+  draft?: boolean;
   refreshing: boolean;
   loadingSettings?: boolean;
   retryAtMs: number | null;
   error: string | null;
+  onOpen?: () => void;
   onRefresh: () => void;
 }
 
@@ -98,14 +100,13 @@ export function ConfigPickers({
   values?: Record<string, string>;
   onChange: (option: string, value: string) => void;
   disabled?: boolean;
-  /** Only New Task supplies catalog discovery; session pickers retain their own settings. */
   modelRefresh?: ModelRefresh;
 }) {
   const tx = useTx();
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLButtonElement>(null);
   const options = mainOptions(config);
-  if (modelRefresh && !options.some((o) => o.category === "model"))
+  if (modelRefresh?.draft && !options.some((o) => o.category === "model"))
     options.unshift({
       id: "model",
       name: "Model",
@@ -285,8 +286,10 @@ function ModelPicker({
   const pinnedModels = useAgents((s) => s.pinnedModels);
   const anchor = useRef<HTMLButtonElement>(null);
   const selectedModel = selected(model, modelValue);
-  const unavailable = modelRefresh && modelValue !== null && !selectedModel;
-  const modelName = unavailable ? tx`${modelValue} (unavailable)` : (selectedModel?.name ?? tx("Default"));
+  const unavailable = modelRefresh?.draft && modelValue !== null && !selectedModel;
+  const modelName = unavailable
+    ? tx`${modelValue} (unavailable)`
+    : (selectedModel?.name ?? (modelRefresh ? modelValue : null) ?? tx("Default"));
 
   const contextOption = modelConfigs.find((o) => isContextOption(o.id) && o.values.length > 0);
   const contextValue = contextOption ? valueOf(contextOption) : null;
@@ -313,7 +316,10 @@ function ModelPicker({
         aria-haspopup="dialog"
         aria-expanded={open}
         title={`${tx(model.name)}: ${modelName}${summary ? ` · ${summary}` : ""}`}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          if (!open) modelRefresh?.onOpen?.();
+          setOpen(!open);
+        }}
       >
         <span className={styles.chipValue}>{modelName}</span>
         {contextLabel && <span className={styles.chipDetail}>{contextLabel}</span>}
@@ -457,7 +463,7 @@ function CostBadge({ category }: { category: string | null | undefined }) {
 }
 
 /** Accessible segmented pill selector (`role="radiogroup"`) with Left/Right arrow navigation. */
-function SegmentedControl({
+export function SegmentedControl({
   ariaLabel,
   options,
   value,
