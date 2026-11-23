@@ -13,7 +13,7 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   min-width: 0;
@@ -40,7 +40,7 @@
 .loading {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   font-size: var(--fs-small);
   color: var(--fg-muted);
 }
@@ -148,7 +148,7 @@
   display: flex;
   flex-wrap: wrap;
   flex: none;
-  gap: 4px 16px;
+  gap: var(--space-1) var(--space-4);
   padding: 6px 12px;
   border-top: 1px solid var(--border);
   color: var(--fg-subtle);
@@ -165,7 +165,7 @@
 .form label {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .hint {
   margin: -6px 0 0;

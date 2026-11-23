@@ -132,6 +132,10 @@ beforeEach(() => {
   statement = null;
   identifiers = [];
   confirmAnswer = { checked: false };
+  lspReferences.mockReset().mockImplementation(async (_request: number, _doc: number, pos: Pos) => {
+    const r = references(pos);
+    return r.status === "ok" ? { status: "ok" as const, data: { locations: r.data, incomplete: null } } : r;
+  });
 });
 
 afterEach(() => {
@@ -268,6 +272,24 @@ describe("usagesMessage", () => {
 
 describe("safeDelete in the editor", () => {
   const text = "fn used() {}\n\nfn unused() {\n    unused();\n}\n\nfn main() {}\n";
+
+  it("refreshes a cached empty answer before deleting a declaration", async () => {
+    const v = editor(text, "used() {}");
+    outline = ok([item(text, "used", "fn used() {}")]);
+    lspReferences.mockResolvedValueOnce({
+      status: "ok",
+      data: { locations: [], incomplete: null, stale: true },
+    } as never);
+    const usage = { path: "/p/caller.rs", range: { start: { line: 3, col: 0 }, end: { line: 3, col: 4 } } };
+    lspReferences.mockResolvedValueOnce({
+      status: "ok",
+      data: { locations: [usage], incomplete: null, stale: false },
+    } as never);
+    await safeDelete(v);
+    expect(v.state.doc.toString()).toBe(text);
+    expect(lspReferences).toHaveBeenCalledTimes(2);
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
 
   it("deletes an unused declaration as one undo step, ignoring recursive calls", async () => {
     const v = editor(text, "unused() {");
@@ -500,5 +522,16 @@ describe("fileUsages", () => {
     const abort = new AbortController();
     abort.abort();
     await expect(fileUsages(["/p/a.rs"], abort.signal)).rejects.toMatchObject({ kind: "cancelled" });
+  });
+
+  it("stops refreshing stale results when cancelled", async () => {
+    const abort = new AbortController();
+    outline = ok([item(text, "a", "pub fn a() {}")]);
+    lspReferences.mockImplementationOnce(async () => {
+      abort.abort();
+      return { status: "ok", data: { locations: [], incomplete: null, stale: true } };
+    });
+    await expect(fileUsages(["/p/a.rs"], abort.signal)).rejects.toMatchObject({ kind: "cancelled" });
+    expect(lspReferences).toHaveBeenCalledTimes(1);
   });
 });

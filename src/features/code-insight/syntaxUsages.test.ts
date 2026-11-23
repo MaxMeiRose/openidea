@@ -48,7 +48,7 @@ beforeEach(() => {
 describe("Find Usages fallback", () => {
   it("uses the server when it answers, even with nothing", async () => {
     cmd.lspReferences.mockReturnValueOnce(ok({ locations: [], incomplete: null }));
-    expect(await fetchUsages(caret)).toEqual({ groups: [], note: null, librariesSkipped: false });
+    expect(await fetchUsages(caret)).toEqual({ groups: [], note: null, librariesSkipped: false, stale: false });
     expect(cmd.syntaxLocals).not.toHaveBeenCalled();
   });
 

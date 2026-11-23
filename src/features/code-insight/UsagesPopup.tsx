@@ -81,7 +81,7 @@ export function UsagesPopup() {
 const ROW = 24;
 
 function UsagesPopupInner() {
-  const { anchor, symbol, groups, note, loading, scope } = useUsagesPopup();
+  const { anchor, symbol, groups, note, loading, scope, stale, current: sourceCurrent } = useUsagesPopup();
   const preview = useUsagesPopupPreview((s) => s.preview);
   const all = useMemo<Usage[]>(() => groups.flatMap((g) => g.usages), [groups]);
   const [filter, setFilter] = useState("");
@@ -94,11 +94,12 @@ function UsagesPopupInner() {
   const current = Math.min(active, items.length - 1);
   const total = usageCount(groups);
   const pick = (u: Usage | undefined) => {
-    if (!u) return;
+    if (!u || stale || (sourceCurrent && !sourceCurrent())) return;
     close();
     void openLocation(u.path, u.line, u.col);
   };
   const openInFindWindow = () => {
+    if (stale || (sourceCurrent && !sourceCurrent())) return;
     close();
     void showUsageResults({
       symbol,
@@ -109,6 +110,7 @@ function UsagesPopupInner() {
           location: usageLocations([{ path: g.path, usages: [u] }])[0]!,
           kind: u.kind ?? "unknown",
           access: u.access,
+          text: u.text,
         })),
       ),
     });
@@ -144,6 +146,9 @@ function UsagesPopupInner() {
   };
 
   const keys = shortcutLabel("find.usages");
+  let emptyText = tx("No usages match the access filters");
+  if (loading && !all.length) emptyText = tx("Searching for usages…");
+  else if (filter) emptyText = tx`Nothing matches '${filter}'`;
   return (
     <Popup open anchor={anchor} onClose={close} aria-label="Usages" className={styles.popup}>
       <div
@@ -218,11 +223,7 @@ function UsagesPopupInner() {
             rowHeight={ROW}
             aria-label="Usages"
             onActivate={pick}
-            empty={
-              <div className={styles.empty}>
-                {filter ? tx`Nothing matches '${filter}'` : tx("No usages match the access filters")}
-              </div>
-            }
+            empty={<div className={styles.empty}>{emptyText}</div>}
             renderItem={(u) => (
               <div className={styles.row} data-testid="usage-row" data-path={u.path} data-line={u.line}>
                 <Icon name={fileIconName(basename(u.path), u.path)} size={16} className={styles.icon} />

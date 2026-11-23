@@ -1902,7 +1902,7 @@
 .header {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 32px;
   padding: 0 6px 0 12px;
   border-bottom: 1px solid var(--border);
@@ -1969,7 +1969,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   color: var(--fg-subtle);
 }
 .headerText {
@@ -2039,7 +2039,7 @@
   padding: 0 8px 8px 18px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 .toolChildren .toolDetails {
@@ -2071,14 +2071,14 @@
 .toolFiles {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 8px 10px;
 }
 
 .toolFiles button {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   color: var(--link);
   cursor: pointer;
   font-size: var(--fs-small);

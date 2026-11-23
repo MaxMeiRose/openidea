@@ -2076,15 +2076,22 @@ export function addContributedFileTemplate(t: import("@/platform/fileTemplates")
  */
 export type DocumentIndexPurpose = "usages" | "refactor";
 type DocumentIndexSync = (path: string, purpose: DocumentIndexPurpose) => Promise<boolean | void>;
-const documentIndexSync = new Set<DocumentIndexSync>();
-export function registerDocumentIndexSync(sync: DocumentIndexSync): () => void {
-  documentIndexSync.add(sync);
+const documentIndexSync = new Map<DocumentIndexSync, (path: string) => boolean>();
+export function registerDocumentIndexSync(
+  sync: DocumentIndexSync,
+  pending: (path: string) => boolean = () => true,
+): () => void {
+  documentIndexSync.set(sync, pending);
   return () => {
     documentIndexSync.delete(sync);
   };
 }
+/** Whether a usages query must be repeated after the contributed indexes are flushed. */
+export function documentIndexesPending(path: string): boolean {
+  return [...documentIndexSync.values()].some((pending) => pending(path));
+}
 export async function synchronizeDocumentIndexes(path: string, purpose: DocumentIndexPurpose): Promise<boolean> {
-  const complete = await Promise.all([...documentIndexSync].map((sync) => sync(path, purpose)));
+  const complete = await Promise.all([...documentIndexSync.keys()].map((sync) => sync(path, purpose)));
   return complete.every((c) => c !== false);
 }
 

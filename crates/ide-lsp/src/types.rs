@@ -415,6 +415,10 @@ pub struct References {
     #[serde(default)]
     #[specta(optional)]
     pub libraries_skipped: bool,
+    /// A Java model change can have outdated these rows: the extension answered at once from
+    /// its last search, and the next request searches again.
+    #[serde(default)]
+    pub stale: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
@@ -614,7 +618,7 @@ pub struct ClassifiedReference {
     pub access: Option<ReferenceAccess>,
     pub location: Location,
     pub kind: ReferenceKind,
-    /// The usage's line, when the server has it at hand (a library class's).
+    /// The usage's line, when the server has it at hand (a workspace source file's, a library class's).
     #[serde(default)]
     #[specta(optional)]
     pub text: Option<String>,

@@ -52,7 +52,7 @@
 .search {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 4px 6px;
 }
 .searchInput {
@@ -128,7 +128,7 @@
 .loading {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 5px 8px;
   font-size: var(--fs-small);
   color: var(--fg-muted);
@@ -154,7 +154,7 @@
 .requestTitle {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 7px 8px 3px;
 }
 .requestTitle > input {
@@ -174,7 +174,7 @@
 .baseRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 4px 8px 7px;
   font-size: var(--fs-small);
   color: var(--fg-subtle);
@@ -210,7 +210,7 @@
 }
 .pair {
   display: flex;
-  gap: 4px;
+  gap: var(--space-1);
   align-items: center;
 }
 .pair input:not([type="checkbox"]) {
@@ -219,7 +219,7 @@
 }
 .body,
 .textarea {
-  border: 1px solid var(--border-input);
+  border: 1px solid var(--border-button);
   border-radius: var(--radius-control);
   padding: 8px;
   color: var(--fg);
@@ -344,10 +344,10 @@
 .form {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .form label {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }

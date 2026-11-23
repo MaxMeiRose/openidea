@@ -3652,6 +3652,7 @@ async fn claude_configuration_is_available_before_a_task_and_does_not_create_one
 async fn claude_restored_task_recovers_missing_choices_without_prompting() {
     let tmp = tempfile::tempdir().unwrap();
     let agent = Arc::new(FakeAgent::default());
+    agent.model_options.lock().insert("small".into(), effort_options(&["minimal"], "minimal"));
     let mgr = manager(tmp.path(), agent);
     let task = mgr
         .create(NewAgentTask {
@@ -3659,12 +3660,16 @@ async fn claude_restored_task_recovers_missing_choices_without_prompting() {
             prompt: text("again"),
             provider: "claude".into(),
             config: vec![],
+            mcp_overrides: Default::default(),
             isolation: Isolation::Local,
             base: None,
         })
         .await
         .unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    // Populate the model catalog from the live fake session, without an installed Claude CLI.
+    mgr.set_config(&task.id, "model", "small".into()).await.unwrap();
+    mgr.set_config(&task.id, "model", "big".into()).await.unwrap();
     mgr.shutdown();
     let old = mgr.task(&task.id).unwrap();
     old.state.lock().task.config.clear();
@@ -3675,6 +3680,17 @@ async fn claude_restored_task_recovers_missing_choices_without_prompting() {
     let config = restored.configuration("claude", None, Some(&task.id)).await.unwrap();
     assert!(config.iter().any(|o| o.category.as_deref() == Some("model")));
     restored.set_config(&task.id, "model", "small".into()).await.unwrap();
+    assert!(
+        restored
+            .task(&task.id)
+            .unwrap()
+            .state
+            .lock()
+            .task
+            .config
+            .iter()
+            .any(|option| { option.id == "effort" && option.current.as_deref() == Some("minimal") })
+    );
     assert_eq!(restored.entries(&task.id, None).unwrap(), before);
     assert!(!agent.calls.lock().iter().any(|m| m == "session/new" || m == "session/prompt"));
     assert_eq!(restored.task(&task.id).unwrap().state.lock().task.model.as_deref(), Some("small"));

@@ -5,7 +5,7 @@ async function colors(button: Locator, variable: string) {
   return button.evaluate((element, variable) => {
     const probe = document.createElement("span");
     probe.style.color = `var(${variable})`;
-    probe.style.backgroundColor = "var(--bg-button-primary)";
+    probe.style.backgroundColor = "var(--bg-stripe-selected)";
     element.append(probe);
     const expected = getComputedStyle(probe).color;
     const primaryBackground = getComputedStyle(probe).backgroundColor;
@@ -32,7 +32,9 @@ async function colors(button: Locator, variable: string) {
 }
 
 for (const theme of ["light", "dark"]) {
-  test(`API and Eureka sidebar icons remain legible in ${theme} selection states`, async ({ workbench: page }) => {
+  test(`API and Eureka sidebar icons remain legible in ${theme} selection states`, async ({
+    workbench: page,
+  }, testInfo) => {
     await page.evaluate(async (theme) => {
       const module = "/src/workbench/theme.ts";
       (await import(module)).useThemeOverride.setState({ theme });
@@ -75,18 +77,18 @@ for (const theme of ["light", "dark"]) {
       await page.mouse.move(700, 300);
       await expect
         .poll(async () => {
-          const result = await colors(button, "--fg-button-primary");
+          const result = await colors(button, "--fg-emphasis");
           return (
-            result.foreground === "rgb(255, 255, 255)" &&
+            result.foreground === result.expected &&
             result.strokes.every((stroke) => stroke === result.expected) &&
             result.fills.every((fill) => fill === result.expected)
           );
         })
         .toBe(true);
-      const selected = await colors(button, "--fg-button-primary");
+      const selected = await colors(button, "--fg-emphasis");
       expect(selected.background).toBe(selected.primaryBackground);
       await stripe.screenshot({
-        path: `/tmp/openidea-${name === "API Client" ? "api" : "eureka"}-icon-selected-${theme}.png`,
+        path: testInfo.outputPath(`${name === "API Client" ? "api" : "eureka"}-icon-selected-${theme}.png`),
         animations: "disabled",
       });
 
@@ -96,7 +98,7 @@ for (const theme of ["light", "dark"]) {
       await expect
         .poll(async () => {
           const result = await colors(button, "--fg-icon");
-          return idleColors(result) && result.background !== selected.background;
+          return idleColors(result) && result.background === selected.background;
         })
         .toBe(true);
 

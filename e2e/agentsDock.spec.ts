@@ -1,5 +1,6 @@
 /** Docking agent conversations between the editor and the Agents tool window by drag & drop. */
-import { expect, test, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 const TASK = {
   id: "t1",
@@ -32,6 +33,7 @@ async function seedAndDock(page: Page) {
       error: null,
       providers: [],
       tasks: new Map([[task.id, task]]),
+      entries: new Map([[task.id, []]]),
       unread: new Set(),
       docked: null,
     });
@@ -81,7 +83,11 @@ test("keeps the current conversation docked when dragged onto an editor", async 
   await seedAndDock(page);
 
   const title = page.locator("span[title='Repro task']").first();
-  const to = await page.getByRole("tabpanel").first().boundingBox();
+  const to = await page
+    .getByRole("region", { name: "Editor", exact: true })
+    .locator('[role="tabpanel"]:visible')
+    .first()
+    .boundingBox();
   const from = await title.boundingBox();
   await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
   await page.mouse.down();
@@ -128,6 +134,7 @@ test("docks a session tab dropped on the tool window", async ({ page }) => {
       error: null,
       providers: [],
       tasks: new Map([[task.id, task]]),
+      entries: new Map([[task.id, []]]),
       unread: new Set(),
       docked: null,
     });

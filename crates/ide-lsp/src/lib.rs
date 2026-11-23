@@ -2135,7 +2135,8 @@ impl LspManager {
             let classified = async {
                 let t = &targets[0];
                 let extension_error = Mutex::new(None);
-                let (snap, cancel, extension_error) = (&snap, &cancel, &extension_error);
+                let stale = std::sync::atomic::AtomicBool::new(false);
+                let (snap, cancel, extension_error, stale) = (&snap, &cancel, &extension_error, &stale);
                 // `sources`: the workspace's source folders only, without dependency jars and the JDK.
                 let query = |sources: bool| async move {
                     if cancel.is_cancelled() || self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version) {
@@ -2160,7 +2161,18 @@ impl LspManager {
                         #[serde(default)]
                         text: Option<String>,
                     }
-                    let result: IdeResult<Vec<JavaReference>> = self
+                    // `{rows, stale}` since bundle 1.16.0; a build before it answers the rows alone.
+                    #[derive(serde::Deserialize)]
+                    #[serde(untagged)]
+                    enum JavaUsages {
+                        Rows(Vec<JavaReference>),
+                        Answer {
+                            rows: Vec<JavaReference>,
+                            #[serde(default)]
+                            stale: bool,
+                        },
+                    }
+                    let result: IdeResult<JavaUsages> = self
                         .call(
                             t,
                             "workspace/executeCommand",
@@ -2172,7 +2184,14 @@ impl LspManager {
                     if let Err(e) = &result {
                         *extension_error.lock() = Some(e.clone());
                     }
-                    let rows = result?;
+                    let (rows, answer_stale) = match result? {
+                        JavaUsages::Rows(rows) => (rows, false),
+                        JavaUsages::Answer { rows, stale } => (rows, stale),
+                    };
+                    if answer_stale {
+                        // One wave of the answer is outdated; the client re-asks once.
+                        stale.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                     if cancel.is_cancelled() || self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version) {
                         return Err(IdeError::cancelled());
                     }
@@ -2221,6 +2240,7 @@ impl LspManager {
                                 classified: found.clone(),
                                 incomplete: sources.incomplete,
                                 libraries_skipped: false,
+                                stale: stale.load(std::sync::atomic::Ordering::Relaxed),
                             });
                         }
                         query(false).await?
@@ -2254,7 +2274,13 @@ impl LspManager {
                 let locations: Vec<Location> = classified.iter().map(|r| r.location.clone()).collect();
                 self.note_virtual(&t.server, locations.iter().map(|l| l.uri.as_deref()));
                 self.note_arduino_sources(&t.server, &locations);
-                Ok(References { locations, classified, incomplete: widened.incomplete, libraries_skipped })
+                Ok(References {
+                    locations,
+                    classified,
+                    incomplete: widened.incomplete,
+                    libraries_skipped,
+                    stale: stale.load(std::sync::atomic::Ordering::Relaxed),
+                })
             }
             .await;
             match classified {

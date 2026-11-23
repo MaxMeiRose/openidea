@@ -19,7 +19,8 @@ import { executeAction } from "@/platform/actions";
 import { basename } from "@/platform/project";
 import { editorsFor, whenSynced, type EditorDocContext } from "@/editor/api";
 import { structure } from "@/editor/structure";
-import { docOf, isUnavailable, lspRequest } from "@/editor/lsp/lsp";
+import { docOf, incompleteNote, isUnavailable, lspRequest } from "@/editor/lsp/lsp";
+import { currentReferences } from "@/editor/lsp/currentReferences";
 import { comparePos, offsetToPos, rangeContains, rangeToOffsets } from "@/editor/lsp/positions";
 import { showHint } from "@/editor/lsp/hint";
 import { ask, confirmChecked } from "@/workbench/messages";
@@ -247,17 +248,20 @@ async function resolveTarget(view: EditorView, ctx: EditorDocContext): Promise<R
 }
 
 /** LSP references to the target, its own declaration excluded. */
-async function findUsages(ctx: EditorDocContext, target: SafeDeleteTarget): Promise<Location[]> {
+async function findUsages(ctx: EditorDocContext, target: SafeDeleteTarget, wanted: () => boolean): Promise<Location[]> {
   const outside = (path: string, range: Range) =>
     path !== ctx.path ||
     comparePos(range.start, target.range.start) < 0 ||
     comparePos(range.start, target.range.end) > 0;
   if (target.local)
     return target.local.references.filter((r) => outside(ctx.path, r)).map((range) => ({ path: ctx.path, range }));
-  const { locations: refs } = await lspRequest(() =>
-    commands.lspReferences(nextRequestId(), ctx.doc, target.at, false, true, false, new Channel()),
+  const answer = await currentReferences(
+    () =>
+      lspRequest(() => commands.lspReferences(nextRequestId(), ctx.doc, target.at, false, true, false, new Channel())),
+    wanted,
   );
-  return refs.filter((l) => outside(l.path, l.range));
+  if (answer.incomplete) throw new Error(incompleteNote(answer.incomplete, target.name));
+  return answer.locations.filter((l) => outside(l.path, l.range));
 }
 
 // ---------------------------------------------------------------------------
@@ -467,7 +471,7 @@ export async function safeDelete(view: EditorView): Promise<void> {
     searchInComments = confirmed.checked;
     if (view.state.doc !== docBefore || !view.state.selection.eq(selBefore)) return;
     const [usages, textHits] = await Promise.all([
-      findUsages(ctx, target),
+      findUsages(ctx, target, () => view.state.doc === docBefore),
       confirmed.checked ? commentAndStringOccurrences(ctx, docBefore, target) : Promise.resolve([]),
     ]);
     if (view.state.doc !== docBefore) return;
@@ -542,6 +546,7 @@ export async function fileUsages(paths: readonly string[], signal?: AbortSignal)
   const deleted = new Set(paths);
   const found = new Map<string, Location>();
   let searched = false;
+  let uncertain = false;
   let reason = "No language server supports usage search for these files";
   for (const path of paths) {
     if (signal?.aborted) throw cancelled();
@@ -553,22 +558,28 @@ export async function fileUsages(paths: readonly string[], signal?: AbortSignal)
           let refs: Location[];
           try {
             // Every symbol of every file: the server's own scope (a project search each would be too slow).
-            refs = (
-              await lspRequest(() =>
-                commands.lspReferences(
-                  nextRequestId(),
-                  doc,
-                  item.selection_range.start,
-                  false,
-                  false,
-                  false,
-                  new Channel(),
+            const answer = await currentReferences(
+              () =>
+                lspRequest(() =>
+                  commands.lspReferences(
+                    nextRequestId(),
+                    doc,
+                    item.selection_range.start,
+                    false,
+                    false,
+                    false,
+                    new Channel(),
+                  ),
                 ),
-              )
-            ).locations;
+              () => !signal?.aborted,
+            );
+            if (answer.incomplete) throw new Error(incompleteNote(answer.incomplete, item.name));
+            refs = answer.locations;
           } catch (e) {
+            if (isCancelled(e)) throw e;
+            uncertain = true;
+            reason = errorText(e);
             if (isUnavailable(e)) {
-              reason = errorText(e);
               return;
             }
             continue;
@@ -582,9 +593,10 @@ export async function fileUsages(paths: readonly string[], signal?: AbortSignal)
       });
     } catch (e) {
       if (isCancelled(e)) throw e;
+      uncertain = true;
       reason = errorText(e);
     }
   }
   if (signal?.aborted) throw cancelled();
-  return searched ? { status: "ok", usages: [...found.values()] } : { status: "unsupported", reason };
+  return searched && !uncertain ? { status: "ok", usages: [...found.values()] } : { status: "unsupported", reason };
 }

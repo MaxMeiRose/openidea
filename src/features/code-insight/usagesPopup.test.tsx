@@ -1,11 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
 const calls: string[] = [];
 /** The editor at the caret (`null`: none, as for a search from outside an editor). */
 let caretView: import("@codemirror/view").EditorView | null = null;
 const referenceResponse = vi.fn(
-  async (): Promise<{ locations: (typeof loc)[]; incomplete: null; librariesSkipped?: boolean }> => ({
+  async (): Promise<{ locations: (typeof loc)[]; incomplete: null; librariesSkipped?: boolean; stale?: boolean }> => ({
     locations: [loc],
     incomplete: null,
   }),
@@ -50,6 +50,7 @@ vi.mock("./usages", async (orig) => ({
 
 const { UsagesPopup, filterUsages, usageLocations } = await import("./UsagesPopup");
 const { showUsagesPopup, useUsagesPopup, dismissUsagesPopup, setUsagesPopupScope } = await import("./usages");
+const { resetUsages } = await import("./usages");
 
 const usage = (path: string, line: number, text: string) => ({ path, line, col: 0, endCol: 3, text });
 const groups = [
@@ -64,6 +65,9 @@ function open() {
 }
 
 const { useUsageAccessOptions } = await import("./UsageAccessFilter");
+beforeEach(() =>
+  referenceResponse.mockReset().mockImplementation(async () => ({ locations: [loc], incomplete: null })),
+);
 afterEach(() =>
   act(() => {
     dismissUsagesPopup();
@@ -73,6 +77,60 @@ afterEach(() =>
 );
 
 describe("Show Usages popup", () => {
+  it("refreshes stale results without jumping to their obsolete position", async () => {
+    resetUsages();
+    const moved = { ...loc, range: { start: { line: 8, col: 4 }, end: { line: 8, col: 8 } } };
+    referenceResponse.mockResolvedValueOnce({ locations: [loc], incomplete: null, stale: true });
+    referenceResponse.mockResolvedValueOnce({ locations: [moved, { ...moved, path: "/p/new.ts" }], incomplete: null });
+    const before = calls.length;
+    const requested = lspReferences.mock.calls.length;
+    await showUsagesPopup();
+    expect(lspReferences).toHaveBeenCalledTimes(requested + 2);
+    expect(calls.slice(before)).not.toContain("open /p/b.ts:1");
+    expect(useUsagesPopup.getState().groups[0]!.usages[0]!.line).toBe(8);
+    resetUsages();
+  });
+
+  it("shows a preloaded answer while the full query is still waiting for indexes", async () => {
+    resetUsages();
+    const { EditorState } = await import("@codemirror/state");
+    const { EditorView } = await import("@codemirror/view");
+    const { registerDocumentIndexSync } = await import("@/workbench/contributions");
+    caretView = new EditorView({ state: EditorState.create({ doc: "used();" }), parent: document.body });
+    let release!: () => void;
+    const off = registerDocumentIndexSync(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const references = { locations: [loc, { ...loc, path: "/p/c.ts" }], incomplete: null };
+    referenceResponse.mockResolvedValue(references);
+    const pending = showUsagesPopup({
+      doc: 1,
+      path: "/p/a.ts",
+      pos: { line: 0, col: 0 },
+      document: caretView.state.doc,
+      references,
+      current: () => true,
+    });
+    try {
+      await vi.waitFor(() => expect(useUsagesPopup.getState().open).toBe(true));
+      expect(useUsagesPopup.getState().groups).toHaveLength(2);
+      expect(useUsagesPopup.getState().loading).toBe(true);
+      await vi.waitFor(() => expect(typeof release).toBe("function"));
+      release();
+      await pending;
+      expect(useUsagesPopup.getState().loading).toBe(false);
+    } finally {
+      release?.();
+      off();
+      await pending;
+      caretView.destroy();
+      caretView = null;
+      resetUsages();
+    }
+  });
   it("filters by typing; Esc clears the filter, then closes", () => {
     const body = open();
     expect(screen.getAllByRole("option")).toHaveLength(3);
@@ -84,6 +142,18 @@ describe("Show Usages popup", () => {
     expect(useUsagesPopup.getState().open).toBe(true);
     fireEvent.keyDown(body, { key: "Escape" });
     expect(useUsagesPopup.getState().open).toBe(false);
+  });
+
+  it("does not activate stale rows while they are being refreshed", () => {
+    const body = open();
+    const before = calls.length;
+    act(() => useUsagesPopup.setState({ stale: true, loading: true }));
+    fireEvent.keyDown(body, { key: "Enter" });
+    expect(calls).toHaveLength(before);
+    expect(useUsagesPopup.getState().open).toBe(true);
+    act(() => useUsagesPopup.setState({ stale: false, loading: false }));
+    fireEvent.keyDown(body, { key: "Enter" });
+    expect(calls.slice(before)).toContain("open /p/a.ts:2");
   });
 
   it("matches file names and line text", () => {
@@ -197,7 +267,9 @@ it("does not reopen after dismissal or let a superseded response replace a newer
       oldResolve = resolve;
     }),
   );
+  const requested = lspReferences.mock.calls.length;
   const old = showUsagesPopup();
+  await vi.waitFor(() => expect(lspReferences).toHaveBeenCalledTimes(requested + 1));
   const fresh = showUsagesPopup();
   await fresh;
   dismissUsagesPopup();

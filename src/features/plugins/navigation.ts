@@ -167,26 +167,37 @@ export function startPluginNavigation(): () => void {
         .catch(() => {});
   }
   const offs = [
-    registerDocumentIndexSync(async (path, purpose) => {
-      if (!ready()) return;
-      const root = useProject.getState().project!.root;
-      if (!path.startsWith(root.endsWith("/") ? root : `${root}/`)) return;
-      const at = generation;
-      await discover();
-      if (!eligible(path)) return;
-      if (failed.size) queue([...failed]);
-      while (ready() && at === generation && (pending.size || flushing)) {
-        clearTimeout(timer);
-        await flush();
-      }
-      const complete = at === generation && discovered && !dirty.size && !failed.size;
-      if (complete) return true;
-      if (purpose === "usages") return false;
-      if (at === generation && (failed.size || discoveryFailed)) {
-        throw new Error(tx`Plugin indexes could not be updated; see the plugin notification`);
-      }
-      throw new Error(tx`Plugin indexes are still updating; try again shortly`);
-    }),
+    registerDocumentIndexSync(
+      async (path, purpose) => {
+        if (!ready()) return;
+        const root = useProject.getState().project!.root;
+        if (!path.startsWith(root.endsWith("/") ? root : `${root}/`)) return;
+        const at = generation;
+        await discover();
+        if (!eligible(path)) return;
+        if (failed.size) queue([...failed]);
+        while (ready() && at === generation && (pending.size || flushing)) {
+          clearTimeout(timer);
+          await flush();
+        }
+        const complete = at === generation && discovered && !dirty.size && !failed.size;
+        if (complete) return true;
+        if (purpose === "usages") return false;
+        if (at === generation && (failed.size || discoveryFailed)) {
+          throw new Error(tx`Plugin indexes could not be updated; see the plugin notification`);
+        }
+        throw new Error(tx`Plugin indexes are still updating; try again shortly`);
+      },
+      (path) => {
+        const root = useProject.getState().project?.root;
+        return (
+          ready() &&
+          !!root &&
+          path.startsWith(`${root}/`) &&
+          (!discovered || (eligible(path) && (pending.size > 0 || !!flushing || dirty.size > 0 || failed.size > 0)))
+        );
+      },
+    ),
     pluginsBackend().onEvent((event) => {
       if (event.type === "documentIndexesChanged") reset();
     }),

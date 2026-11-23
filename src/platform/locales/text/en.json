@@ -1667,6 +1667,8 @@
   "Interpreters": "Interpreters",
   "Remove Interpreter": "Remove Interpreter",
   "Refresh Interpreters": "Refresh Interpreters",
+  "Refreshing usages…": "Refreshing usages…",
+  "Usages are still updating; try again shortly": "Usages are still updating; try again shortly",
   "Hide Interpreters from Other Projects": "Hide Interpreters from Other Projects",
   "Show Interpreter Paths": "Show Interpreter Paths",
   "Search interpreters": "Search interpreters",

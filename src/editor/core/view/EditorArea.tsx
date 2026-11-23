@@ -120,10 +120,7 @@ function EmptyEditorArea() {
     <div ref={ref} className={styles.area}>
       <EmptyEditor />
       {dropType && (
-        <div
-          className={clsx(styles.dropZone, styles["drop-center"], dropType === FILES_DRAG && styles.fileDropZone)}
-          aria-hidden="true"
-        />
+        <div className={clsx(styles.dropZone, dropType === FILES_DRAG && styles.fileDropZone)} aria-hidden="true" />
       )}
     </div>
   );

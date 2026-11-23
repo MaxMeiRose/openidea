@@ -10,8 +10,15 @@ import sys
 import tempfile
 import threading
 import time
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 home, lombok = map(lambda p: pathlib.Path(p).resolve(), sys.argv[1:3])
+
+
+def path_of(uri):
+    """A file URI as a local path: Eclipse writes `file:/C:/x`, the client `file:///C:/x`."""
+    return pathlib.Path(url2pathname(urlparse(uri).path)).resolve()
 bundle = pathlib.Path(__file__).resolve().parents[1] / 'openidea-java-usages.jar'
 work = pathlib.Path(tempfile.mkdtemp(prefix='openidea-usages-'))
 config = work / 'config'
@@ -106,9 +113,12 @@ def request(method, params):
             if 'error' in msg: raise RuntimeError(msg['error'])
             return msg.get('result')
     raise TimeoutError(method)
+def rows(result):
+    """`openidea.java.usages` answers `{rows, stale}`; a build before stale answers the rows alone."""
+    return result['rows'] if isinstance(result, dict) else result
 def assert_sources(line, col, full=None):
     """The "sources" scope finds what the full search finds in the workspace's sources."""
-    usages = lambda *scope: request('workspace/executeCommand', {'command':'openidea.java.usages','arguments':[file.as_uri(),line,col,False,*scope]})
+    usages = lambda *scope: rows(request('workspace/executeCommand', {'command':'openidea.java.usages','arguments':[file.as_uri(),line,col,False,*scope]}))
     full = usages() if full is None else full
     sources = usages('sources')
     key = lambda rows: sorted(json.dumps(r, sort_keys=True) for r in rows)
@@ -124,7 +134,7 @@ try:
         line, text = next((i, t) for i,t in enumerate(source.splitlines()) if 'private ' in t and f' {field};' in t)
         col = text.index(field)
         before = request('textDocument/references', {'textDocument':{'uri':file.as_uri()},'position':{'line':line,'character':col},'context':{'includeDeclaration':False}})
-        after = request('workspace/executeCommand', {'command':'openidea.java.usages','arguments':[file.as_uri(),line,col,False]})
+        after = rows(request('workspace/executeCommand', {'command':'openidea.java.usages','arguments':[file.as_uri(),line,col,False]}))
         evidence['cases'][field] = {'before':before,'after':after}
         assert all(any(row['location'] == loc for row in after) for loc in before), 'lost standard references'
         kinds = [r['kind'] for r in after]
@@ -138,7 +148,7 @@ try:
     assert evidence['jdkSources'], 'no JDK method usages in the sources'
     # Answers are reused until the sources change: an unsaved edit is seen at once, before its reconcile.
     line, text = next((i, t) for i, t in enumerate(source.splitlines()) if 'private String name;' in t)
-    usages = lambda: request('workspace/executeCommand', {'command':'openidea.java.usages','arguments':[file.as_uri(),line,text.index('name'),False]})
+    usages = lambda: rows(request('workspace/executeCommand', {'command':'openidea.java.usages','arguments':[file.as_uri(),line,text.index('name'),False]}))
     getters = lambda rows: [r['kind'] for r in rows].count('getter')
     first = usages()
     assert usages() == first
@@ -150,7 +160,7 @@ try:
     assert usages() == first
     # The source folder holds only covered files; the folder beside it does not.
     roots = request('workspace/executeCommand', {'command':'openidea.workspace.coveredRoots','arguments':[]})
-    assert [pathlib.Path(r.replace('file:', '', 1)).resolve() for r in roots] == [(project / 'src').resolve()], roots
+    assert [path_of(r) for r in roots] == [(project / 'src').resolve()], roots
     evidence['coveredRoots'] = roots
     # A file outside the source folders, opened and closed to widen a search, leaves the answer as it was.
     extra = project / 'other' / 'Extra.java'
@@ -163,7 +173,7 @@ try:
     evidence['cached'] = {'first':first, 'edited':changed, 'widened':widened}
     # Respect the existing global preference: the command must not switch it on.
     send({'jsonrpc':'2.0','method':'workspace/didChangeConfiguration','params':{'settings':{'java':{'references':{'includeAccessors':False}}}}})
-    disabled = request('workspace/executeCommand', {'command':'openidea.java.usages','arguments':[file.as_uri(),3,19,False]})
+    disabled = rows(request('workspace/executeCommand', {'command':'openidea.java.usages','arguments':[file.as_uri(),3,19,False]}))
     assert len(disabled) == 2 and all(r['kind'] == 'field' for r in disabled), disabled
     evidence['accessorsDisabled'] = disabled
     (work/'evidence.json').write_text(json.dumps(evidence, indent=2))

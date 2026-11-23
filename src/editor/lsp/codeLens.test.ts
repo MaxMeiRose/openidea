@@ -14,7 +14,7 @@ vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
   return { ...real, isTauri: () => true, commands: { ...real.commands, ...ipc } };
 });
-const executeAction = vi.hoisted(() => vi.fn(async () => true));
+const executeAction = vi.hoisted(() => vi.fn(async (_id: string, _arg?: unknown) => true));
 vi.mock("@/platform/actions", () => ({ executeAction }));
 vi.mock("@tauri-apps/api/core", async (orig) => ({
   ...(await orig<object>()),
@@ -154,7 +154,17 @@ describe("background usage counts", () => {
     );
     expect(titles(view)).toEqual(["2 usages"]);
     view.state.facet(codeLenses)[0]!.run!(view, new MouseEvent("click"));
-    expect(executeAction).toHaveBeenCalledWith("find.showUsages");
+    expect(executeAction).toHaveBeenCalledWith(
+      "find.showUsages",
+      expect.objectContaining({
+        doc: 7,
+        path: "/p/a.rs",
+        pos: { line: 0, col: 0 },
+        document: view.state.doc,
+        references: expect.objectContaining({ locations: expect.any(Array) }),
+        current: expect.any(Function),
+      }),
+    );
   });
 
   it("allows a full search even when the server's current scope has no usages", async () => {
@@ -162,6 +172,22 @@ describe("background usage counts", () => {
     const view = editor();
     await settle();
     expect(titles(view)).toEqual(["no usages"]);
+    view.state.facet(codeLenses)[0]!.run!(view, new MouseEvent("click"));
+    expect(executeAction).toHaveBeenCalledWith("find.showUsages");
+  });
+
+  it("refreshes stale counts and invalidates their preloaded answer on source changes", async () => {
+    ipc.lspReferences.mockResolvedValueOnce(ok({ locations: [], incomplete: null, stale: true }));
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(2);
+    view.state.facet(codeLenses)[0]!.run!(view, new MouseEvent("click"));
+    const preloaded = executeAction.mock.lastCall![1] as { current(): boolean };
+    expect(preloaded.current()).toBe(true);
+    emitLocalIdeEvent({ type: "fsChanged", created: [], modified: ["/p/b.rs"], removed: [] });
+    expect(preloaded.current()).toBe(false);
+    executeAction.mockClear();
     view.state.facet(codeLenses)[0]!.run!(view, new MouseEvent("click"));
     expect(executeAction).toHaveBeenCalledWith("find.showUsages");
   });

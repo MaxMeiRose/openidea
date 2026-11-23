@@ -16,9 +16,10 @@ An optional fifth argument `"sources"` restricts the search to the workspace's
 source folders (no dependency jars, no JDK). A library method can have thousands of
 usages in those, which take seconds to search. Find Usages searches the sources alone
 (Project Files) unless asked for Project and Libraries; then it shows the sources' usages
-first and runs the full search after it. Rows in library classes (`jdt:` URIs) carry their
-line as `text`, from the contents the client would request for the class, so the client
-need not fetch thousands of class files to show them.
+first and runs the full search after it. Rows carry their line as `text`: a source row's
+from the compilation unit the search matched, a library row's (`jdt:` URIs) from the
+contents the client would request for the class. The client shows a usage without reading
+its file, so a search over hundreds of files costs no extra round trips.
 
 `openidea.workspace.coveredFiles([candidateUri, ...])` returns candidate URIs already
 covered by the current JDT source search scope. It checks imported compilation units,
@@ -70,7 +71,16 @@ delta reports a change to the sources, a compilation unit or a classpath (`Usage
 or closing an editor and decompiled library classes' private working copies do not invalidate
 them. A usage count and the usages shown when it is clicked, or the same search run again, need
 no second search, and concurrent requests for the same targets share one. There is no
-binding-resolution shortcut.
+binding-resolution shortcut. A change no longer throws the answers away: the last one is
+answered at once with `stale` set, and the next request for those targets searches again, so
+what the client shows stays instant while the changed sources are searched once.
+
+The client retains the complete answers of visible Code Vision counts (bounded by
+20,000 rows) and shows them immediately on a click, while the project-wide query
+fills in the rest. An unsaved edit or filesystem change invalidates that preload.
+Stale rows are refreshed in place and are not opened until corrected; usage counts
+and Safe Delete require a fresh answer. A pending contributed index no longer delays
+the native first results, but the final query still runs after that index flushes.
 
 Popup and Find share persisted read/write toolbar switches. Both initially show;
 turning the last one off automatically enables the other. Unknown and readWrite
@@ -88,7 +98,7 @@ is not a claim of full IntelliJ feature parity.
 ## Rebuild and delivery
 
 The checked-in jar is embedded by ide-sdk `include_bytes!`, installed as
-`java-usages-1.16.0.jar`, and added alongside existing initialization bundles.
+`java-usages-1.18.0.jar`, and added alongside existing initialization bundles.
 Users need no compiler, Maven or Python. Manifest/install version must change
 when replacing the bundle because OSGi caches bundles.
 
@@ -140,6 +150,31 @@ Version 1.16.0 adds `openidea.java.generatedSources`, which puts Maven plugin ou
 protobuf and gRPC stubs on the project classpath; its reproducible SHA-256 is
 `a5feda1cae11bdea1044fb311404840b048601af037f65685973721f1eefff8b`.
 
+The local feature-dev bundle history before this merge:
+
+Local version 1.15.0 returns the line of every usage, workspace sources included, from the
+compilation units the search matched, so the client reads no result file to show one; its
+reproducible SHA-256 is
+`763a4fbd31d0a0c544df275902b442f58979e9695fb4ec8305bdc33224ea6b73`.
+Local version 1.16.0 answers `{rows, stale}`: a changed Java model no longer discards the last
+answer — it is returned at once with `stale: true`, and the request that follows searches
+the change, so a click never waits for a search whose answer the client shows. Answers are
+also written to the workspace metadata (`.metadata/openidea-usages-answers.json`, most
+recent and bounded) and restored after a restart, each shown once as stale before it is
+searched again; its reproducible SHA-256 is
+`77579f4bdfd9ab3f21dabbfe1a555c44c02c60edc53ac3ea98714d81deec9cbb`.
+Local version 1.17.0 preserves the LRU order while persisting answers, synchronizes restore,
+marks searches that crossed a model change stale for owners and waiters, and also
+invalidates saved source-position changes. It reuses the selected source element
+and parsed source lines. The in-memory entry limit is 96 (the row limit remains
+200,000), so a 40-symbol viewport's answers are not evicted by that pass alone.
+Its reproducible SHA-256 is
+`4c717e7c69d291e1f469f775bad7af1b3c9399a4d2fe2774d5d0608980221832`.
+
+Version 1.18.0 combines upstream generated-source navigation and implementation
+locations with the local 1.17.0 usage cache and stale-result handling. Its reproducible
+SHA-256 is `27a35d9c922fe345997be408a3bf8c71c1065a2a39a69b71c2d245663fb2a871`.
+
 ```sh
 export PATH=/path/to/jdk25/bin:$PATH
 python3 java/java-usages/build.py /path/to/jdtls
@@ -169,6 +204,7 @@ python3 java/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar 
 OPENIDEA_USAGES_INDEX_STRESS=1 python3 java/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar > /tmp/read-write-indexed.json
 python3 java/java-usages/tests/hierarchy.py /path/to/jdtls
 python3 java/java-usages/tests/implementations.py /path/to/jdtls
+python3 java/java-usages/tests/cache.py /path/to/jdtls
 ```
 
 The harnesses select the JDT LS configuration for the current platform. The first
@@ -176,6 +212,9 @@ verifies category coverage, standard-reference inclusion, boolean/fluent/prefix/
 naming, overloads, inheritance and includeAccessors=false. The second checks
 structural read/write cases, interface and inherited calls, nested same-line calls,
 method references, receiver/array reads and a real cancellation response (`-32800`).
+`cache.py` adds a probe only to a temporary copy of the bundle and verifies LRU
+persistence, model changes during a search, in-flight sharing across revisions,
+and source positions after a save. The probe is not embedded in the app's jar.
 
 Use the actual desktop app to check read/write toggles, mutual toggle behavior,
 Find transfer, persistence and unfiltered non-Java counts with the same fixture.

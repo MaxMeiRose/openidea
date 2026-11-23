@@ -74,6 +74,9 @@ def request(method, params):
             if 'error' in msg: raise RuntimeError(msg['error'])
             return msg.get('result')
     raise TimeoutError(method)
+def rows(result):
+    """`openidea.java.usages` answers `{rows, stale}`; a build before stale answers the rows alone."""
+    return result['rows'] if isinstance(result, dict) else result
 try:
     init = request('initialize', {'processId':None, 'rootUri':project.as_uri(), 'workspaceFolders':[{'uri':project.as_uri(), 'name':'accessors'}], 'capabilities':{}, 'initializationOptions':{'bundles':[str(bundle)], 'settings':{'java':{'references':{'includeAccessors':True}, 'import':{'gradle':{'enabled':False}, 'maven':{'enabled':False}}}}}})
     send({'jsonrpc':'2.0','method':'initialized','params':{}})
@@ -84,7 +87,7 @@ try:
     for field in ['count','score','items','next']:
         line,text=next((i,t) for i,t in enumerate(source.splitlines()) if f'public int {field};' in t or f'public int[] {field};' in t or f'public Bean {field};' in t)
         col=text.index(field)
-        evidence['cases'][field]=request('workspace/executeCommand',{'command':'openidea.java.usages','arguments':[file.as_uri(),line,col,False]})
+        evidence['cases'][field]=rows(request('workspace/executeCommand',{'command':'openidea.java.usages','arguments':[file.as_uri(),line,col,False]}))
     errors=[d for m in transcript if m.get('method')=='textDocument/publishDiagnostics' for d in m['params']['diagnostics'] if d.get('severity')==1]
     assert not errors, errors
     expected={8:['read'],9:['write'],10:['readWrite'],11:['readWrite'],12:['readWrite'],13:['read','write'],14:['read','write'],15:['read','write'],16:['unknown'],17:['unknown'],21:['write']}

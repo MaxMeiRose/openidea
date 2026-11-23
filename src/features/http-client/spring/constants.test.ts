@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ConstantPool, type ConstantFiles } from "./constants";
-import { controllersOf } from "./endpoints";
+import { controllersOf, springControllers } from "./endpoints";
 import { parseSource } from "./source";
 
 function project(files: Record<string, string>): ConstantFiles & { reads: string[] } {
@@ -37,6 +37,30 @@ public interface CockpitApiDefine {
 };
 
 describe("mapping constants of other classes", () => {
+  it("retains controller documentation and endpoint summaries with external mapping constants", async () => {
+    const text = `package com.acme.cockpit.web;
+import com.acme.common.AppServiceDefine;
+import com.acme.cockpit.CockpitApiDefine;
+/** Map operations. */
+@RestController
+@RequestMapping(AppServiceDefine.API_WEBAPI_PREFIX)
+public class MapController {
+    @Operation(summary = "List layers")
+    @GetMapping(CockpitApiDefine.PATH_MAP + "/layers")
+    public String layers() { return ""; }
+}`;
+    const file = parseSource(text);
+    const pool = new ConstantPool(project(defines));
+    await pool.load([file]);
+    const controllers = controllersOf(file, pool.resolverFor(file), text);
+    expect(controllers[0]?.summary).toBe("Map operations.");
+    expect(controllers[0]?.endpoints[0]).toMatchObject({
+      paths: ["/api/map/layers"],
+      summary: "List layers",
+    });
+    expect(springControllers(text, (source) => pool.resolverFor(source))).toEqual(controllers);
+  });
+
   it("joins constants of interfaces in other files and modules", async () => {
     const files = project(defines);
     const text = `package com.acme.cockpit.web;

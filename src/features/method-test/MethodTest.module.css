@@ -23,7 +23,7 @@
 .target {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 10px 12px 6px;
   min-width: 0;
   font-family: var(--font-mono);
@@ -50,7 +50,7 @@
 .cases {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 6px 12px;
   min-width: 0;
 }
@@ -109,7 +109,7 @@
 .dependencies {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 12px;
+  gap: var(--space-1) var(--space-3);
   color: var(--fg-muted);
   font-size: var(--fs-ui);
 }
@@ -164,7 +164,7 @@
 .status {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 5px 10px;
   border-top: 1px solid var(--border);
   color: var(--fg-muted);
@@ -194,25 +194,25 @@
 .arguments {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
   flex: 1;
   min-height: 0;
 }
 .parameterList {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-4);
 }
 .parameter {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
 }
 .parameterHeading {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   font-size: var(--fs-ui);
 }

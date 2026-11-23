@@ -1,4 +1,5 @@
 .area {
+  position: relative;
   flex: 1;
   display: flex;
   min-width: 0;

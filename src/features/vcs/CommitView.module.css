@@ -176,7 +176,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 2px 10px;
 }
 .aiModel {
@@ -186,7 +186,7 @@
 .aiGenerate {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 4px 10px;
 }
 .aiHint {

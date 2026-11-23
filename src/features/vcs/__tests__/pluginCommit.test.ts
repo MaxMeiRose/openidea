@@ -126,7 +126,7 @@ describe("the commit plugins see", () => {
     const other: FileStatus = { ...files[0]!, path: "/w/b/Bar.java", relPath: "Bar.java" };
     const changed: FileStatus = { ...files[0]!, path: "/w/a/Foo.java", relPath: "Foo.java" };
     useVcs.setState({ root: "/w", repo: "/w/a", roots: ["/w/a", "/w/b"], status: [changed, other] });
-    useCommit.setState({ checks: new Map() });
+    useCommit.setState({ checks: new Map([changed, other].map((file) => [file.path, "all" as const])) });
     const changes = (await maybeCommitService()!.changes())!;
     expect(createPatch.mock.calls).toEqual([
       ["/w/b", expect.objectContaining({ stage: ["/w/b/Bar.java"] })],

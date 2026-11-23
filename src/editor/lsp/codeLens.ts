@@ -13,17 +13,26 @@
 import { Channel } from "@tauri-apps/api/core";
 import { EditorSelection, MapMode, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
-import { codeLenses, onEditorEvent, shownAgain, type CodeLens } from "@/editor/api";
-import { onNavigationProvidersChanged } from "@/editor/navigationProviders";
+import { codeLenses, onEditorEvent, shownAgain, type CodeLens, type PreloadedReferences } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
-import { commands, nextRequestId, onIdeEvent, type OutlineItem, type RequestId, type SymbolKind } from "@/platform/ipc";
+import {
+  commands,
+  nextRequestId,
+  onIdeEvent,
+  type OutlineItem,
+  type References,
+  type RequestId,
+  type SymbolKind,
+} from "@/platform/ipc";
+import { onNavigationProvidersChanged } from "@/editor/navigationProviders";
 import { useProject } from "@/platform/project";
 import { debounce, docOf, isUnavailable, lspRequest } from "./lsp";
-import { posToOffset } from "./positions";
+import { offsetToPos, posToOffset } from "./positions";
 import { featureBackoff, onLspRefresh, onServerSettled } from "./availability";
 import { editorPrefs } from "@/platform/editorSettings";
 import { authorLabel, authorSummary, authorTooltip, blameFor, onBlameInvalidated } from "./authorLens";
 import { tx } from "@/platform/i18n";
+import { currentReferences } from "./currentReferences";
 
 const LENS_KINDS = new Set<SymbolKind>([
   "class",
@@ -40,6 +49,7 @@ const LENS_KINDS = new Set<SymbolKind>([
 
 const MAX_PER_PASS = 40;
 const CONCURRENCY = 4;
+const MAX_PRELOADED_ROWS = 20_000;
 /** Lines above/below the viewport that are counted too, so scrolling feels instant. */
 const MARGIN_LINES = 10;
 /**
@@ -118,16 +128,17 @@ function toggleAnnotations(view: EditorView) {
   void executeAction("vcs.annotate");
 }
 
-function openUsages(view: EditorView, offset: number) {
+function openUsages(view: EditorView, offset: number, preloaded?: PreloadedReferences) {
   view.dispatch({ selection: EditorSelection.cursor(offset), userEvent: "select.lens" });
   view.focus();
-  void executeAction("find.showUsages");
+  if (preloaded) void executeAction("find.showUsages", preloaded);
+  else void executeAction("find.showUsages");
 }
 
 class UsagesLensPlugin {
   private schedule = debounce(() => void this.run(), 900);
   /** `${line}:${col}:${name}` → count, valid for `cacheDoc`. */
-  private cache = new Map<string, number>();
+  private cache = new Map<string, { count: number; references: References | null }>();
   private cacheDoc: Text | null = null;
   private outline: { doc: Text; targets: LensTarget[] } | null = null;
   private generation = 0;
@@ -146,7 +157,7 @@ class UsagesLensPlugin {
   constructor(private view: EditorView) {
     this.refresh();
     this.unsubscribe = useProject.subscribe((s, prev) => {
-      if (s.settings !== prev.settings) this.refresh();
+      if (s.settings !== prev.settings) this.invalidate();
     });
     // Counts computed while the server was indexing may be incomplete.
     this.offReady = onLspRefresh("codeLens", () => this.invalidate());
@@ -165,7 +176,7 @@ class UsagesLensPlugin {
     // already refresh through `update`.
     const offDocs = onEditorEvent((e) => {
       if (e.type === "docChanged" && e.doc !== docOf(this.view)?.doc) this.invalidate();
-      else if (e.type === "docClosed") this.invalidate();
+      else if (e.type === "docClosed" || e.type === "docSaved") this.invalidate();
     });
     const offPatches = onIdeEvent("docPatched", (e) => {
       if (e.doc !== docOf(this.view)?.doc) this.invalidate();
@@ -188,6 +199,20 @@ class UsagesLensPlugin {
     this.incomplete.clear();
     this.retries.clear();
     this.refresh();
+  }
+
+  private remember(key: string, references: References) {
+    this.cache.set(key, {
+      count: references.locations.length,
+      references: references.locations.length <= MAX_PRELOADED_ROWS ? references : null,
+    });
+    let rows = [...this.cache.values()].reduce((n, c) => n + (c.references?.locations.length ?? 0), 0);
+    for (const [oldKey, cached] of this.cache) {
+      if (rows <= MAX_PRELOADED_ROWS) break;
+      if (oldKey === key || !cached.references) continue;
+      rows -= cached.references.locations.length;
+      cached.references = null;
+    }
   }
 
   update(u: ViewUpdate) {
@@ -250,24 +275,29 @@ class UsagesLensPlugin {
       for (let i = 0; i < todo.length && !unavailable; i += CONCURRENCY) {
         await Promise.all(
           todo.slice(i, i + CONCURRENCY).map(async (t) => {
-            const request = nextRequestId();
             try {
-              const { locations: refs, incomplete } = await lspRequest(() => {
-                this.pending.add(request);
-                // Opening candidate files for each count triggers expensive server analysis.
-                // Only an explicit Find Usages should widen the server's scope.
-                return commands.lspReferences(
-                  request,
-                  doc.doc,
-                  { line: t.line, col: t.col },
-                  false,
-                  false,
-                  false,
-                  new Channel(),
-                );
+              const refs = await currentReferences(async () => {
+                const request = nextRequestId();
+                try {
+                  return await lspRequest(() => {
+                    this.pending.add(request);
+                    // Counts stay in the server's scope; the popup widens their preloaded rows.
+                    return commands.lspReferences(
+                      request,
+                      doc.doc,
+                      { line: t.line, col: t.col },
+                      false,
+                      false,
+                      false,
+                      new Channel(),
+                    );
+                  }, wanted);
+                } finally {
+                  this.pending.delete(request);
+                }
               }, wanted);
               if (wanted()) {
-                if (!incomplete) this.cache.set(key(t), refs.length);
+                if (!refs.incomplete) this.remember(key(t), refs);
                 else {
                   const tries = (this.retries.get(key(t)) ?? 0) + 1;
                   this.retries.set(key(t), tries);
@@ -277,8 +307,6 @@ class UsagesLensPlugin {
               }
             } catch (e) {
               if (wanted() && isUnavailable(e)) unavailable = true;
-            } finally {
-              this.pending.delete(request);
             }
           }),
         );
@@ -311,21 +339,32 @@ class UsagesLensPlugin {
             kind: "author",
             run: toggleAnnotations,
           });
-        const n = usages ? this.cache.get(key(t)) : undefined;
-        if (n !== undefined) {
-          if (n === 0 && !allowNoUsages) continue;
-          const run: NonNullable<CodeLens["run"]> = (v) => {
-            const current = v.state.facet(codeLenses).find((l) => l.run === run);
-            if (current) openUsages(v, Math.min(current.pos, v.state.doc.length));
-          };
-          lenses.push({
+        const cached = usages ? this.cache.get(key(t)) : undefined;
+        if (cached) {
+          if (cached.count === 0 && !allowNoUsages) continue;
+          const lens: CodeLens = {
             pos: offset,
-            title: usagesLabel(n),
+            title: usagesLabel(cached.count),
             tooltip: tx`Show usages of ${t.name}`,
             order: 10,
             kind: "usages",
-            run,
-          });
+            run: (v) => {
+              const shownLens = v.state.facet(codeLenses).find((l) => l.run === lens.run);
+              if (!shownLens) return;
+              const at = shownLens.pos;
+              const pos = offsetToPos(v.state.doc, Math.min(at, v.state.doc.length));
+              const targetKey = `${pos.line}:${pos.col}:${t.name}`;
+              const answer = this.cache.get(targetKey);
+              const document = this.cacheDoc;
+              const current = () => document === v.state.doc && this.cache.get(targetKey) === answer;
+              const preloaded =
+                current() && document && answer?.references?.locations.length
+                  ? { doc: doc.doc, path: doc.path, pos, document, references: answer.references, current }
+                  : undefined;
+              openUsages(v, Math.min(at, v.state.doc.length), preloaded);
+            },
+          };
+          lenses.push(lens);
           continue;
         }
         // No fresh count: keep the lens already shown (with its mapped position)
@@ -347,6 +386,7 @@ class UsagesLensPlugin {
     this.offSettled();
     this.offBlame();
     this.offChanges();
+    this.cache.clear();
     this.cancel();
   }
 }

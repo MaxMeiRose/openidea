@@ -42,7 +42,11 @@ public final class UsagesCommand implements IDelegateCommandHandler {
         var handler = new ReferencesHandler(preferences);
         // The verified server's search is replicated (see `search`); others keep their own.
         boolean replicated = sources || NATIVE_PLAN_SUPPORTED;
-        Search search = replicated ? (element, locations, m, d) -> search(element, locations, m, d, sources) : handler::search;
+        // The compilation units the replicated search matched, so a row's line needs no model lookup.
+        Map<String, ICompilationUnit> units = new java.util.HashMap<>();
+        Search search = replicated
+                ? (element, locations, m, d) -> search(element, locations, m, d, sources, units)
+                : handler::search;
         var params = new ReferenceParams(new TextDocumentIdentifier(uri), new Position(line, column), new ReferenceContext(declarations));
         Map<Location, String> results = new LinkedHashMap<>();
         ITypeRoot root = JDTUtils.resolveTypeRoot(uri);
@@ -69,9 +73,14 @@ public final class UsagesCommand implements IDelegateCommandHandler {
                 // resolves (a class file without source through its decompiled working copy), widened
                 // as it widens a field.
                 boolean decompiled = preferences.isClientSupportsClassFileContent() && preferences.getPreferences().isIncludeDecompiledSources();
-                targetRoot = JDTUtils.resolveTypeRoot(uri, decompiled, monitor);
-                IJavaElement target = targetRoot == null ? null :
-                        JDTUtils.findElementAtSelection(targetRoot, line, column, preferences, monitor);
+                IJavaElement target;
+                if (root instanceof ICompilationUnit && root.getResource() != null && selected != null) {
+                    target = selected;
+                } else {
+                    targetRoot = JDTUtils.resolveTypeRoot(uri, decompiled, monitor);
+                    target = targetRoot == null ? null :
+                            JDTUtils.findElementAtSelection(targetRoot, line, column, preferences, monitor);
+                }
                 if (target == null && targetRoot != null) {
                     target = targetRoot.getElementAt(JsonRpcHelpers.toOffset(targetRoot.getBuffer(), line, column));
                 }
@@ -94,10 +103,12 @@ public final class UsagesCommand implements IDelegateCommandHandler {
                     }
                 }
             }
-            UsageCache.Search run = () -> respond(search, plan, results, monitor);
+            UsageCache.Search run = () -> respond(search, plan, results, units, monitor);
             // Unverified builds answer partly through the native handler, before the plan.
-            return replicated && !plan.targets.isEmpty()
-                    ? UsageCache.get(cacheKey(plan, sources, preferences), monitor, run) : run.run();
+            UsageCache.Answer answer = replicated && !plan.targets.isEmpty()
+                    ? UsageCache.get(cacheKey(plan, sources, preferences), monitor, run)
+                    : new UsageCache.Answer(run.run(), false);
+            return Map.of("rows", answer.rows(), "stale", answer.stale());
         } finally {
             if (targetRoot != null) JDTUtils.discardClassFileWorkingCopy(targetRoot);
         }
@@ -117,7 +128,7 @@ public final class UsagesCommand implements IDelegateCommandHandler {
     }
 
     private static List<Map<String, Object>> respond(Search search, SearchPlan plan, Map<Location, String> results,
-            IProgressMonitor monitor) throws Exception {
+            Map<String, ICompilationUnit> units, IProgressMonitor monitor) throws Exception {
         for (var target : plan.targets.values()) {
             if (monitor.isCanceled()) throw new org.eclipse.core.runtime.OperationCanceledException();
             add(search, target.element, target.kind(), target.declarations, results, monitor);
@@ -126,6 +137,7 @@ public final class UsagesCommand implements IDelegateCommandHandler {
         List<Map<String, Object>> response = new ArrayList<>();
         UsageAccess access = new UsageAccess(monitor, results);
         Map<String, String[]> libraryLines = new java.util.HashMap<>();
+        Map<String, String[]> sourceLines = new java.util.HashMap<>();
         for (var entry : results.entrySet()) {
             if (monitor.isCanceled()) throw new org.eclipse.core.runtime.OperationCanceledException();
             Location location = entry.getKey();
@@ -133,12 +145,44 @@ public final class UsagesCommand implements IDelegateCommandHandler {
             row.put("location", location);
             row.put("kind", entry.getValue());
             row.put("access", access.classify(location, entry.getValue()));
-            String text = libraryLine(location, libraryLines, monitor);
-            if (text != null) row.put("text", text);
+            String line = libraryLine(location, libraryLines, monitor);
+            if (line == null) line = sourceLine(location, units, access, sourceLines);
+            if (line != null) row.put("text", line);
             response.add(row);
         }
         return response;
     }
+
+    /**
+     * The line of a usage in the workspace's sources, from the compilation unit the search
+     * matched (no model lookup per result) or the source the query already parsed for its
+     * access context. The client shows it without reading every result file over IPC.
+     */
+    private static String sourceLine(Location location, Map<String, ICompilationUnit> units, UsageAccess access,
+            Map<String, String[]> cache) {
+        String uri = location.getUri();
+        if (uri == null || uri.startsWith("jdt:")) return null;
+        String parsed = access.line(location);
+        if (parsed != null) return parsed;
+        ICompilationUnit unit = units.get(uri);
+        if (unit != null) {
+            if (!cache.containsKey(uri)) {
+                String[] lines = null;
+                try {
+                    lines = LINE_BREAKS.split(unit.getBuffer().getContents(), -1);
+                } catch (Exception e) {
+                    lines = null;
+                }
+                cache.put(uri, lines);
+            }
+            String[] lines = cache.get(uri);
+            int line = location.getRange().getStart().getLine();
+            if (lines != null && line >= 0 && line < lines.length) return lines[line];
+        }
+        return access.line(location);
+    }
+
+    private static final java.util.regex.Pattern LINE_BREAKS = java.util.regex.Pattern.compile("\\r\\n?|\\n");
 
     /**
      * The line of a usage in a library class (`jdt:` URI), from the contents the client would
@@ -298,7 +342,7 @@ public final class UsagesCommand implements IDelegateCommandHandler {
      * folders only, without dependency jars and the JDK.
      */
     private static void search(IJavaElement element, List<Location> locations, IProgressMonitor monitor,
-            boolean declarations, boolean sources) throws CoreException {
+            boolean declarations, boolean sources, Map<String, ICompilationUnit> units) throws CoreException {
         SearchPattern pattern = SearchPattern.createPattern(element, IJavaSearchConstants.REFERENCES);
         if (pattern == null) return;
         if (declarations) {
@@ -322,7 +366,9 @@ public final class UsagesCommand implements IDelegateCommandHandler {
                     public void acceptSearchMatch(SearchMatch match) throws CoreException {
                         if (match.getAccuracy() == SearchMatch.A_INACCURATE || !(match.getElement() instanceof IJavaElement found)) return;
                         if (found.getAncestor(IJavaElement.COMPILATION_UNIT) instanceof ICompilationUnit unit) {
-                            locations.add(JDTUtils.toLocation(unit, match.getOffset(), match.getLength()));
+                            Location location = JDTUtils.toLocation(unit, match.getOffset(), match.getLength());
+                            locations.add(location);
+                            if (location.getUri() != null) units.putIfAbsent(location.getUri(), unit);
                             return;
                         }
                         if (!classFiles || !(found.getAncestor(IJavaElement.CLASS_FILE) instanceof IClassFile classFile)) return;

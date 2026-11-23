@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const show = vi.fn();
 const hide = vi.fn();
@@ -46,6 +46,7 @@ const {
   showUsageResults,
   useUsages,
 } = await import("./usages");
+beforeEach(() => referenceResponse.mockReset());
 
 describe("showUsageResults", () => {
   it("shows given usages in the Find Usages tool window", async () => {
@@ -102,6 +103,67 @@ describe("findUsages", () => {
     resetUsages();
   });
 
+  it("shows a changed model's last answer at once, then searches again in place", async () => {
+    const at = (line: number) => ({ path: "/p/b.rs", range: { start: { line, col: 4 }, end: { line, col: 8 } } });
+    lspReferences.mockClear();
+    // The server answers from its last search; the request that follows searches the change.
+    referenceResponse.mockResolvedValueOnce({ locations: [at(1)], incomplete: null, stale: true });
+    let finishRefresh!: (refs: unknown) => void;
+    referenceResponse.mockReturnValueOnce(new Promise((resolve) => (finishRefresh = resolve)));
+    await findUsages();
+    const shown = activeUsageSearch(useUsages.getState())!;
+    expect(shown).toMatchObject({ loading: false, refreshing: true, error: null });
+    expect(shown.groups[0]!.usages.map((u) => u.line)).toEqual([1]);
+    expect(lspReferences.mock.lastCall![5]).toBe(false);
+    finishRefresh({ locations: [at(1), at(2)], incomplete: null, stale: false });
+    await vi.waitFor(() => expect(activeUsageSearch(useUsages.getState())!.refreshing).toBe(false));
+    const refreshed = activeUsageSearch(useUsages.getState())!;
+    expect(refreshed.id).toBe(shown.id);
+    expect(refreshed.groups[0]!.usages.map((u) => u.line)).toEqual([1, 2]);
+    // One refresh per search: a fresh answer does not ask again.
+    expect(lspReferences).toHaveBeenCalledTimes(2);
+    resetUsages();
+  });
+
+  it("continues refreshing when another model change makes the second answer stale", async () => {
+    const at = (line: number) => ({ path: "/p/b.rs", range: { start: { line, col: 4 }, end: { line, col: 8 } } });
+    referenceResponse.mockResolvedValueOnce({ locations: [at(1)], incomplete: null, stale: true });
+    referenceResponse.mockResolvedValueOnce({ locations: [at(1)], incomplete: null, stale: true });
+    referenceResponse.mockResolvedValueOnce({ locations: [at(2)], incomplete: null, stale: false });
+    await findUsages();
+    await vi.waitFor(() => expect(activeUsageSearch(useUsages.getState())!.refreshing).toBe(false));
+    expect(activeUsageSearch(useUsages.getState())!.groups[0]!.usages[0]!.line).toBe(2);
+    resetUsages();
+  });
+
+  it("keeps the shown library rows while a background refresh streams its sources", async () => {
+    const at = (path: string, line: number) => ({ path, range: { start: { line, col: 4 }, end: { line, col: 8 } } });
+    referenceResponse.mockResolvedValueOnce({ locations: [at("/p/b.rs", 1)], incomplete: null });
+    await findUsages();
+    referenceResponse.mockResolvedValueOnce({
+      locations: [at("/p/b.rs", 1), at("jdt://contents/Lib.class", 3)],
+      incomplete: null,
+      stale: true,
+    });
+    let finish!: (refs: unknown) => void;
+    referenceResponse.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const requested = lspReferences.mock.calls.length;
+    activeUsageSearch(useUsages.getState())!.searchLibraries!();
+    await vi.waitFor(() => expect(lspReferences).toHaveBeenCalledTimes(requested + 2));
+    channels.at(-1)!.onmessage({ locations: [at("/p/b.rs", 2)], incomplete: null });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const shown = activeUsageSearch(useUsages.getState())!;
+    expect(shown.loading).toBe(false);
+    expect(shown.groups.some((g) => g.path.startsWith("jdt:"))).toBe(true);
+    finish({ locations: [at("/p/b.rs", 2), at("jdt://contents/Lib.class", 4)], incomplete: null });
+    await vi.waitFor(() => expect(activeUsageSearch(useUsages.getState())!.refreshing).toBe(false));
+    resetUsages();
+  });
+
   it("shows the usages found first while it searches for the rest", async () => {
     const at = (line: number) => ({ path: "/p/b.rs", range: { start: { line, col: 4 }, end: { line, col: 8 } } });
     let resolve!: (refs: unknown) => void;
@@ -149,7 +211,7 @@ describe("findUsages", () => {
     }
   });
 
-  it("waits for the contributed index barrier, then preserves partial and final usage events", async () => {
+  it("shows native results while contributed indexes flush, then completes the full search", async () => {
     let release!: () => void;
     const sync = vi.fn(
       () =>
@@ -159,9 +221,15 @@ describe("findUsages", () => {
     );
     const off = registerDocumentIndexSync(sync);
     let finish!: (refs: unknown) => void;
+    let finishFull!: (refs: unknown) => void;
     referenceResponse.mockReturnValueOnce(
       new Promise((resolve) => {
         finish = resolve;
+      }),
+    );
+    referenceResponse.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishFull = resolve;
       }),
     );
     lspReferences.mockClear();
@@ -170,20 +238,26 @@ describe("findUsages", () => {
     const at = (line: number) => ({ path: "/p/b.rs", range: { start: { line, col: 4 }, end: { line, col: 8 } } });
     try {
       await vi.waitFor(() => expect(sync).toHaveBeenCalledWith("/p/a.rs", "usages"));
-      expect(lspReferences).not.toHaveBeenCalled();
-      expect(channels).toHaveLength(allocated);
-      release();
       await vi.waitFor(() => expect(lspReferences).toHaveBeenCalledTimes(1));
+      expect(channels).toHaveLength(allocated + 1);
+      expect(lspReferences.mock.lastCall![4]).toBe(false);
       channels.at(-1)!.onmessage({ locations: [at(1)], incomplete: null });
       await vi.waitFor(() => expect(activeUsageSearch(useUsages.getState())!.groups).toHaveLength(1));
       expect(activeUsageSearch(useUsages.getState())!.loading).toBe(true);
-      finish({ locations: [at(1), at(2)], incomplete: null });
+      finish({ locations: [at(1)], incomplete: null });
+      await vi.waitFor(() => expect(activeUsageSearch(useUsages.getState())!.groups).toHaveLength(1));
+      expect(activeUsageSearch(useUsages.getState())!.loading).toBe(true);
+      release();
+      await vi.waitFor(() => expect(lspReferences).toHaveBeenCalledTimes(2));
+      expect(lspReferences.mock.lastCall![4]).toBe(true);
+      finishFull({ locations: [at(1), at(2)], incomplete: null });
       await pending;
       expect(activeUsageSearch(useUsages.getState())!.groups[0]!.usages.map((u) => u.line)).toEqual([1, 2]);
     } finally {
       off();
       release?.();
       finish?.({ locations: [], incomplete: null });
+      finishFull?.({ locations: [], incomplete: null });
       await pending;
       resetUsages();
     }
@@ -194,7 +268,7 @@ describe("findUsages with a contributed index that is not up to date", () => {
   it("still searches, and says plugin usages may be missing", async () => {
     const off = registerDocumentIndexSync(async () => false);
     const at = { path: "/p/b.rs", range: { start: { line: 1, col: 4 }, end: { line: 1, col: 8 } } };
-    referenceResponse.mockResolvedValueOnce({ locations: [at], incomplete: null });
+    referenceResponse.mockResolvedValue({ locations: [at], incomplete: null });
     try {
       await findUsages();
       const search = activeUsageSearch(useUsages.getState())!;

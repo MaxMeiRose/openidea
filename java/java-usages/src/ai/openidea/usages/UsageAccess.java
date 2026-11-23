@@ -16,7 +16,39 @@ import org.eclipse.lsp4j.Location;
  * One syntax parse per source file per query; no second reference search.
  */
 final class UsageAccess {
-    private record Parsed(ICompilationUnit unit, String source, CompilationUnit tree, Map<Long, ASTNode> exactNodes) {}
+    /** One parsed source file; the lines are split only when a usage's text is asked for. */
+    private static final class Parsed {
+        final ICompilationUnit unit;
+        final String source;
+        final CompilationUnit tree;
+        final Map<Long, ASTNode> exactNodes;
+        private String[] lines;
+        /** Whether the buffer still holds `source`; read once, not per result of the file. */
+        private boolean checked;
+        private boolean current = true;
+        Parsed(ICompilationUnit unit, String source, CompilationUnit tree, Map<Long, ASTNode> exactNodes) {
+            this.unit = unit;
+            this.source = source;
+            this.tree = tree;
+            this.exactNodes = exactNodes;
+        }
+        /** A changed document's results are unclassified and carry no text, never a stale guess. */
+        boolean current() {
+            if (!checked) {
+                checked = true;
+                try {
+                    current = source.equals(unit.getBuffer().getContents());
+                } catch (Exception e) {
+                    current = false;
+                }
+            }
+            return current;
+        }
+        String line(int index) {
+            if (lines == null) lines = source.split("\\r\\n?|\\n", -1);
+            return index >= 0 && index < lines.length ? lines[index] : null;
+        }
+    }
     private final Map<String, Parsed> files = new HashMap<>();
     private final IProgressMonitor monitor;
     private final Map<String, List<Location>> requests = new HashMap<>();
@@ -101,7 +133,7 @@ final class UsageAccess {
                 files.put(uri, parsed);
             }
             Parsed file = files.get(uri);
-            if (file == null || !file.source.equals(file.unit.getBuffer().getContents())) return "unknown";
+            if (file == null || !file.current()) return "unknown";
             var range = location.getRange();
             int start = file.tree.getPosition(range.getStart().getLine() + 1, range.getStart().getCharacter());
             int end = file.tree.getPosition(range.getEnd().getLine() + 1, range.getEnd().getCharacter());
@@ -142,5 +174,13 @@ final class UsageAccess {
             // A missing/changed/unparseable document must remain visible, never guessed.
             return "unknown";
         }
+    }
+
+    /** The usage's source line from the query's own parse, when that source is still current. */
+    String line(Location location) {
+        String uri = location.getUri();
+        Parsed file = uri == null ? null : files.get(uri);
+        if (file == null || !file.current()) return null;
+        return file.line(location.getRange().getStart().getLine());
     }
 }

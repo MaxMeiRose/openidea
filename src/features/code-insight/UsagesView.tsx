@@ -141,6 +141,7 @@ export function toggleExcludedUsages(excluded: ReadonlySet<string>, usages: read
 }
 
 function openUsage(u: Usage, focus: boolean) {
+  if (activeUsageSearch(useUsages.getState())?.stale) return;
   void maybeEditorService()?.openFile(u.path, { selection: { line: u.line, col: u.col }, focus });
 }
 
@@ -307,6 +308,11 @@ export function UsagesView() {
             )}
           </div>
         )}
+        {search.refreshing && !search.loading && !search.error && (
+          <div className={styles.summary} role="status" aria-live="polite">
+            <Spinner size={16} variant="spokes" /> {tx("Refreshing usages…")}
+          </div>
+        )}
         <UsagesSplit preview={<UsagesPreview node={visibleLead} />}>
           <Tree<Node>
             key={`${search.id}:${accessOptions.read}:${accessOptions.write}`}
@@ -354,7 +360,7 @@ export function UsagesView() {
               if (u) openUsage(u, true);
             }}
             empty={
-              !search.loading && !search.error ? (
+              !search.loading && !search.error && !search.stale ? (
                 <EmptyState>{total ? tx("No usages match the access filters") : <T>No usages found</T>}</EmptyState>
               ) : undefined
             }

@@ -120,7 +120,7 @@ export function activate(): () => void {
         title: "Show Usages",
         category: "Find",
         when: EDITOR_WHEN,
-        run: () => showUsagesPopup(),
+        run: ({ arg }) => showUsagesPopup(arg),
       },
       {
         // ⌘R in the Find Usages tool window, as in IDEA.

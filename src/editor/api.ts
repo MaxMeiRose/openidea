@@ -26,12 +26,13 @@ import {
   type EditorState,
   type Extension,
   type RangeSet,
+  type Text,
   type Transaction,
 } from "@codemirror/state";
 import { GutterMarker, ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
 import type { LanguageDescription } from "@codemirror/language";
 import type { HunkKind } from "@/bindings";
-import type { LineEnding } from "@/platform/ipc";
+import type { LineEnding, Pos, References } from "@/platform/ipc";
 import { create } from "zustand";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import { cornerInset } from "@/editor/core/cm/cornerInset";
@@ -709,6 +710,16 @@ export interface CodeLens {
   order?: number;
   /** The Code Vision setting that places it ("usages", "author"); a lens without one goes above the line. */
   kind?: string;
+}
+
+/** A local usages action can show a count query's answer before its full search finishes. */
+export interface PreloadedReferences {
+  doc: number;
+  path: string;
+  pos: Pos;
+  document: Text;
+  references: References;
+  current(): boolean;
 }
 
 export const codeLenses = Facet.define<readonly CodeLens[], readonly CodeLens[]>({

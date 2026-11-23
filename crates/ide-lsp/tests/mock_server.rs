@@ -5826,6 +5826,32 @@ async fn classified_java_references_widen_without_losing_metadata() {
 
 /// Usage counts probe many symbols at once: without `libraries` they search the sources alone.
 #[tokio::test(flavor = "multi_thread")]
+async fn a_stale_extension_answer_marks_the_references() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    *s.responder.lock() = Some(Arc::new(|s, method, _| {
+        (method == "workspace/executeCommand").then(|| {
+            let docs = s.docs.lock();
+            let rows: Vec<Value> = docs
+                .iter()
+                .flat_map(|(uri, text)| {
+                    occurrences(uri, text).into_iter().map(|location| json!({"location": location, "kind": "field"}))
+                })
+                .collect();
+            // A changed Java model: the last answer, marked stale; the next request searches.
+            json!({ "rows": rows, "stale": true })
+        })
+    }));
+    let (doc, _) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+    let refs = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    assert!(refs.stale, "the extension's stale answer must reach the client");
+    assert_eq!(refs.locations.len(), 1);
+}
+#[tokio::test(flavor = "multi_thread")]
 async fn scoped_java_usages_search_the_sources_unless_libraries_are_asked_for() {
     let mut caps = incremental_caps();
     caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});

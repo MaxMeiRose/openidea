@@ -2,12 +2,12 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { getAction } from "@/platform/actions";
 
-const mocks = vi.hoisted(() => ({ remotes: vi.fn(), log: vi.fn() }));
+const mocks = vi.hoisted(() => ({ branch: vi.fn(), remotes: vi.fn(), log: vi.fn() }));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   return {
     ...real,
-    commands: { ...real.commands, vcsRemotes: mocks.remotes, vcsLog: mocks.log },
+    commands: { ...real.commands, vcsBranchInfo: mocks.branch, vcsRemotes: mocks.remotes, vcsLog: mocks.log },
   };
 });
 
@@ -33,11 +33,13 @@ beforeEach(() => {
     },
     branches: [],
   });
+  mocks.branch.mockResolvedValue({ status: "ok", data: vcsStore.useVcs.getState().branch });
   mocks.remotes.mockResolvedValue({ status: "ok", data: [{ name: "origin", fetchUrl: "", pushUrl: "" }] });
   mocks.log.mockResolvedValue({ status: "ok", data: [] });
 });
 
 afterEach(() => {
+  for (const button of screen.queryAllByRole("button", { name: "Cancel" })) fireEvent.click(button);
   vi.restoreAllMocks();
   vi.clearAllMocks();
   vcsStore.useVcs.setState({ available: false, root: null, roots: [], repo: null, branch: null });
@@ -62,7 +64,9 @@ it("shows and loads the selected repository in the push dialog", async () => {
   const remote = vi.spyOn(ops, "runRemote").mockResolvedValue(true);
   render(<VcsDialogHost />);
   await act(async () => showPushDialog({ repo: "/p/front" }));
-  expect(screen.getByText("Repository: front")).toBeInTheDocument();
+  expect(await screen.findByRole("dialog", { name: "Push Commits to front" })).toBeInTheDocument();
+  await screen.findByRole("textbox", { name: "Target branch of front" });
+  expect(mocks.branch.mock.calls.map(([repo]) => repo)).toEqual(["/p/front"]);
   await waitFor(() => expect(mocks.remotes).toHaveBeenCalledWith("/p/front"));
   expect(mocks.log).toHaveBeenCalledWith("/p/front", expect.anything());
   expect(mocks.log.mock.calls.every(([repo]) => repo === "/p/front")).toBe(true);

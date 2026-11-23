@@ -3,12 +3,14 @@ import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
 import type { ClassifiedReference, ReferenceAccess, ReferenceKind, Location, References, RequestId } from "@/bindings";
 import { clearLineTokens } from "@/editor/lineTokens";
+import { whenAllSynced, type PreloadedReferences } from "@/editor/api";
+import { currentReferences, MAX_REFERENCE_REFRESHES } from "@/editor/lsp/currentReferences";
 import { showPendingHint } from "@/editor/lsp/hint";
 import { incompleteNote } from "@/editor/lsp/lsp";
 import { commands, IpcError, isCancelled, nextRequestId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
-import { synchronizeDocumentIndexes, toolWindowService } from "@/workbench/contributions";
+import { documentIndexesPending, synchronizeDocumentIndexes, toolWindowService } from "@/workbench/contributions";
 import {
   caretContext,
   caretSynced,
@@ -115,6 +117,10 @@ export interface UsageSearch {
   scope?: UsageScope | null;
   /** Runs it again in Project and Libraries. */
   searchLibraries?: (() => void) | null;
+  /** The rows came from the server's last search and are being searched again. */
+  refreshing?: boolean;
+  /** Cached positions cannot be opened until the refresh succeeds. */
+  stale?: boolean;
   /** Kept when a new search runs (Pin Tab). */
   pinned?: boolean;
 }
@@ -193,6 +199,8 @@ interface UsagesPopupState {
   loading: boolean;
   /** Where it searched, when the server can search beyond Project Files. */
   scope: UsageScope | null;
+  stale: boolean;
+  current: (() => boolean) | null;
 }
 
 export const useUsagesPopup = create<UsagesPopupState>(() => ({
@@ -203,12 +211,16 @@ export const useUsagesPopup = create<UsagesPopupState>(() => ({
   note: null,
   loading: false,
   scope: null,
+  stale: false,
+  current: null,
 }));
 
 interface FetchedUsages {
   groups: UsageGroup[];
   note: string | null;
   librariesSkipped: boolean;
+  /** A changed Java model can have outdated these rows; searching again corrects them. */
+  stale: boolean;
 }
 
 /** Paths whose lines are read to show these usages: not those the server gave along. */
@@ -230,6 +242,7 @@ export async function fetchUsages(
   request: RequestId = nextRequestId(),
   onPartial?: (found: FetchedUsages) => void,
   libraries = false,
+  active: () => boolean = () => true,
 ): Promise<FetchedUsages> {
   // Usage lines are read afresh: so are the files their syntax colours come from.
   clearLineTokens();
@@ -238,34 +251,81 @@ export async function fetchUsages(
   let classified: ClassifiedReference[] = [];
   let note: string | null = null;
   let librariesSkipped = false;
+  let stale = false;
   await caretSynced(c);
-  const indexed = await synchronizeDocumentIndexes(c.path, "usages");
-  if (c.view && c.view.state.doc !== before) throw new IpcError({ kind: "cancelled", message: "", data: null });
+  await whenAllSynced();
+  const assertActive = () => {
+    if (!active() || (c.view && c.view.state.doc !== before))
+      throw new IpcError({ kind: "cancelled", message: "cancelled" });
+  };
+  assertActive();
+  const pendingIndexes = documentIndexesPending(c.path);
+  const indexes = synchronizeDocumentIndexes(c.path, "usages").then(
+    (complete) => ({ complete }),
+    (error: unknown) => ({ complete: false, error }),
+  );
+  let indexed = false;
   let settled = false;
-  const channel = new Channel<References>();
-  channel.onmessage = (refs) => {
-    if (!onPartial) return;
-    void readManyFileLines(pathsToRead(refs.locations, refs.classified ?? [])).then((files) => {
-      if (settled) return;
-      onPartial({
-        groups: groupUsages(refs.locations, files, refs.classified ?? []),
-        note: refs.incomplete ? incompleteNote(refs.incomplete, c.word) : null,
-        librariesSkipped: false,
+  let wave = 0;
+  const query = async (projectWide: boolean, withLibraries: boolean) => {
+    assertActive();
+    const at = ++wave;
+    let completed = false;
+    const channel = new Channel<References>();
+    channel.onmessage = (refs) => {
+      if (!onPartial) return;
+      void readManyFileLines(pathsToRead(refs.locations, refs.classified ?? [])).then((files) => {
+        if (settled || completed || at !== wave || !active() || (c.view && c.view.state.doc !== before)) return;
+        onPartial({
+          groups: groupUsages(refs.locations, files, refs.classified ?? []),
+          note: refs.incomplete ? incompleteNote(refs.incomplete, c.word) : null,
+          librariesSkipped: refs.librariesSkipped ?? false,
+          stale: refs.stale ?? false,
+        });
       });
+    };
+    return lspRequest(() =>
+      commands.lspReferences(request, c.doc, { line: c.line, col: c.col }, false, projectWide, withLibraries, channel),
+    ).finally(() => {
+      completed = true;
     });
   };
   try {
-    const refs = await lspRequest(() =>
-      commands.lspReferences(request, c.doc, { line: c.line, col: c.col }, false, true, libraries, channel),
-    ).finally(() => {
-      settled = true;
-    });
+    if (pendingIndexes) {
+      try {
+        await currentReferences(async () => {
+          const refs = await query(false, false);
+          const files = await readManyFileLines(pathsToRead(refs.locations, refs.classified ?? []));
+          assertActive();
+          onPartial?.({
+            groups: groupUsages(refs.locations, files, refs.classified ?? []),
+            note: refs.incomplete ? incompleteNote(refs.incomplete, c.word) : null,
+            librariesSkipped: refs.librariesSkipped ?? false,
+            stale: refs.stale ?? false,
+          });
+          return refs;
+        }, active);
+      } catch (e) {
+        if (isCancelled(e)) throw e;
+        // The full query can use providers that the scoped preview could not reach.
+      }
+    }
+    const result = await indexes;
+    assertActive();
+    if ("error" in result) throw result.error;
+    indexed = result.complete;
+    const refs = await query(true, libraries);
     locs = refs.locations;
     classified = refs.classified ?? [];
     librariesSkipped = refs.librariesSkipped ?? false;
+    stale = refs.stale ?? false;
     if (refs.incomplete) note = incompleteNote(refs.incomplete, c.word);
   } catch (e) {
     if (isCancelled(e)) throw e;
+    const result = await indexes;
+    assertActive();
+    if ("error" in result) throw result.error;
+    indexed = result.complete;
     let fb = null;
     try {
       fb = await syntaxUsages(c);
@@ -276,10 +336,13 @@ export async function fetchUsages(
     if (!fb) throw e;
     locs = fb.locs;
     note = fb.note;
+  } finally {
+    settled = true;
   }
   if (!indexed) note ??= tx("May be incomplete: plugin indexes are still updating");
   const files = await readManyFileLines(pathsToRead(locs, classified));
-  return { groups: groupUsages(locs, files, classified), note, librariesSkipped };
+  assertActive();
+  return { groups: groupUsages(locs, files, classified), note, librariesSkipped, stale };
 }
 
 /** In-flight server requests: of tool window searches by search id, and of the popup. */
@@ -299,8 +362,27 @@ export function resetUsages() {
   if (popupRequest !== null) void commands.cancelRequest(popupRequest).catch(() => {});
   popupRequest = null;
   useUsages.setState({ tabs: [], active: null });
-  useUsagesPopup.setState({ open: false, symbol: null, groups: [], note: null, loading: false, scope: null });
+  useUsagesPopup.setState({
+    open: false,
+    symbol: null,
+    groups: [],
+    note: null,
+    loading: false,
+    scope: null,
+    stale: false,
+    current: null,
+  });
   popupTarget = null;
+}
+
+/** Marks the rows a tab shows as being searched again in place (it keeps showing them). */
+function markRefreshing(id: number, refreshing = true) {
+  useUsages.setState((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, refreshing } : t)) }));
+}
+
+function refreshFailure(error: unknown): string {
+  if (isCancelled(error)) return tx("Usages are still updating; try again shortly");
+  return error instanceof Error ? error.message : String(error);
 }
 
 export async function findUsages() {
@@ -309,40 +391,86 @@ export async function findUsages() {
     hint("Open a file to find usages");
     return;
   }
-  // `widenable`: an earlier run of this search skipped the libraries.
-  const run = async (prev: number | null, libraries: boolean, widenable: boolean) => {
+  // `widenable`: an earlier run of this search skipped the libraries. `background`: the rows
+  // shown are the server's last answer for a changed model, and this run replaces them in
+  // place instead of clearing the tab.
+  const run = async (
+    prev: number | null,
+    libraries: boolean,
+    widenable: boolean,
+    background = false,
+    refreshes = 0,
+  ) => {
     const id = ++searchSeq;
+    // A background run keeps the tab it refreshes.
+    const tab = background && prev !== null ? prev : id;
     const base = {
-      id,
+      id: tab,
       symbol: c.word,
-      rerun: () => void run(id, libraries, widenable),
-      searchLibraries: () => void run(id, true, true),
+      rerun: () => void run(tab, libraries, widenable),
+      searchLibraries: () => void run(tab, true, true),
     };
-    const loading = { ...base, loading: true, groups: [], error: null, note: null };
+    const loading = { ...base, loading: true, groups: [], error: null, note: null, refreshing: false, stale: false };
     if (prev !== null) cancelSearch(prev);
-    if (prev === null || !replaceUsageTab(prev, loading)) openUsageTab(loading);
+    if (background) markRefreshing(tab);
+    else if (prev === null || !replaceUsageTab(prev, loading)) openUsageTab(loading);
     toolWindowService().show("usages");
     const request = nextRequestId();
-    inflight.set(id, request);
+    inflight.set(tab, request);
     try {
-      const { groups, note, librariesSkipped } = await fetchUsages(
+      const { groups, note, librariesSkipped, stale } = await fetchUsages(
         c,
         request,
         (found) => {
-          if (inflight.get(id) === request) replaceUsageTab(id, { ...loading, groups: found.groups, note: found.note });
+          if (inflight.get(tab) === request && !background) {
+            replaceUsageTab(tab, { ...loading, groups: found.groups, note: found.note, stale: found.stale });
+          }
         },
         libraries,
+        () => inflight.get(tab) === request,
       );
+      if (inflight.get(tab) !== request) return;
       const scope = searchedScope(libraries, librariesSkipped, widenable);
-      replaceUsageTab(id, { ...base, loading: false, groups, error: null, note, scope });
+      const retry = stale && refreshes + 1 < MAX_REFERENCE_REFRESHES;
+      replaceUsageTab(tab, {
+        ...base,
+        loading: false,
+        groups,
+        error: null,
+        note: stale && !retry ? tx("Usages are still updating; try again shortly") : note,
+        scope,
+        refreshing: retry,
+        stale,
+      });
+      // A changed Java model made these rows the last search's: searching again corrects them
+      // without hiding what is shown. The server answers a second request with a fresh search.
+      if (retry) void run(tab, libraries, widenable, true, refreshes + 1);
     } catch (e) {
+      if (inflight.get(tab) !== request) return;
+      // A background refresh never replaces the rows it was refreshing.
+      if (background) {
+        useUsages.setState((s) => ({
+          tabs: s.tabs.map((t) =>
+            t.id === tab
+              ? {
+                  ...t,
+                  refreshing: false,
+                  stale: true,
+                  note: refreshFailure(e),
+                }
+              : t,
+          ),
+        }));
+        if (!isCancelled(e)) reportError(e);
+        return;
+      }
       // Cancelled here (closed tab, rerun): a newer state already replaced it.
-      if (isCancelled(e) && !inflight.has(id)) return;
+      if (isCancelled(e) && !inflight.has(tab)) return;
       const message = e instanceof Error ? e.message : String(e);
-      if (!replaceUsageTab(id, { ...base, loading: false, groups: [], error: message, note: null })) return;
+      if (!replaceUsageTab(tab, { ...base, loading: false, groups: [], error: message, note: null })) return;
       reportError(e);
     } finally {
-      if (inflight.get(id) === request) inflight.delete(id);
+      if (inflight.get(tab) === request) inflight.delete(tab);
     }
   };
   await run(null, false, false);
@@ -367,7 +495,7 @@ export async function showUsageResults(arg: unknown) {
   openUsageTab({ ...base, loading: true, groups: [], error: null, note: null });
   toolWindowService().show("usages");
   clearLineTokens();
-  const files = await readManyFileLines(locs.map((l) => l.path));
+  const files = await readManyFileLines(pathsToRead(locs, a.classified ?? []));
   replaceUsageTab(id, {
     ...base,
     loading: false,
@@ -380,7 +508,7 @@ export async function showUsageResults(arg: unknown) {
 export function dismissUsagesPopup() {
   if (popupRequest !== null) void commands.cancelRequest(popupRequest).catch(() => {});
   popupRequest = null;
-  useUsagesPopup.setState({ open: false });
+  useUsagesPopup.setState({ open: false, loading: false, stale: false, current: null });
 }
 
 /** How long Show Usages waits for all usages before it shows those found first. */
@@ -394,10 +522,14 @@ const HINT_MS = 4000;
  */
 let popupTarget: { c: CaretContext; widenable: boolean; hintUntil: number } | null = null;
 
-export async function showUsagesPopup() {
+export async function showUsagesPopup(arg?: unknown) {
   const target = popupTarget;
   const popup = useUsagesPopup.getState();
-  if (target?.widenable && ((popup.open && popup.scope === "project") || Date.now() < target.hintUntil)) {
+  if (
+    arg === undefined &&
+    target?.widenable &&
+    ((popup.open && popup.scope === "project") || Date.now() < target.hintUntil)
+  ) {
     await searchPopup(target.c, true, true);
     return;
   }
@@ -406,7 +538,20 @@ export async function showUsagesPopup() {
     hint("Open a file to show usages");
     return;
   }
-  await searchPopup(c, false, false);
+  const seed = arg as Partial<PreloadedReferences> | null | undefined;
+  const preloaded =
+    c.view &&
+    seed?.doc === c.doc &&
+    seed.path === c.path &&
+    seed.pos?.line === c.line &&
+    seed.pos.col === c.col &&
+    seed.document === c.view.state.doc &&
+    typeof seed.current === "function" &&
+    seed.current() &&
+    Array.isArray(seed.references?.locations)
+      ? (seed as PreloadedReferences)
+      : undefined;
+  await searchPopup(c, false, false, preloaded);
 }
 
 /** The popup's scope chooser: searches its symbol again in `scope`. */
@@ -416,13 +561,13 @@ export function setUsagesPopupScope(scope: UsageScope) {
   void searchPopup(target.c, scope === "libraries", target.widenable);
 }
 
-async function searchPopup(c: CaretContext, libraries: boolean, widenable: boolean) {
+async function searchPopup(c: CaretContext, libraries: boolean, widenable: boolean, preloaded?: PreloadedReferences) {
   // Set from the start: the scope chooser can switch while this search goes on.
   popupTarget = { c, widenable, hintUntil: 0 };
   const reopened = useUsagesPopup.getState().open;
   if (reopened) useUsagesPopup.setState({ loading: true, scope: libraries ? "libraries" : "project" });
   if (popupRequest !== null) void commands.cancelRequest(popupRequest).catch(() => {});
-  const request = nextRequestId();
+  let request = nextRequestId();
   popupRequest = request;
   // Opened with those found first when the rest take a while; it then stays open, even
   // when they were all. A quick search still jumps to a single usage.
@@ -436,33 +581,76 @@ async function searchPopup(c: CaretContext, libraries: boolean, widenable: boole
     pending();
     if (!early && !reopened) useUsagesPopup.setState({ open: true, anchor: caretPoint(), symbol: c.word });
     early = true;
-    useUsagesPopup.setState({ ...found, loading: true, scope: widenable ? "libraries" : null });
+    useUsagesPopup.setState({ ...found, loading: true, current: null, scope: widenable ? "libraries" : null });
   };
+  if (preloaded?.references.locations.length) {
+    const refs = preloaded.references;
+    const files = new Map([[c.path, c.view!.state.doc.toJSON()]]);
+    const groups = groupUsages(refs.locations, files, refs.classified ?? []);
+    early = usageCount(groups) > 1;
+    useUsagesPopup.setState({
+      open: true,
+      anchor: caretPoint(),
+      symbol: c.word,
+      groups,
+      note: refs.incomplete ? incompleteNote(refs.incomplete, c.word) : null,
+      loading: true,
+      stale: refs.stale ?? false,
+      current: preloaded.current,
+      scope: refs.librariesSkipped ? "project" : null,
+    });
+    pending();
+  }
   const again = shortcutLabel("find.showUsages");
   try {
-    const { groups, note, librariesSkipped } = await fetchUsages(
-      c,
-      request,
-      (partial) => {
-        if (!usageCount(partial.groups)) return;
-        found = partial;
-        if (early) openEarly();
-        else timer ??= setTimeout(openEarly, EARLY_POPUP_DELAY_MS);
-      },
-      libraries,
-    ).finally(() => {
-      clearTimeout(timer);
-      pending();
-    });
-    if (popupRequest !== request) return;
+    let answer: FetchedUsages | undefined;
+    for (let refresh = 0; refresh < MAX_REFERENCE_REFRESHES; refresh++) {
+      answer = await fetchUsages(
+        c,
+        request,
+        (partial) => {
+          if (!usageCount(partial.groups)) return;
+          found = partial;
+          if (!preloaded && (early || usageCount(partial.groups) > 1)) openEarly();
+          else timer ??= setTimeout(openEarly, EARLY_POPUP_DELAY_MS);
+        },
+        libraries,
+        () => popupRequest === request,
+      ).finally(() => {
+        clearTimeout(timer);
+        pending();
+      });
+      if (popupRequest !== request) return;
+      if (!answer.stale) break;
+      early = true;
+      useUsagesPopup.setState({
+        open: true,
+        anchor: caretPoint(),
+        symbol: c.word,
+        groups: answer.groups,
+        note: answer.note,
+        loading: true,
+        stale: true,
+        current: null,
+        scope: searchedScope(libraries, answer.librariesSkipped, widenable),
+      });
+      if (refresh + 1 === MAX_REFERENCE_REFRESHES) {
+        useUsagesPopup.setState({ loading: false, note: tx("Usages are still updating; try again shortly") });
+        return;
+      }
+      request = nextRequestId();
+      popupRequest = request;
+    }
+    const { groups, note, librariesSkipped } = answer!;
     const scope = searchedScope(libraries, librariesSkipped, widenable);
     popupTarget = { c, widenable: widenable || scope !== null, hintUntil: 0 };
     const total = usageCount(groups);
     if (early || reopened || total > 1) {
       if (!early && !reopened) useUsagesPopup.setState({ open: true, anchor: caretPoint(), symbol: c.word });
-      useUsagesPopup.setState({ groups, note, loading: false, scope });
+      useUsagesPopup.setState({ groups, note, loading: false, scope, stale: false, current: null });
       return;
     }
+    if (preloaded) useUsagesPopup.setState({ open: false, loading: false, stale: false, current: null });
     // As in IDEA, the hint offers to widen the search, which Show Usages does while it shows.
     const widen = scope === "project" && again !== "";
     if (widen) popupTarget.hintUntil = Date.now() + HINT_MS;
@@ -494,8 +682,15 @@ async function searchPopup(c: CaretContext, libraries: boolean, widenable: boole
     else if (scope === "libraries") hint("Only one usage in Project and Libraries", "info", counted);
     else hint("Only one usage in Project Files", "info", counted);
   } catch (e) {
-    if (popupRequest !== request || isCancelled(e)) return;
-    if (early || reopened) useUsagesPopup.setState({ loading: false });
+    if (popupRequest !== request) return;
+    if (early || reopened || preloaded)
+      useUsagesPopup.setState({
+        loading: false,
+        stale: true,
+        current: null,
+        note: refreshFailure(e),
+      });
+    if (isCancelled(e)) return;
     reportError(e);
   } finally {
     if (popupRequest === request) popupRequest = null;

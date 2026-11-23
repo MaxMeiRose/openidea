@@ -58,19 +58,21 @@ test("agent tool groups are collapsed, expand independently, and reveal search m
     store.openTask(task.id);
   });
 
-  const group = page.locator("details").filter({ has: page.getByText("Read", { exact: true }) });
+  await page.getByText("Read 3 files", { exact: true }).click();
+  await page.getByText("Read 2 files", { exact: true }).click();
+  const group = page.getByText("Read", { exact: true }).locator("xpath=ancestor::details[1]");
   await expect(group).toHaveCount(1);
   await expect(group).not.toHaveAttribute("open");
-  await expect(group.getByText("×3")).toBeVisible();
+  await expect(group.getByText("×2")).toBeVisible();
   await expect(group.getByText("Read alpha.ts", { exact: true })).toBeHidden();
-  await expect(page.getByRole("alert", { name: "Approval required" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Allow tool call?" })).toBeVisible();
   await expect(page.getByText("Other read")).toBeVisible();
-  await expect(group.getByText("Read gamma.ts")).toBeHidden();
+  await expect(page.getByText("Read gamma.ts")).toBeVisible();
   await expect(page.getByText("Read delta.ts")).toBeVisible();
 
   await group.locator("summary").first().click();
   await expect(group.getByText("Read alpha.ts", { exact: true })).toBeVisible();
-  await expect(group.getByText("Read gamma.ts")).toBeVisible();
+  await expect(group.getByText("Read beta.ts", { exact: true })).toBeVisible();
   const alpha = group.locator("details").filter({ hasText: "Read alpha.ts" });
   await expect(alpha).not.toHaveAttribute("open");
   await alpha.locator("summary").click();
