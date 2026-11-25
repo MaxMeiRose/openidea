@@ -157,8 +157,10 @@ export async function updateInstance(env: EurekaEnvironment, service: string, in
   try {
     await call(commands.eurekaSetStatus(nextRequestId(), env.url, service, instance, status));
     for (let attempt = 0; attempt < 3; attempt++) {
+      // oxlint-disable-next-line no-await-in-loop -- each registry poll follows the synchronization delay
       await new Promise((resolve) => setTimeout(resolve, SYNC_DELAY));
       if (!isCurrent(env)) return;
+      // oxlint-disable-next-line no-await-in-loop -- the next poll depends on the observed instance status
       const services = await refreshEureka({ reusePending: true });
       if (!isCurrent(env)) return;
       const current = services?.find((s) => s.name === service)?.instance.find((i) => i.instanceId === instance);

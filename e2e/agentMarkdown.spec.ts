@@ -257,7 +257,7 @@ test("copies reply Markdown with the keyboard and keeps code copying separate", 
   await expect(actions).toHaveCSS("opacity", "1");
   await page.keyboard.press("Enter");
   await expect(page.getByRole("button", { name: "Copied", exact: true })).toBeVisible();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(REPLY);
+  expect(await page.evaluate(async () => (await navigator.clipboard.readText()).replace(/\r\n/g, "\n"))).toBe(REPLY);
   await reply.getByRole("button", { name: "Copy Code", exact: true }).click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("const a = 1;");
 });
@@ -591,13 +591,15 @@ test("selects through code blocks and tables while keeping copy controls outside
   expect(selected).toContain("程序入口");
   expect(selected).toContain(flow);
   await page.keyboard.press("ControlOrMeta+c");
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
+  expect(await page.evaluate(async () => (await navigator.clipboard.readText()).replace(/\r\n/g, "\n"))).toBe(
+    selected.replace(/\r\n/g, "\n"),
+  );
   await page.evaluate(() => window.getSelection()!.removeAllRanges());
   const copies = reply.getByRole("button", { name: "Copy Code", exact: true });
   await copies.first().click();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(tree);
+  expect(await page.evaluate(async () => (await navigator.clipboard.readText()).replace(/\r\n/g, "\n"))).toBe(tree);
   await copies.last().click();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(flow);
+  expect(await page.evaluate(async () => (await navigator.clipboard.readText()).replace(/\r\n/g, "\n"))).toBe(flow);
 });
 
 test("keeps mermaid `<style>` rules scoped to the rendered svg after id rewriting", async ({ page }) => {
@@ -796,8 +798,8 @@ test("Find in Conversation skips user-select:none summaries and closed <details>
   }, TASK);
 
   const stream = page.locator("[class*='_stream_']:visible");
-  // A command is its own row, outside the reasoning's run.
-  await expect(stream.getByText("stop_bash")).toBeVisible();
+  // The reasoning and the command fold into one run.
+  await expect(stream.getByText("1 other tool call")).toBeVisible();
 
   await stream.focus();
   await page.keyboard.press("Meta+f");
@@ -939,6 +941,9 @@ test("indents process-run thoughts and tool calls clearly and aligns output-less
   const summary = stream.locator("[class*='_processSummary_']").first();
   await summary.click();
   await expect(stream.getByText("Checking CI Status")).toBeVisible();
+  const readGroup = stream.locator("[class*='_toolDetails_']").filter({ hasText: "read_bash · read_bash" }).first();
+  await readGroup.locator(":scope > summary").click();
+  await expect(readGroup.locator("[class*='_toolChildren_'] > details > summary").first()).toBeVisible();
 
   const layout = await stream.evaluate((root) => {
     const summaryChevron = root.querySelector<SVGElement>("[class*='_processChevron_']")!.getBoundingClientRect();
@@ -948,9 +953,10 @@ test("indents process-run thoughts and tool calls clearly and aligns output-less
     const expandableToolChevron = toolRows[0]!
       .querySelector<SVGElement>("[class*='_toolChevron_']")!
       .getBoundingClientRect();
-    const kindIcon = (row: HTMLElement) => row.querySelector<SVGElement>("[class*='_toolKindIcon_']")!;
-    const completedReadIcon = kindIcon(toolRows[1]!).getBoundingClientRect();
-    const runningReadIcon = kindIcon(toolRows[2]!).getBoundingClientRect();
+    const readRows = [...root.querySelectorAll<HTMLElement>("[class*='_toolChildren_'] > details > summary")];
+    const kindIcon = (row: HTMLElement) => row.querySelector<SVGElement>("svg:not([class*='_toolChevron_'])")!;
+    const completedReadIcon = kindIcon(readRows[0]!).getBoundingClientRect();
+    const runningReadIcon = kindIcon(readRows[1]!).getBoundingClientRect();
     return {
       summaryChevronCenter: summaryChevron.left + summaryChevron.width / 2,
       guideLeft: processBody.left,

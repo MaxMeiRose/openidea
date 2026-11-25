@@ -20,7 +20,7 @@ import {
   subagentWorking,
   type SubagentEntry,
 } from "./model";
-import { ChangesTab, useChangesRefresh, useLocalHead, useTaskChanges } from "./session/ChangesTab";
+import { ChangesTab, openTaskChanges, useChangesRefresh, useLocalHead, useTaskChanges } from "./session/ChangesTab";
 import { FoldedContent } from "./session/Folds";
 import { QuestionCard, type QuestionAnswer } from "./session/QuestionForm";
 import { SessionComposer } from "./session/SessionComposer";
@@ -156,8 +156,8 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
           )}
         </EditorShownProvider>
       </div>
-      <EditorShownProvider value={onScreen && !view && !changesOpen}>
-        <div className={styles.composerHost} hidden={!!view || changesOpen}>
+      <EditorShownProvider value={onScreen}>
+        <div className={styles.composerHost}>
           <QuestionCard task={task} entries={entries ?? null} drafts={drafts} />
           <SessionComposer
             task={task}
@@ -167,7 +167,8 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
             head={head}
             changes={changes ?? null}
             commits={commits}
-            onOpenChanges={() => setChangesOpen(true)}
+            showInput={!view && !changesOpen}
+            onOpenChanges={() => (docked ? openTaskChanges(id) : setChangesOpen(true))}
             onOpenSubagent={openSubagent}
           />
         </div>

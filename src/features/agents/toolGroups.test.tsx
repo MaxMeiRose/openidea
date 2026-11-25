@@ -87,8 +87,12 @@ describe("tool call groups", () => {
     ];
     useAgents.setState({ loaded: true, tasks: new Map([[task.id, { ...task, provider: "codex" }]]) });
     await openSession();
-    for (const label of ["Terminal", "Read", "Search"]) {
-      const group = (await screen.findByText(label, { exact: true })).closest("details")!;
+    const groups = await Promise.all(
+      ["Terminal", "Read", "Search"].map(async (label) =>
+        (await screen.findByText(label, { exact: true })).closest("details")!,
+      ),
+    );
+    for (const group of groups) {
       expect(group).not.toHaveAttribute("open");
       expect(within(group).getByText("×2")).toBeVisible();
     }

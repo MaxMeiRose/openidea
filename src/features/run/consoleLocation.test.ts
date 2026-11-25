@@ -11,7 +11,7 @@ import {
   type ToolWindowService,
 } from "@/workbench/contributions";
 import { startPreparedSession, startSession, useDebug } from "@/features/debugger/state";
-import { runServiceProvider } from "./services";
+import { addType, runServiceProvider } from "./services";
 import { rerunSession, resetRuns, runtime, startRun, useRun } from "./store";
 import { useServicesTree } from "@/features/services/tree";
 
@@ -64,6 +64,7 @@ beforeEach(() => {
   localStorage.clear();
   vi.clearAllMocks();
   useProject.setState({ project: { root: "/console-location", name: "app", settings: validateSettings({}) } as never });
+  addType("shell");
   useRun.setState({ configs: [config] });
   useServicesTree.setState({ roots: {}, selectedKey: null, selectedKeys: new Set(), expanded: new Set() });
   useDebug.setState({ sessions: {}, active: null, console: {} });

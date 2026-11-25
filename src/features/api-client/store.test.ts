@@ -160,6 +160,7 @@ describe("API Client request isolation", () => {
       if (action === "close") closeTab(id);
       if (action === "project") openProject("/different-project");
       pending.resolve(ok(exchange("late")));
+      // oxlint-disable-next-line no-await-in-loop -- the next scenario replaces the request and project state
       await send;
       expect(useApiClient.getState().responses[id]).toBeUndefined();
       expect(useApiClient.getState().running).toEqual({});

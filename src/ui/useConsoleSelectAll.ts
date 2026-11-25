@@ -72,7 +72,11 @@ export function useConsoleSelectAll(
 
   return {
     selectAll,
-    selectedOutput: () => (fullSelection.current ? text() : (window.getSelection()?.toString() ?? "")),
+    selectedOutput: () => {
+      if (fullSelection.current) return text();
+      const selection = window.getSelection();
+      return selection?.anchorNode && host.current?.contains(selection.anchorNode) ? selection.toString() : "";
+    },
     onSelectAllKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
       if (event.defaultPrevented || event.nativeEvent.isComposing || isEditable(event.target)) return false;
       if (!isSelectAll(event)) {

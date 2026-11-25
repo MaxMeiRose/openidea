@@ -605,6 +605,7 @@ async function searchPopup(c: CaretContext, libraries: boolean, widenable: boole
   try {
     let answer: FetchedUsages | undefined;
     for (let refresh = 0; refresh < MAX_REFERENCE_REFRESHES; refresh++) {
+      // oxlint-disable-next-line no-await-in-loop -- each refresh depends on whether the preceding search is stale
       answer = await fetchUsages(
         c,
         request,

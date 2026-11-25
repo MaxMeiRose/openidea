@@ -2006,7 +2006,7 @@ describe("session state across tasks and hosts", () => {
       },
     ]);
     useAgents.setState({ entries: new Map(backend.entries) });
-    render(<SessionEditor input={input("A")} docked />);
+    render(<SessionEditor input={input("A")} />);
     const approval = await screen.findByRole("region", { name: "codex wants to run a command" });
     expect(stream().contains(approval)).toBe(false);
     typeIn(screen.getByRole("textbox", { name: "Message" }), "Keep my draft");
@@ -2098,7 +2098,7 @@ describe("session state across tasks and hosts", () => {
       );
       fireEvent.click(screen.getByRole("button", { name: /Explore task A/ }));
       expect(await screen.findByText("Child answer")).toBeInTheDocument();
-      expect(screen.getByRole("textbox", { name: "Message" })).toBeInTheDocument();
+      expect(screen.queryByRole("textbox", { name: "Message" })).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
       fireEvent.click(within(screen.getByRole("tree", { name: "Agent tasks" })).getByText("B"));
       expect(await screen.findByText("Answer B")).toBeInTheDocument();
@@ -2132,13 +2132,10 @@ describe("session state across tasks and hosts", () => {
     typeIn(message, "Draft to keep");
     const conversation = stream();
     fireEvent.click(screen.getByRole("button", { name: /1 changed file/ }));
-    expect(screen.getByRole("complementary", { name: "Changes" })).toBeVisible();
-    expect(screen.getByText("Answer A")).not.toBeVisible();
-    expect(screen.getByRole("textbox", { name: "Message" })).toBeVisible();
-    act(() => useAgents.setState({ unread: new Set(["A"]) }));
-    fireEvent(window, new Event("focus"));
-    expect(useAgents.getState().unread.has("A")).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Back to conversation" }));
+    expect(editors.openInput).toHaveBeenCalledWith(
+      { kind: CHANGES_KIND, key: changesKey("A"), data: { task: "A" } },
+      { focus: true },
+    );
     expect(stream()).toBe(conversation);
     expect(screen.getByText("Answer A")).toBeVisible();
     expect(screen.getByRole("textbox", { name: "Message" })).toBe(message);
@@ -3052,6 +3049,7 @@ describe("changes refresh", () => {
     for (let i = 0; i < 6; i++) {
       revision++;
       scheduleChanges("A");
+      // oxlint-disable-next-line no-await-in-loop -- fake timers advance in fixed steps so each burst is observed in order
       await vi.advanceTimersByTimeAsync(500);
     }
     await vi.runAllTimersAsync();

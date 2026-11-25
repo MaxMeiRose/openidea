@@ -4,7 +4,7 @@ import { tx, useTx } from "@/platform/i18n";
 import { isErrorKind } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { Button, Icon, IconButton, T, type IconName } from "@/ui";
-import { notifications, useEditorShown } from "@/workbench/contributions";
+import { EditorShownProvider, notifications, useEditorShown } from "@/workbench/contributions";
 import clsx from "clsx";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Composer } from "../Composer";
@@ -144,6 +144,7 @@ export function SessionComposer({
   head,
   changes,
   commits,
+  showInput = true,
   onOpenChanges,
   onOpenSubagent,
 }: {
@@ -154,6 +155,7 @@ export function SessionComposer({
   head: string | null;
   changes: AgentChange[] | null;
   commits: readonly AgentCommit[];
+  showInput?: boolean;
   onOpenChanges: () => void;
   onOpenSubagent: (id: string) => void;
 }) {
@@ -264,7 +266,12 @@ export function SessionComposer({
   const openMcp = () => setMcpOpenRequest((n) => n + 1);
   const openSkills = () => setSkillsOpenRequest((n) => n + 1);
   const shown = useEditorShown();
-  const effortAnnouncement = useEffortFocus(focusRoot, shown && task.status !== "archived", task.config, setOption);
+  const effortAnnouncement = useEffortFocus(
+    focusRoot,
+    shown && showInput && task.status !== "archived",
+    task.config,
+    setOption,
+  );
   return (
     <div className={styles.composerArea}>
       {task.status === "archived" && (
@@ -284,121 +291,132 @@ export function SessionComposer({
         <BackgroundTasks task={task} />
         {task.queue.length > 0 && <Queue task={task} />}
       </Tray>
-      <SessionAssets task={task} entries={entries} head={head} onFocusComposer={() => setAssetFocus((n) => n + 1)} />
-      <Composer
-        id={task.id}
-        focusRequest={focusRequest + assetFocus}
-        placeholder={
-          !busy
-            ? "Reply to the agent"
-            : steers
-              ? "Send into the agent's turn"
-              : whileRunning === "steer"
-                ? "Queue a message for when the agent is done"
-                : sendWith === "enter"
-                  ? "Queue a message for when the agent is done (⌘↵ sends it now)"
-                  : "Queue a message for when the agent is done (⌘⇧↵ sends it now)"
-        }
-        root={task.cwd}
-        projectRoot={task.projectRoot ?? project?.root ?? task.cwd}
-        commands={agentCommands}
-        history={history}
-        config={task.config}
-        onConfig={setOption}
-        onSubmit={send}
-        onOpenMcp={openMcp}
-        onOpenSkills={openSkills}
-        disabled={task.status === "archived"}
-        addMenu={[
-          { id: "mcp", label: "MCP Servers…", icon: "plugin", disabled: task.status === "archived", run: openMcp },
-          { id: "skills", label: "Skills…", icon: "bulb", disabled: task.status === "archived", run: openSkills },
-        ]}
-        toolbar={
-          <>
-            <HermesProfilePicker provider={task.provider} />
-            <ConfigPickers
-              config={pickerConfig}
-              disabled={settings.loading}
-              onChange={setOption}
-              modelRefresh={
-                canRefreshModels
-                  ? {
-                      refreshing: requestingModels || (catalog?.refreshing ?? false),
-                      loadingSettings: configuring?.loadingModel,
-                      retryAtMs: catalog?.retryAtMs ?? null,
-                      error: requestingModels ? null : (catalog?.error ?? null),
-                      onOpen: () => void refreshTaskModels(task.id, false),
-                      onRefresh: () => void executeAction("agents.refreshModels", task.id),
-                    }
-                  : undefined
-              }
-            />
-            <McpPicker
-              provider={task.provider}
-              overrides={task.mcpOverrides}
-              disabled={task.status === "archived"}
-              busy={busy}
-              openRequest={mcpOpenRequest}
-              hideTrigger
-              onChange={(next) =>
-                void setTaskMcpOverrides(task.id, next).catch((e: unknown) =>
-                  notifications().notify({
-                    level: "error",
-                    title: "Couldn't change the setting",
-                    body: String(e),
-                  }),
-                )
-              }
-            />
-            <SkillsPicker
-              provider={task.provider}
-              overrides={task.skillOverrides}
-              disabled={task.status === "archived"}
-              busy={busy}
-              openRequest={skillsOpenRequest}
-              hideTrigger
-              onChange={(next) =>
-                void setTaskSkillOverrides(task.id, next).catch((e: unknown) =>
-                  notifications().notify({
-                    level: "error",
-                    title: "Couldn't change the setting",
-                    body: String(e),
-                  }),
-                )
-              }
-            />
-          </>
-        }
-        actions={
-          <>
-            {(busy || shellRunning) && <IconButton icon="stop" title="Stop" onClick={() => void stopTask(task.id)} />}
-            <SubmitButton
-              label={busy ? "Queue" : "Send"}
-              pending={sending}
-              variant={busy ? "secondary" : "primary"}
-              disabled={!canSend(composer) || sending || configuring !== null || task.status === "archived"}
-              onClick={() => send(false)}
-            />
-          </>
-        }
-      />
-      {settings.error && (
-        <div className={styles.banner} role="alert">
-          <span className={styles.bannerText}>{settings.error}</span>
-          <Button size="small" onClick={settings.retry}>
-            Retry
-          </Button>
+      <EditorShownProvider value={shown && showInput}>
+        <div className={styles.composerInput} hidden={!showInput}>
+          <SessionAssets
+            task={task}
+            entries={entries}
+            head={head}
+            onFocusComposer={() => setAssetFocus((n) => n + 1)}
+          />
+          <Composer
+            id={task.id}
+            focusRequest={focusRequest + assetFocus}
+            placeholder={
+              !busy
+                ? "Reply to the agent"
+                : steers
+                  ? "Send into the agent's turn"
+                  : whileRunning === "steer"
+                    ? "Queue a message for when the agent is done"
+                    : sendWith === "enter"
+                      ? "Queue a message for when the agent is done (⌘↵ sends it now)"
+                      : "Queue a message for when the agent is done (⌘⇧↵ sends it now)"
+            }
+            root={task.cwd}
+            projectRoot={task.projectRoot ?? project?.root ?? task.cwd}
+            commands={agentCommands}
+            history={history}
+            config={task.config}
+            onConfig={setOption}
+            onSubmit={send}
+            onOpenMcp={openMcp}
+            onOpenSkills={openSkills}
+            disabled={task.status === "archived"}
+            addMenu={[
+              { id: "mcp", label: "MCP Servers…", icon: "plugin", disabled: task.status === "archived", run: openMcp },
+              { id: "skills", label: "Skills…", icon: "bulb", disabled: task.status === "archived", run: openSkills },
+            ]}
+            toolbar={
+              <>
+                <HermesProfilePicker provider={task.provider} />
+                <ConfigPickers
+                  config={pickerConfig}
+                  disabled={settings.loading}
+                  onChange={setOption}
+                  modelRefresh={
+                    canRefreshModels
+                      ? {
+                          refreshing: requestingModels || (catalog?.refreshing ?? false),
+                          loadingSettings: configuring?.loadingModel,
+                          retryAtMs: catalog?.retryAtMs ?? null,
+                          error: requestingModels ? null : (catalog?.error ?? null),
+                          onOpen: () => void refreshTaskModels(task.id, false),
+                          onRefresh: () => void executeAction("agents.refreshModels", task.id),
+                        }
+                      : undefined
+                  }
+                />
+                <McpPicker
+                  provider={task.provider}
+                  overrides={task.mcpOverrides}
+                  disabled={task.status === "archived"}
+                  busy={busy}
+                  openRequest={mcpOpenRequest}
+                  hideTrigger
+                  onChange={(next) =>
+                    void setTaskMcpOverrides(task.id, next).catch((e: unknown) =>
+                      notifications().notify({
+                        level: "error",
+                        title: "Couldn't change the setting",
+                        body: String(e),
+                      }),
+                    )
+                  }
+                />
+                <SkillsPicker
+                  provider={task.provider}
+                  overrides={task.skillOverrides}
+                  disabled={task.status === "archived"}
+                  busy={busy}
+                  openRequest={skillsOpenRequest}
+                  hideTrigger
+                  onChange={(next) =>
+                    void setTaskSkillOverrides(task.id, next).catch((e: unknown) =>
+                      notifications().notify({
+                        level: "error",
+                        title: "Couldn't change the setting",
+                        body: String(e),
+                      }),
+                    )
+                  }
+                />
+              </>
+            }
+            actions={
+              <>
+                {(busy || shellRunning) && (
+                  <IconButton icon="stop" title="Stop" onClick={() => void stopTask(task.id)} />
+                )}
+                <SubmitButton
+                  label={busy ? "Queue" : "Send"}
+                  pending={sending}
+                  variant={busy ? "secondary" : "primary"}
+                  disabled={!canSend(composer) || sending || configuring !== null || task.status === "archived"}
+                  onClick={() => send(false)}
+                />
+              </>
+            }
+          />
+          {settings.error && (
+            <div className={styles.banner} role="alert">
+              <span className={styles.bannerText}>{settings.error}</span>
+              <Button size="small" onClick={settings.retry}>
+                Retry
+              </Button>
+            </div>
+          )}
+          <SessionStatus
+            task={task}
+            head={head}
+            changes={changes}
+            commits={commits}
+            onOpenChanges={onOpenChanges}
+            effortAnnouncement={effortAnnouncement}
+            entries={entries}
+          />
         </div>
-      )}
-      <SessionStatus
-        task={task}
-        head={head}
-        changes={changes}
-        commits={commits}
-        onOpenChanges={onOpenChanges}
-        effortAnnouncement={effortAnnouncement}
-        entries={entries}
-      />
+      </EditorShownProvider>
     </div>
   );
 }

@@ -10,6 +10,7 @@ export async function currentReferences(
 ): Promise<References> {
   for (let i = 0; i < MAX_REFERENCE_REFRESHES; i++) {
     if (!wanted()) throw new IpcError({ kind: "cancelled", message: "cancelled" });
+    // oxlint-disable-next-line no-await-in-loop -- refreshes depend on the preceding search result
     const refs = await query();
     if (!wanted()) throw new IpcError({ kind: "cancelled", message: "cancelled" });
     if (!refs.stale) return refs;

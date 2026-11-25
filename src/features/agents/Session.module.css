@@ -407,7 +407,8 @@
   .processBody {
     padding-left: var(--space-2);
   }
-  .processBody > .thoughtEntry ~ .toolEntry {
+  .processBody > .thoughtEntry ~ .toolEntry,
+  .processBody > .thoughtEntry ~ .toolDetails {
     padding-left: var(--space-3);
   }
 }
@@ -957,7 +958,8 @@
   padding-left: var(--space-3);
   border-left: 1px solid var(--border);
 }
-.processBody > .thoughtEntry ~ .toolEntry {
+.processBody > .thoughtEntry ~ .toolEntry,
+.processBody > .thoughtEntry ~ .toolDetails {
   padding-left: var(--space-4);
 }
 .output {
@@ -1122,6 +1124,13 @@
   max-width: calc(var(--session-content-width) + var(--space-3) * 2);
   box-sizing: border-box;
   padding: var(--space-1-5) var(--space-3) var(--space-3);
+}
+
+.composerInput {
+  display: contents;
+}
+.composerInput[hidden] {
+  display: none;
 }
 
 .background {

@@ -98,11 +98,12 @@ describe("Group By › Repository in the changes tree", () => {
     // Each file keeps its own checkbox.
     const boxes = screen.getAllByRole("checkbox", { name: "Include App.kt in commit" });
     expect(boxes).toHaveLength(2);
-    expect(boxes[0]).not.toBeChecked();
+    expect(boxes[0]).toBeChecked();
     act(() => {
       fireEvent.mouseDown(boxes[0]!);
     });
-    expect([...useCommit.getState().checks]).toEqual([["/p/orders/src/App.kt", "all"]]);
+    expect([...useCommit.getState().checks]).toEqual([["/p/orders/src/App.kt", "none"]]);
+    expect(boxes[1]).toBeChecked();
     runItem("Repository");
     expect(localStorage.getItem("openidea.vcs.groupByRepo")).toBe("true");
     expect(screen.getByText("orders")).toBeTruthy();
