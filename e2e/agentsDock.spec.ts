@@ -1,8 +1,9 @@
 /** Docking agent conversations between the editor and the Agents tool window by drag & drop. */
 import type { Page } from "@playwright/test";
+import type { AgentTask } from "../src/bindings";
 import { expect, test } from "./fixtures";
 
-const TASK = {
+const TASK: AgentTask = {
   id: "t1",
   title: "Repro task",
   status: "ready" as const,
@@ -49,9 +50,9 @@ test("keeps the agent run status visible and changes it when execution ends", as
   await page.evaluate(async () => {
     const storePath = "/src/features/agents/store.ts";
     const { useAgents } = await import(storePath);
-    useAgents.setState((state: { tasks: Map<string, typeof TASK> }) => ({
+    useAgents.setState((state: { tasks: Map<string, AgentTask> }) => ({
       tasks: new Map(state.tasks).set("t1", {
-        ...state.tasks.get("t1"),
+        ...state.tasks.get("t1")!,
         status: "running",
         model: "a-very-long-model-name-that-must-not-hide-the-run-status",
       }),
@@ -64,8 +65,8 @@ test("keeps the agent run status visible and changes it when execution ends", as
   await page.evaluate(async () => {
     const storePath = "/src/features/agents/store.ts";
     const { useAgents } = await import(storePath);
-    useAgents.setState((state: { tasks: Map<string, typeof TASK> }) => ({
-      tasks: new Map(state.tasks).set("t1", { ...state.tasks.get("t1"), status: "ready" }),
+    useAgents.setState((state: { tasks: Map<string, AgentTask> }) => ({
+      tasks: new Map(state.tasks).set("t1", { ...state.tasks.get("t1")!, status: "ready" }),
       entries: new Map([["t1", [{ type: "agent", text: "The requested work is complete." }]]]),
     }));
   });

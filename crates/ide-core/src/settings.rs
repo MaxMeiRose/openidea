@@ -34,6 +34,8 @@ pub struct Settings {
     pub project_structure: ProjectStructureSettings,
     /// Version Control (Git, Commit, Confirmation, Issue Navigation).
     pub vcs: VcsSettings,
+    /// Build, Execution, Deployment › Compiler (Build tool window).
+    pub build: BuildSettings,
     /// Build, Execution, Deployment › Console.
     pub console: ConsoleSettings,
     pub debugger: DebuggerSettings,
@@ -98,16 +100,6 @@ pub struct AgentSettings {
     pub smooth_text: bool,
     /// Conversations and the composer expand to the full width of the pane instead of staying in a centred column.
     pub fit_window_width: bool,
-    /// While the agent works, playful words fill the pauses in what it reports.
-    pub playful_status: bool,
-    /// Seconds the agent reports nothing new before the playful words take over; 0 shows them
-    /// from the start.
-    pub playful_after_seconds: u32,
-    /// The user's playful words by activity (`working`, `thinking`, `reading`, …), replacing
-    /// the built-in ones of that activity; an empty list keeps its status factual.
-    #[serde(deserialize_with = "or_default")]
-    #[specta(type = BTreeMap<String, Vec<String>>)]
-    pub playful_words: BTreeMap<String, Vec<String>>,
     #[serde(deserialize_with = "or_default")]
     #[specta(type = ThinkingDisplay)]
     pub thinking: ThinkingDisplay,
@@ -138,6 +130,11 @@ pub struct AgentSettings {
     #[serde(deserialize_with = "or_default")]
     #[specta(type = BTreeMap<String, AgentMcpServer>)]
     pub mcp_servers: BTreeMap<String, AgentMcpServer>,
+    /// How agent skills may run, keyed by skill name (`[agents.skills.<name>]`); `SKILL.md`
+    /// files on disk are never modified.
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = BTreeMap<String, AgentSkillPolicy>)]
+    pub skills: BTreeMap<String, AgentSkillPolicy>,
 }
 
 impl Default for AgentSettings {
@@ -150,9 +147,6 @@ impl Default for AgentSettings {
             fold_turns: true,
             smooth_text: true,
             fit_window_width: false,
-            playful_status: false,
-            playful_after_seconds: 0,
-            playful_words: BTreeMap::new(),
             thinking: ThinkingDisplay::Auto,
             tool_calls: ToolCallDisplay::Grouped,
             expand_tool_output: false,
@@ -161,6 +155,7 @@ impl Default for AgentSettings {
             new_task_approvals: NewTaskApprovals::Bypass,
             defaults: BTreeMap::new(),
             mcp_servers: BTreeMap::new(),
+            skills: BTreeMap::new(),
         }
     }
 }
@@ -213,6 +208,34 @@ impl Default for AgentMcpServer {
             headers: BTreeMap::new(),
             agents: Vec::new(),
         }
+    }
+}
+
+/// How an agent skill may run (`[agents.skills.<name>] mode = …`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentSkillMode {
+    /// The model decides when to use it.
+    #[default]
+    Auto,
+    /// Only when the user invokes it with `/name`.
+    SlashOnly,
+    /// Never.
+    Off,
+}
+
+/// A skill's policy in Settings › Agents › Skills, stored without touching its `SKILL.md`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentSkillPolicy {
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = AgentSkillMode)]
+    pub mode: AgentSkillMode,
+}
+
+impl Default for AgentSkillPolicy {
+    fn default() -> Self {
+        Self { mode: AgentSkillMode::Auto }
     }
 }
 
@@ -317,6 +340,20 @@ pub enum NewTaskApprovals {
     Ask,
 }
 
+/// Which folders without an open window the MCP server still serves tools for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum McpBackgroundProjects {
+    /// Only projects open in a window.
+    #[default]
+    Off,
+    /// Also folders the user trusts: trusted projects, recent projects and the repositories inside
+    /// trusted locations.
+    Trusted,
+    /// Only the folders in [`McpServerSettings::background_project_paths`] (and below them).
+    Listed,
+}
+
 /// Agents › MCP Server: agents use the IDE's built-in tools.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -341,6 +378,21 @@ pub struct McpServerSettings {
     /// Keep the bearer token across runs (in the app data, readable by this user only) rather than
     /// make a new one each run.
     pub fixed_token: bool,
+    /// Serve tools for folders that have no open window (see [`McpBackgroundProjects`]); the
+    /// project loads when an agent first asks for it.
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = McpBackgroundProjects)]
+    pub background_projects: McpBackgroundProjects,
+    /// The folders [`McpBackgroundProjects::Listed`] serves, and the ones `Trusted` serves even
+    /// when untrusted.
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = Vec<String>)]
+    pub background_project_paths: Vec<String>,
+    /// Minutes a background project may go without a tool call before it is unloaded, at most
+    /// 1440; 0 keeps it until the IDE quits.
+    pub background_idle_minutes: u32,
+    /// Background projects loaded at once, 1 to 32; the least recently used one makes room.
+    pub background_project_limit: u32,
 }
 
 /// The default of [`McpServerSettings::port`].
@@ -359,6 +411,10 @@ impl Default for McpServerSettings {
             fixed_port: true,
             port: DEFAULT_MCP_PORT,
             fixed_token: false,
+            background_projects: McpBackgroundProjects::Off,
+            background_project_paths: Vec::new(),
+            background_idle_minutes: 30,
+            background_project_limit: 8,
         }
     }
 }
@@ -508,6 +564,7 @@ impl Default for Settings {
             languages: LanguagesSettings::default(),
             project_structure: ProjectStructureSettings::default(),
             vcs: VcsSettings::default(),
+            build: BuildSettings::default(),
             console: ConsoleSettings::default(),
             debugger: DebuggerSettings::default(),
             run: RunSettings::default(),
@@ -1149,6 +1206,7 @@ pub struct LanguagesSettings {
     pub typescript: TypeScriptSettings,
     pub prettier: ExternalFormatterSettings,
     pub oxfmt: ExternalFormatterSettings,
+    pub biome: ExternalFormatterSettings,
     pub ruff: ExternalFormatterSettings,
     pub java: JavaSettings,
     pub ruby: RubySettings,
@@ -1169,6 +1227,10 @@ impl Default for LanguagesSettings {
             typescript: TypeScriptSettings::default(),
             prettier: ExternalFormatterSettings::default(),
             oxfmt: ExternalFormatterSettings::default(),
+            biome: ExternalFormatterSettings {
+                languages: BIOME_LANGUAGES.iter().map(|&l| l.into()).collect(),
+                ..ExternalFormatterSettings::default()
+            },
             ruff: ExternalFormatterSettings {
                 languages: vec!["python".into()],
                 ..ExternalFormatterSettings::default()
@@ -1194,11 +1256,45 @@ pub struct ArduinoSettings {
 }
 
 /// Languages & Frameworks › Markdown. Like IDEA's, it is application-level only.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MarkdownSettings {
+    pub preview_layout: MarkdownPreviewLayout,
     /// Preview (and notebook Markdown cell) font size in px; unset follows the editor font size.
     pub preview_font_size: Option<u32>,
+    /// "Detect commands that can be run right from Markdown files": gutter run icons on
+    /// shell code blocks and on command lines in code blocks.
+    pub run_commands: bool,
+    /// Where those commands run; unset asks when the project and the file's folder differ.
+    pub command_directory: Option<MarkdownCommandDirectory>,
+}
+
+impl Default for MarkdownSettings {
+    fn default() -> Self {
+        Self {
+            preview_layout: MarkdownPreviewLayout::default(),
+            preview_font_size: None,
+            run_commands: true,
+            command_directory: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum MarkdownPreviewLayout {
+    #[default]
+    SideBySide,
+    Stacked,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum MarkdownCommandDirectory {
+    /// The project's root folder.
+    Project,
+    /// The Markdown file's parent folder.
+    File,
 }
 
 impl LanguagesSettings {
@@ -1206,6 +1302,7 @@ impl LanguagesSettings {
         match tool {
             ExternalFormatter::Prettier => &self.prettier,
             ExternalFormatter::Oxfmt => &self.oxfmt,
+            ExternalFormatter::Biome => &self.biome,
             ExternalFormatter::Ruff => &self.ruff,
         }
     }
@@ -1217,6 +1314,7 @@ impl LanguagesSettings {
 pub enum ExternalFormatter {
     Prettier,
     Oxfmt,
+    Biome,
     Ruff,
 }
 
@@ -1226,16 +1324,21 @@ impl ExternalFormatter {
         match self {
             Self::Prettier => "prettier",
             Self::Oxfmt => "oxfmt",
+            Self::Biome => "biome",
             Self::Ruff => "ruff",
         }
     }
 }
 
-/// An external formatter (Prettier, oxfmt, Ruff) and the languages it formats.
+/// The languages Biome formats (of those Prettier formats).
+pub const BIOME_LANGUAGES: [&str; 8] =
+    ["css", "graphql", "javascript", "javascriptreact", "typescript", "typescriptreact", "json", "jsonc"];
+
+/// An external formatter (Prettier, oxfmt, Biome, Ruff) and the languages it formats.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ExternalFormatterSettings {
-    /// Empty path: project node_modules (Prettier/oxfmt), managed installation, then PATH.
+    /// Empty path: project node_modules (Prettier/oxfmt/Biome), managed installation, then PATH.
     pub path: String,
     /// Ruff only: directory containing its configuration, or a configuration file.
     pub configuration_directory: String,
@@ -1535,6 +1638,9 @@ pub struct MavenSettings {
     /// project (jdtls `java.maven.downloadSources`). Off: sources are fetched on demand
     /// from a library class's Download Sources banner.
     pub download_sources: bool,
+    /// Always update snapshots (`-U`): Maven checks remote repositories for newer SNAPSHOT
+    /// dependencies on every sync, build and run, and jdtls on import (`java.maven.updateSnapshots`).
+    pub update_snapshots: bool,
 }
 
 impl MavenSettings {
@@ -1807,6 +1913,20 @@ mod tests {
                 assert_eq!(serde_json::from_value::<Settings>(json).unwrap().general, settings.general);
             }
         }
+    }
+
+    #[test]
+    fn markdown_preview_layout_defaults_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"languages":{"markdown":{"previewFontSize":16}}}"#).unwrap();
+        assert_eq!(old.languages.markdown.preview_layout, MarkdownPreviewLayout::SideBySide);
+        assert_eq!(old.languages.markdown.preview_font_size, Some(16));
+
+        let stacked: Settings =
+            serde_json::from_str(r#"{"languages":{"markdown":{"previewLayout":"stacked"}}}"#).unwrap();
+        assert_eq!(stacked.languages.markdown.preview_layout, MarkdownPreviewLayout::Stacked);
+        let saved = serde_json::to_value(&stacked).unwrap();
+        assert_eq!(saved["languages"]["markdown"]["previewLayout"], "stacked");
+        assert_eq!(serde_json::from_value::<Settings>(saved).unwrap().languages.markdown, stacked.languages.markdown);
     }
 
     #[test]
@@ -2125,6 +2245,63 @@ mod tests {
         assert_eq!(value["projectStructure"]["artifacts"][0]["kind"], "warExploded");
         let restored: Settings = serde_json::from_value(value).unwrap();
         assert_eq!(restored, settings);
+    }
+
+    #[test]
+    fn background_projects_default_to_off_with_no_paths_30_idle_minutes_and_a_limit_of_8() {
+        for settings in [Settings::default(), serde_json::from_str(r#"{"mcpServer":{"enabled":true}}"#).unwrap()] {
+            let mcp = settings.mcp_server;
+            assert_eq!(mcp.background_projects, McpBackgroundProjects::Off);
+            assert!(mcp.background_project_paths.is_empty());
+            assert_eq!((mcp.background_idle_minutes, mcp.background_project_limit), (30, 8));
+        }
+    }
+
+    #[test]
+    fn a_bad_background_mode_or_path_list_reads_as_its_default_and_keeps_the_rest() {
+        for (key, bad) in
+            [("backgroundProjects", serde_json::json!("bogus")), ("backgroundProjectPaths", serde_json::json!(5))]
+        {
+            let mut json = serde_json::json!({
+                "appearance": { "theme": "solarized-dark" },
+                "mcpServer": {
+                    "enabled": true,
+                    "port": 7000,
+                    "backgroundProjects": "listed",
+                    "backgroundProjectPaths": ["/projects/inventory"],
+                    "backgroundIdleMinutes": 10,
+                    "backgroundProjectLimit": 3,
+                },
+            });
+            json["mcpServer"][key] = bad;
+            let settings: Settings = serde_json::from_value(json).unwrap_or_else(|e| panic!("{key}: {e}"));
+            let mcp = settings.mcp_server;
+            let (mode, paths) = if key == "backgroundProjects" {
+                (McpBackgroundProjects::Off, vec!["/projects/inventory".to_owned()])
+            } else {
+                (McpBackgroundProjects::Listed, Vec::new())
+            };
+            assert_eq!((mcp.background_projects, mcp.background_project_paths), (mode, paths), "{key}");
+            assert_eq!((mcp.enabled, mcp.port), (true, 7000), "{key}");
+            assert_eq!((mcp.background_idle_minutes, mcp.background_project_limit), (10, 3), "{key}");
+            assert_eq!(settings.appearance.theme, "solarized-dark", "{key}");
+        }
+    }
+
+    #[test]
+    fn background_project_settings_round_trip() {
+        for mode in [McpBackgroundProjects::Off, McpBackgroundProjects::Trusted, McpBackgroundProjects::Listed] {
+            let mut settings = Settings::default();
+            settings.mcp_server.background_projects = mode;
+            settings.mcp_server.background_project_paths =
+                vec!["/projects/inventory".into(), "/projects/billing".into()];
+            settings.mcp_server.background_idle_minutes = 0;
+            settings.mcp_server.background_project_limit = 32;
+            let json = serde_json::to_string(&settings).unwrap();
+            assert!(json.contains(r#""backgroundProjects":""#), "{json}");
+            let restored: Settings = serde_json::from_str(&json).unwrap();
+            assert_eq!(restored.mcp_server, settings.mcp_server);
+        }
     }
 }
 

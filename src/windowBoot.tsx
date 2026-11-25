@@ -4,13 +4,14 @@ import "./styles/global.css";
 import { installRepeatedDoubleClick } from "./platform/doubleClick";
 import { installErrorLogging, logError } from "./platform/errorLog";
 import { installImeKeyGuard } from "./platform/ime";
+import { installMiddleClickLinks } from "./platform/openUrl";
 import { call, commands, isTauri } from "./platform/ipc";
 import { installPageSwipeTracking } from "./platform/pageSwipe";
 import { guessOs } from "./platform/platformInfo";
 import { installPointerFocus } from "./platform/pointerFocus";
 import { installReorderedTapClick } from "./platform/reordered-tap-click";
 import { hideSplash } from "./platform/splash";
-import { installWebKitClipboardGuard } from "./platform/webkitClipboard";
+import { installMiddleClickPasteGuard, installWebKitClipboardGuard } from "./platform/webkitClipboard";
 import { prefetchLazyComponents } from "./ui";
 import { installWindowDrag } from "./workbench/window-drag";
 
@@ -42,13 +43,17 @@ export async function installCommonWindowBoot(): Promise<void> {
   // second press like the release before it, which the shim would take for a reordered tap and
   // click twice.
   if (guessOs() === "macos" && !/Chrome|Firefox/.test(navigator.userAgent)) installReorderedTapClick();
-  if (guessOs() === "linux" && isTauri()) installWebKitClipboardGuard();
+  if (guessOs() === "linux" && isTauri()) {
+    installWebKitClipboardGuard();
+    installMiddleClickPasteGuard();
+  }
   // A double click on the title bar fills the work area; the backend steps the frame once per
   // presented webview frame, because AppKit's own zoom hides the page until the resize ends.
   installWindowDrag({
     toggleMaximize: () => call(commands.windowToggleZoom()).catch((e) => console.warn("cannot zoom the window", e)),
   });
   installPointerFocus();
+  installMiddleClickLinks();
   installImeKeyGuard();
   installErrorLogging();
   installPageSwipeTracking(window);
@@ -58,8 +63,23 @@ export function mountWindowRoot(View: ComponentType, { prefetchLazy = false }: {
   function App() {
     useEffect(() => {
       hideSplash();
+      if (!prefetchLazy) return;
+      // The first file opened would otherwise also build the editor setup cold.
+      const warm = () => {
+        if (!document.querySelector(".cm-editor"))
+          void import("./editor/core/cm/prewarm").then((m) => m.prewarmEditor());
+      };
+      const idle =
+        typeof requestIdleCallback === "function"
+          ? requestIdleCallback(warm, { timeout: 2000 })
+          : window.setTimeout(warm, 500);
       // Views split out of the start-up bundle load in the background once the UI is up.
-      if (prefetchLazy) return prefetchLazyComponents();
+      const stopPrefetch = prefetchLazyComponents();
+      return () => {
+        if (typeof cancelIdleCallback === "function") cancelIdleCallback(idle);
+        else window.clearTimeout(idle);
+        stopPrefetch();
+      };
     }, []);
     return <View />;
   }

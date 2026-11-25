@@ -343,6 +343,11 @@
   min-height: 44px;
   padding: 6px 2px 5px;
 }
+/* IDEA compact: StripeToolbar.Button.*IconWithName.padding 4 → 3, text padding 6 → 4. */
+:global(:root[data-compact]) .stripeNamed {
+  min-height: 40px;
+  padding: 4px 2px 3px;
+}
 .stripeMore {
   height: var(--stripe-icon-button);
 }
@@ -439,15 +444,16 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: var(--space-1-5);
-  padding: 0 6px 0 8px;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
   color: var(--fg-emphasis);
+  font-size: var(--fs-chrome);
 }
 .headerTabbed {
   border-bottom: 1px solid var(--border);
 }
 .title {
-  flex: none;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -457,12 +463,14 @@
   padding: 0 4px;
 }
 .titleButton {
-  flex: none;
   height: 24px;
+  min-width: 0;
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--space-1);
-  padding: 0 4px;
+  padding: 0 0 0 var(--space-1);
+  overflow: hidden;
   border-radius: var(--radius-small);
   transition: background var(--dur-fast) var(--ease);
 }
@@ -484,15 +492,36 @@
 .headerContentOnly {
   margin-left: 0;
 }
-.headerSpacer {
-  flex: 1;
-}
 .headerActions {
   display: flex;
   align-items: center;
   gap: var(--space-0-5);
   opacity: 0;
   transition: opacity var(--dur) var(--ease);
+}
+.header > .headerActions {
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
+  margin-inline-start: auto;
+}
+.header > .headerActions:not(:first-child) {
+  max-width: calc(100% - var(--space-4) - var(--space-1));
+}
+.headerContributedActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-0-5);
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.headerContributedActions:empty {
+  display: none;
+}
+.headerContributedActions::-webkit-scrollbar {
+  display: none;
 }
 .window:hover .headerActions,
 .window:focus-within .headerActions,

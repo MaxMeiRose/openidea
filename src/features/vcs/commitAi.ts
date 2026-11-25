@@ -3,7 +3,8 @@ import { call, commands, nextRequestId } from "@/platform/ipc";
 import { tx, useI18n } from "@/platform/i18n";
 import { effectiveCommitAiPrompt } from "@/platform/commitAiSettings";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { checkOf, commitRepos, planCommit, renamedFromPath } from "./changes";
+import { checkOf, renamedFromPath } from "./changes";
+import { currentPlan } from "./commitSelection";
 import { useChangelists } from "./changelists";
 import { useCommit } from "./commitStore";
 import { currentHunkText, hunkKeys } from "./hunks";
@@ -27,9 +28,10 @@ export async function commitAiContext() {
   if (!currentRepo) throw new Error(tx("Select a Git repository first."));
   const roots = vcs.roots.length ? vcs.roots : [currentRepo];
   const checks = inclusionChecks(vcs.status, vcs.root ?? "", useChangelists.getState().state, commit.checks);
-  const included = planCommit(vcs.status, checks).included;
+  const plan = currentPlan();
+  const included = plan.included;
   if (!included.length && !commit.amend) throw new Error(tx("Select changes to generate a commit message."));
-  const repositories = commitRepos(included, roots, currentRepo).filter((root): root is string => root !== null);
+  const repositories = plan.repositories.filter((root): root is string => root !== null);
   const repo = repositories.at(-1) ?? currentRepo;
   const cfg = workflowSettings().vcs.commit;
   let remaining = CONTEXT_LIMIT;
@@ -41,7 +43,7 @@ export async function commitAiContext() {
   const files = [];
   for (const file of included) {
     const path = stripSlash(file.path);
-    const selection = checkOf(file, checks);
+    const selection = checkOf(file, checks, cfg.includeChangesByDefault);
     const fileRepo = rootOf(path, roots) ?? repo;
     const renamed = renamedFromPath(file);
     const kind = selection === "staged" ? (file.staged ?? effectiveKind(file)) : effectiveKind(file);

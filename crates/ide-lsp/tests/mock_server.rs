@@ -1,8 +1,8 @@
 //! Protocol tests against in-memory mock language servers.
 
-use ide_core::event::ServerStatus;
+use ide_core::event::{LspRefreshKind, ServerStatus};
 use ide_core::{
-    CancellationToken, DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, ServerId, Severity, WorkspaceEdit,
+    CancellationToken, DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, ServerId, Severity, TaskId, WorkspaceEdit,
 };
 use ide_jsonrpc::{Handler, NoopHandler, Peer};
 use ide_language::{LanguageConfig, LanguageRegistry, LanguageServerConfig};
@@ -635,11 +635,12 @@ async fn java_sharing_cancels_a_retiring_initialize_before_starting_its_replacem
     let old = state.peer();
     shared.store(true, Ordering::SeqCst);
     let switched = tokio::time::timeout(Duration::from_secs(2), h.mgr.reconfigure()).await;
-    let closed_before_response = old.is_closed();
-    gate.open();
     switched.expect("initialize cancellation must not wait for its response");
+    // The retiring transport closes asynchronously; wait for it before releasing
+    // the initialize response so the ordering check does not race the close.
+    eventually(|| old.is_closed()).await;
+    gate.open();
     eventually(|| state.requested("initialize").len() == 2).await;
-    assert!(closed_before_response, "the old transport must close before its initialize response is released");
     assert_eq!(h.mgr.servers().len(), 1);
     assert_eq!(h.mgr.servers()[0].root.as_ref(), h.root.as_path());
     h.mgr.shutdown_all().await;
@@ -1324,6 +1325,36 @@ async fn initialize_and_incremental_sync() {
     assert_eq!(infos[0].status, ServerStatus::Ready);
 }
 
+/// Pyright, told the client has workspace folders, asks for its configuration and loads the
+/// workspace only after a `workspace/didChangeConfiguration`: every server gets one at startup.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_server_hears_its_configuration_once_initialized() {
+    let cases = [
+        (None, None, json!({})),
+        (Some(json!({ "flag": true })), None, json!({ "flag": true })),
+        (
+            None,
+            Some(json!({ "python": { "pythonPath": "/venv/bin/python" } })),
+            json!({ "python": { "pythonPath": "/venv/bin/python" } }),
+        ),
+        (Some(json!({ "flag": true })), Some(json!({ "other": 2 })), json!({ "flag": true, "other": 2 })),
+    ];
+    for (init, settings, expected) in cases {
+        let h = harness_configured("mock", "mk", &[("pyright", incremental_caps())], |cfg| {
+            cfg.initialization_options = init.clone().map(|v| toml::Value::try_from(v).unwrap());
+            cfg.settings = settings.clone();
+        });
+        h.open("a.mk", "x");
+        h.wait_status("pyright", ServerStatus::Ready).await;
+        let s = h.launcher.state("pyright");
+        eventually(|| !s.notified("workspace/didChangeConfiguration").is_empty()).await;
+        assert_eq!(s.notified("workspace/didChangeConfiguration"), vec![json!({ "settings": expected })]);
+        let order: Vec<String> = s.notifications.lock().iter().map(|(m, _)| m.clone()).collect();
+        let at = |m: &str| order.iter().position(|n| n == m).unwrap();
+        assert!(at("initialized") < at("workspace/didChangeConfiguration"));
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn full_sync_and_desync_recovery() {
     let h = harness(&[("full", json!({ "textDocumentSync": 1 })), ("inc", json!({ "textDocumentSync": 2 }))]);
@@ -1457,6 +1488,65 @@ async fn unsupported_feature_names_the_running_servers_that_lack_it() {
     assert_eq!(e.message, "plain, other doesn't support inline completion");
     let e = h.mgr.type_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Incoming).await.unwrap_err();
     assert_eq!(e.message, "plain, other doesn't support type hierarchy");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn flutter_outline_follows_the_document_and_the_server_instance() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "Text('x')\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let refreshes = || {
+        h.events
+            .lock()
+            .iter()
+            .filter(|e| matches!(e, IdeEvent::LspRefresh { kind: LspRefreshKind::FlutterOutline, .. }))
+            .count()
+    };
+    let at = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":9}});
+    let unit = |children: Value| {
+        json!({ "uri": uri_of(&path), "outline": {
+            "kind": "DART_ELEMENT", "range": at, "codeRange": at,
+            "dartElement": { "kind": "COMPILATION_UNIT", "name": "<unit>" },
+            "children": children,
+        }})
+    };
+    let widgets = json!([{ "kind": "NEW_INSTANCE", "className": "Text", "range": at, "codeRange": at }]);
+    let peer = h.launcher.state("mock").peer();
+    assert!(h.mgr.flutter_outline(doc).is_none());
+
+    peer.notify("dart/textDocument/publishFlutterOutline", unit(widgets.clone())).unwrap();
+    eventually(|| refreshes() == 1).await;
+    assert_eq!(h.mgr.flutter_outline(doc).unwrap()[0].name, "Text");
+
+    // The widgets are gone from the file: the ordinary structure applies again.
+    peer.notify("dart/textDocument/publishFlutterOutline", unit(json!([]))).unwrap();
+    eventually(|| refreshes() == 2).await;
+    assert!(h.mgr.flutter_outline(doc).is_none());
+
+    peer.notify("dart/textDocument/publishFlutterOutline", unit(widgets.clone())).unwrap();
+    eventually(|| refreshes() == 3).await;
+
+    // Reopening starts without the closed document's tree.
+    h.mgr.did_close(doc);
+    assert!(h.mgr.flutter_outline(doc).is_none());
+    let (reopened, _) = h.open("a.mk", "Text('x')\n");
+    assert!(h.mgr.flutter_outline(reopened).is_none());
+    peer.notify("dart/textDocument/publishFlutterOutline", unit(widgets)).unwrap();
+    eventually(|| refreshes() == 4).await;
+    assert!(h.mgr.flutter_outline(reopened).is_some());
+
+    // A restarted server has analysed nothing yet.
+    let server = h
+        .events
+        .lock()
+        .iter()
+        .find_map(|e| match e {
+            IdeEvent::LanguageServer { server, name, .. } if name == "mock" => Some(*server),
+            _ => None,
+        })
+        .unwrap();
+    h.mgr.restart(server).await.unwrap();
+    assert!(h.mgr.flutter_outline(reopened).is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2093,6 +2183,51 @@ async fn replacing_progress_keeps_cancellation_reports_and_indexing_on_the_new_t
     );
 }
 
+/// A server that ignores `window/workDoneProgress/cancel` (Pyright waiting on a workspace
+/// that never loads) does not keep the task "Cancelling…": it ends after a grace period,
+/// once, and later reports on the token change nothing. A server that ends it in time ends it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_progress_the_server_never_ends_ends_on_its_own() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let peer = s.peer();
+    let begin = |token: &str, title: &str| json!({ "token": token, "value": { "kind": "begin", "title": title, "cancellable": true } });
+    let task_of = |title: &str| {
+        h.events.lock().iter().find_map(|e| match e {
+            IdeEvent::Task { id, title: t, done: false, .. } if t == title => Some(*id),
+            _ => None,
+        })
+    };
+    let ends = |task: TaskId| {
+        h.events.lock().iter().filter(|e| matches!(e, IdeEvent::Task { id, done: true, .. } if *id == task)).count()
+    };
+    peer.notify("$/progress", begin("ignored", "Finding references")).unwrap();
+    peer.notify("$/progress", begin("honoured", "Indexing")).unwrap();
+    eventually(|| task_of("Finding references").is_some() && task_of("Indexing").is_some()).await;
+    h.wait_status("mock", ServerStatus::Busy).await;
+    let (ignored, honoured) = (task_of("Finding references").unwrap(), task_of("Indexing").unwrap());
+
+    assert!(ide_core::task::cancel(ignored));
+    assert!(ide_core::task::cancel(honoured));
+    eventually(|| s.notified("window/workDoneProgress/cancel").len() == 2).await;
+    peer.notify("$/progress", json!({ "token": "honoured", "value": { "kind": "end" } })).unwrap();
+    eventually(|| ends(honoured) == 1).await;
+    assert_eq!(ends(ignored), 0, "the server still has its grace period");
+
+    eventually(|| ends(ignored) == 1).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+    // Late reports on the token reach no task.
+    peer.notify("$/progress", json!({ "token": "ignored", "value": { "kind": "report", "message": "late" } })).unwrap();
+    peer.notify("$/progress", json!({ "token": "ignored", "value": { "kind": "end" } })).unwrap();
+    peer.notify("$/progress", begin("after", "After")).unwrap();
+    eventually(|| task_of("After").is_some()).await;
+    assert_eq!(ends(ignored), 1);
+    assert_eq!(ends(honoured), 1);
+    assert!(!h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { message: Some(m), .. } if m == "late")));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn cancelling_a_cancellable_progress_task_asks_the_server_to_stop() {
     let h = harness(&[("mock", incremental_caps())]);
@@ -2591,7 +2726,16 @@ async fn configuration_answer_resyncs_open_documents_of_opted_in_servers() {
         .await;
     assert_eq!(s.notified("textDocument/didChange").len(), 2, "one re-sync per answer");
     let methods: Vec<String> = extra.notifications.lock().iter().map(|(m, _)| m.clone()).collect();
-    assert_eq!(methods, ["initialized", "textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"]);
+    assert_eq!(
+        methods,
+        [
+            "initialized",
+            "workspace/didChangeConfiguration",
+            "textDocument/didOpen",
+            "textDocument/didChange",
+            "textDocument/didSave"
+        ]
+    );
     assert_eq!(s.launches.load(Ordering::SeqCst), 1);
 }
 
@@ -2647,9 +2791,9 @@ async fn settings_changes_reach_servers_without_restarts() {
     let s = h.launcher.state("mock");
     *settings.lock() = Some(json!({ "nested": { "other": 2 } }));
     h.mgr.reconfigure().await;
-    eventually(|| !s.notified("workspace/didChangeConfiguration").is_empty()).await;
+    eventually(|| s.notified("workspace/didChangeConfiguration").len() == 2).await;
     assert_eq!(
-        s.notified("workspace/didChangeConfiguration")[0],
+        s.notified("workspace/didChangeConfiguration")[1],
         json!({ "settings": { "flag": true, "nested": { "deep": 1, "other": 2 } } })
     );
     assert_eq!(s.launches.load(Ordering::SeqCst), 1);
@@ -3572,6 +3716,92 @@ async fn stream_collect_fails_cleanly_on_a_step_beyond_u16() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn exception_breakpoints_send_the_whole_list_and_decode_states() {
+    use ide_jvm_inspect::{ExceptionArmState, ExceptionClassBreakpoints, ExceptionClassSpec};
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (_, path) = h.open("Sample.java", "class Sample {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let client = ide_lsp::JdtExceptionBreakpoints::new(h.mgr.clone(), path);
+    let specs = [
+        ExceptionClassSpec {
+            id: "a".into(),
+            class_name: "com.acme.Boom".into(),
+            caught: true,
+            uncaught: false,
+            enabled: true,
+            class_filters: vec!["com.acme.*".into()],
+            class_exclusion_filters: vec![],
+        },
+        ExceptionClassSpec {
+            id: "b".into(),
+            class_name: "java.lang.IllegalStateException".into(),
+            caught: true,
+            uncaught: true,
+            enabled: false,
+            class_filters: vec![],
+            class_exclusion_filters: vec!["*Test".into()],
+        },
+    ];
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": [{"id": "a", "state": "pending"}, {"id": "b", "state": "disabled"}]}),
+    );
+    let states = client.set(&stream_launch_target(), &specs).await.unwrap();
+    assert_eq!(states, vec![("a".into(), ExceptionArmState::Pending), ("b".into(), ExceptionArmState::Disabled)]);
+    let asked = s.requested("workspace/executeCommand");
+    assert_eq!(asked[0]["command"], "openidea.jvm.exceptions.set");
+    assert_eq!(
+        asked[0]["arguments"],
+        json!([
+            {"pid": 42, "host": null, "port": null, "generation": 3},
+            {"breakpoints": [
+                {"id": "a", "className": "com.acme.Boom", "caught": true, "uncaught": false, "enabled": true,
+                 "classFilters": ["com.acme.*"], "classExclusionFilters": []},
+                {"id": "b", "className": "java.lang.IllegalStateException", "caught": true, "uncaught": true,
+                 "enabled": false, "classFilters": [], "classExclusionFilters": ["*Test"]},
+            ]},
+        ])
+    );
+
+    s.respond("workspace/executeCommand", json!({"error": "noSession", "detail": "hotCodeReplace is never?"}));
+    assert_eq!(
+        client.set(&stream_launch_target(), &specs).await.unwrap_err(),
+        ide_jvm_inspect::InspectError::NoSession
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exception_class_at_asks_the_extension_and_is_none_without_it() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.exceptionType"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let (doc, path) = h.open("Main.java", "class Main {\n  void f() { throw new Failure(); }\n}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    s.respond("workspace/executeCommand", json!({"qualifiedName": "app.Main$Failure", "displayName": "Failure"}));
+    let found = h.mgr.exception_class_at(doc, Pos::new(1, 23), Default::default()).await.unwrap();
+    assert_eq!(
+        found,
+        Some(ide_lsp::types::ExceptionClassRef {
+            qualified_name: "app.Main$Failure".into(),
+            display_name: "Failure".into()
+        })
+    );
+    let asked = s.requested("workspace/executeCommand");
+    assert_eq!(asked[0]["command"], "openidea.java.exceptionType");
+    assert_eq!(asked[0]["arguments"], json!([uri_of(&path), 1, 23]));
+    s.respond("workspace/executeCommand", json!(null));
+    assert_eq!(h.mgr.exception_class_at(doc, Pos::new(0, 1), Default::default()).await.unwrap(), None);
+
+    let plain = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (doc, _) = plain.open("Main.java", "class Main {}");
+    plain.wait_status("jdtls", ServerStatus::Ready).await;
+    assert_eq!(plain.mgr.exception_class_at(doc, Pos::new(0, 7), Default::default()).await.unwrap(), None);
+    assert!(plain.launcher.state("jdtls").requested("workspace/executeCommand").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn debug_server_port_maps_to_module() {
     let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
     let (_, path) = h.open("Sample.java", "class Sample {}");
@@ -3974,6 +4204,156 @@ async fn java_dependency_implementations_point_at_the_method() {
     assert_eq!(s.requested("textDocument/implementation").len(), 1);
     let commands = s.requested("workspace/executeCommand");
     assert!(commands.iter().any(|r| r["command"] == "openidea.java.implementationLocations"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn formatting_a_snapshot_never_changes_an_open_document() {
+    let caps = json!({
+        "positionEncoding": "utf-8",
+        "textDocumentSync": { "openClose": true, "change": 2 },
+        "documentFormattingProvider": true,
+    });
+    let h = harness(&[("mock", caps)]);
+    let (_, path) = h.open("a.mk", "different working text\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    s.respond(
+        "textDocument/formatting",
+        json!([{ "range": { "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 5 } }, "newText": "X" }]),
+    );
+    let options = FormatOptions { tab_size: 2, insert_spaces: true, on_save: false, tool: None };
+    let edits = h.mgr.format_text(&path, &LanguageId("mock".into()), "🙂b\n", options).await.unwrap();
+    assert_eq!(edits, vec![ide_core::TextEdit { range: rng(0, 2, 0, 3), new_text: "X".into() }]);
+
+    let uri = uri_of(&path);
+    let requests = s.requested("textDocument/formatting");
+    let shadow = requests[0]["textDocument"]["uri"].as_str().unwrap();
+    assert_ne!(shadow, uri);
+    let opens = s.notified("textDocument/didOpen");
+    let snapshot = opens.iter().find(|n| n["textDocument"]["uri"] == shadow).unwrap();
+    assert_eq!(snapshot["textDocument"]["text"], "🙂b\n");
+    assert!(s.notified("textDocument/didChange").is_empty());
+    eventually(|| uris(&s.notified("textDocument/didClose")) == vec![shadow.to_owned()]).await;
+    assert!(s.docs.lock().contains_key(&uri));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn snapshot_diagnostics_collect_pull_and_push_without_publishing_problems() {
+    let mut pull_caps = incremental_caps();
+    pull_caps["diagnosticProvider"] = json!({ "interFileDependencies": false, "workspaceDiagnostics": false });
+    let mut push_caps = incremental_caps();
+    push_caps["positionEncoding"] = json!("utf-8");
+    let h = harness(&[("mock", pull_caps), ("push", push_caps)]);
+    let pull = h.launcher.state("mock");
+    *pull.responder.lock() = Some(pull_responder());
+    let (_, path) = h.open("a.mk", "clean editor\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    h.wait_status("push", ServerStatus::Ready).await;
+    let push = h.launcher.state("push");
+    let live = uri_of(&path);
+    let shadow = || {
+        push.notified("textDocument/didOpen")
+            .into_iter()
+            .find(|n| n["textDocument"]["text"] == "🙂bad\n")
+            .and_then(|n| n["textDocument"]["uri"].as_str().map(str::to_owned))
+    };
+    let send = async {
+        eventually(|| shadow().is_some()).await;
+        let uri = shadow().unwrap();
+        for (version, message) in [(1, "wrong version"), (0, "snapshot only")] {
+            push.peer()
+                .notify(
+                    "textDocument/publishDiagnostics",
+                    json!({
+                        "uri": uri, "version": version, "diagnostics": [{
+                            "range": {"start": {"line":0,"character":4}, "end": {"line":0,"character":7}},
+                            "severity": 2, "message": message
+                        }]
+                    }),
+                )
+                .unwrap();
+        }
+        uri
+    };
+    let language = LanguageId("mock".into());
+    let cancel = Default::default();
+    let (result, shadow) = tokio::join!(h.mgr.snapshot_diagnostics(&path, &language, "🙂bad\n", &cancel), send);
+    assert_ne!(shadow, live);
+    let mut items = result.unwrap();
+    items.sort_by(|a, b| a.message.cmp(&b.message));
+    assert_eq!(items.iter().map(|d| d.message.as_str()).collect::<Vec<_>>(), ["bad", "snapshot only"]);
+    assert_eq!(items[1].range, rng(0, 2, 0, 5));
+    eventually(|| uris(&push.notified("textDocument/didClose")) == vec![shadow.clone()]).await;
+    assert!(uris(&push.notified("textDocument/didChange")).is_empty());
+    assert!(push.docs.lock().contains_key(&live));
+    assert!(!h.events.lock().iter().any(|event| matches!(
+        event,
+        IdeEvent::Diagnostics { items, .. } if !items.is_empty()
+    )));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_actions_use_snapshot_text_and_accept_only_its_passive_edits() {
+    let caps = json!({
+        "positionEncoding": "utf-8",
+        "textDocumentSync": { "openClose": true, "change": 2 },
+        "codeActionProvider": { "resolveProvider": true },
+    });
+    let h = harness(&[("mock", caps)]);
+    let (_, path) = h.open("a.mk", "the live editor\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let uri = uri_of(&path);
+    let original = uri.clone();
+    *s.responder.lock() = Some(Arc::new(move |_, method, params| {
+        let edit = json!({ "range": {
+            "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 5 }
+        }, "newText": "X" });
+        match method {
+            "textDocument/codeAction" => {
+                let shadow = params["textDocument"]["uri"].as_str().unwrap();
+                assert_ne!(shadow, original);
+                assert_eq!(params["range"]["end"], json!({ "line": 0, "character": 5 }));
+                assert_eq!(params["context"]["diagnostics"], json!([]));
+                let kind = params["context"]["only"][0].as_str().unwrap();
+                if kind == "source.fixAll" {
+                    return Some(json!([{ "title": "Cleanup", "kind": kind, "edit": { "documentChanges": [{
+                        "textDocument": { "uri": shadow, "version": 0 }, "edits": [edit]
+                    }] }}]));
+                }
+                assert_eq!(kind, "source.organizeImports");
+                Some(json!([
+                    { "title": "Cross-file edit", "kind": kind, "isPreferred": true,
+                      "edit": { "changes": { shadow: [edit.clone()], original.clone(): [edit.clone()] } } },
+                    { "title": "Command", "kind": kind, "isPreferred": true,
+                      "command": { "title": "Command", "command": "mock.organize" },
+                      "edit": { "changes": { shadow: [edit] } } },
+                    { "title": "Organize", "kind": kind, "data": { "snapshot": shadow } }
+                ]))
+            }
+            "codeAction/resolve" => {
+                let shadow = params["data"]["snapshot"].as_str().unwrap();
+                Some(json!({ "title": "Organize", "edit": { "changes": { shadow: [edit] } } }))
+            }
+            _ => None,
+        }
+    }));
+    for kind in ["source.organizeImports", "source.fixAll"] {
+        let edits = h
+            .mgr
+            .source_action_text(&path, &LanguageId("mock".into()), "🙂b", kind, &Default::default())
+            .await
+            .unwrap();
+        assert_eq!(edits, vec![ide_core::TextEdit { range: rng(0, 2, 0, 3), new_text: "X".into() }]);
+    }
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    assert!(s.notified("textDocument/didChange").is_empty());
+    eventually(|| s.notified("textDocument/didClose").len() == 2).await;
+    let snapshots: Vec<_> =
+        s.notified("textDocument/didOpen").into_iter().filter(|notice| notice["textDocument"]["uri"] != uri).collect();
+    assert_eq!(snapshots.len(), 2);
+    assert!(snapshots.iter().all(|notice| notice["textDocument"]["text"] == "🙂b"));
+    assert!(s.docs.lock().contains_key(&uri));
 }
 
 #[tokio::test(flavor = "multi_thread")]

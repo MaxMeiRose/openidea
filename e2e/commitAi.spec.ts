@@ -13,11 +13,29 @@ async function prepareCommit(page: Page) {
       unstaged: "modified",
       renamedFrom: null,
     }));
+    files.push(
+      ...roots.map((repo, index) => ({
+        path: `${repo}/${index === 0 ? "client-new.ts" : "server-new.ts"}`,
+        relPath: index === 0 ? "client-new.ts" : "server-new.ts",
+        staged: null,
+        unstaged: "untracked",
+        renamedFrom: null,
+      })),
+    );
     const projectModule = "/src/platform/project.ts";
     const { useProject } = await import(/* @vite-ignore */ projectModule);
     let settings = {
       ...useProject.getState().settings,
-      vcs: { commit: { aiProvider: "codex", aiCodexModel: "", aiClaudeModel: "", aiPrompt: "" } },
+      vcs: {
+        git: { stagingArea: false },
+        commit: {
+          includeChangesByDefault: false,
+          aiProvider: "codex",
+          aiCodexModel: "",
+          aiClaudeModel: "",
+          aiPrompt: "",
+        },
+      },
     };
     useProject.setState({ settings });
     Object.assign(window.__ipc.handlers, {
@@ -34,7 +52,12 @@ async function prepareCommit(page: Page) {
       vcs_file_at: () => "before\n",
       fs_read_text: () => "after\n",
       vcs_diff_hunks: () => [{ kind: "modified", start: 0, lines: 1, oldStart: 0, oldLines: 1, oldText: "before\n" }],
-      vcs_log: () => [{ id: "1111111", message: "fix: previous intent" }],
+      vcs_log: (args: { repo: string }) => [
+        {
+          id: "1111111",
+          message: args.repo === roots[1] ? "fix: previous server intent" : "fix: previous client intent",
+        },
+      ],
       vcs_commit_files: () => [{ path: "previous.ts", kind: "modified" }],
       agent_models: (args: { provider: string }) =>
         args.provider === "claude"
@@ -46,7 +69,10 @@ async function prepareCommit(page: Page) {
       settings_get_global: () => settings,
       settings_set: (args: { key: string; value: string }) => {
         const key = args.key.split(".").pop()!;
-        settings = { ...settings, vcs: { commit: { ...settings.vcs.commit, [key]: JSON.parse(args.value) } } };
+        settings = {
+          ...settings,
+          vcs: { ...settings.vcs, commit: { ...settings.vcs.commit, [key]: JSON.parse(args.value) } },
+        };
         return settings;
       },
     });
@@ -91,7 +117,7 @@ test("AI generation follows checked repositories after unchecking the active rep
   ]);
 });
 
-test("Amend selects the current repository and AI generation uses the selected tool and model", async ({
+test("Amend preserves checked files and AI generation uses their repository, tool and model", async ({
   workbench: page,
 }, testInfo) => {
   const panel = await prepareCommit(page);
@@ -100,10 +126,17 @@ test("Amend selects the current repository and AI generation uses the selected t
   const generate = panel.getByRole("button", { name: "Generate with AI", exact: true });
   await expect(client).not.toBeChecked();
   await expect(generate).toBeDisabled();
+  await server.check();
   await panel.getByRole("checkbox", { name: "Amend", exact: true }).check();
-  await expect(client).toBeChecked();
-  await expect(server).not.toBeChecked();
-  await expect(panel.getByRole("textbox", { name: "Commit message", exact: true })).toHaveValue("fix: previous intent");
+  await expect(client).not.toBeChecked();
+  await expect(server).toBeChecked();
+  const untracked = panel.getByRole("treeitem", { name: /Unversioned Files/ }).first();
+  await untracked.dblclick();
+  await expect(panel.getByRole("checkbox", { name: "Include client-new.ts in commit" })).not.toBeChecked();
+  await expect(panel.getByRole("checkbox", { name: "Include server-new.ts in commit" })).not.toBeChecked();
+  await expect(panel.getByRole("textbox", { name: "Commit message", exact: true })).toHaveValue(
+    "fix: previous server intent",
+  );
   await panel.getByRole("button", { name: "Commit AI provider", exact: true }).click();
   await page.getByRole("option", { name: "Claude Code", exact: true }).click();
   await expect(panel.getByRole("button", { name: "Commit AI provider", exact: true })).toContainText("Claude Code");
@@ -118,16 +151,44 @@ test("Amend selects the current repository and AI generation uses the selected t
     "fix(vcs): preserve repository selections",
   );
   const [request] = await ipcCalls(page, "agent_generate_commit_message");
-  expect(request).toMatchObject({ provider: "claude", repo: "/dev/acme-api/frontend", model: "sonnet" });
+  expect(request).toMatchObject({ provider: "claude", repo: "/dev/acme-api/backend", model: "sonnet" });
   expect(JSON.parse(request!.prompt as string)).toMatchObject({
     amend: true,
-    files: [{ path: "client.ts" }],
-    previousCommit: { message: "fix: previous intent" },
+    files: [{ path: "server.ts" }],
+    previousCommit: { message: "fix: previous server intent" },
   });
-  await expect(server).not.toBeChecked();
+  await expect(server).toBeChecked();
   await page.screenshot({ path: testInfo.outputPath("ai-commit-panel.png"), animations: "disabled" });
   await panel.getByRole("checkbox", { name: "Amend", exact: true }).uncheck();
   await expect(client).not.toBeChecked();
+  await expect(server).toBeChecked();
+});
+
+test("Amend clears and disables with an empty selection and stays unchecked after files are selected again", async ({
+  workbench: page,
+}, testInfo) => {
+  const panel = await prepareCommit(page);
+  const client = panel.getByRole("checkbox", { name: "Include client.ts in commit" });
+  const server = panel.getByRole("checkbox", { name: "Include server.ts in commit" });
+  const amend = panel.getByRole("checkbox", { name: "Amend", exact: true });
+  await page.screenshot({ path: testInfo.outputPath("amend-empty.png"), animations: "disabled" });
+  await expect(amend).toBeDisabled();
+  await expect(amend).not.toBeChecked();
+  await server.check();
+  await expect(amend).toBeEnabled();
+  await expect(amend).not.toBeChecked();
+  await amend.check();
+  await expect(server).toBeChecked();
+  await expect(client).not.toBeChecked();
+  await page.screenshot({ path: testInfo.outputPath("amend-selected.png"), animations: "disabled" });
+  await server.uncheck();
+  await expect(amend).not.toBeChecked();
+  await expect(amend).toBeDisabled();
+  await page.screenshot({ path: testInfo.outputPath("amend-cleared.png"), animations: "disabled" });
+  await client.check();
+  await expect(amend).toBeEnabled();
+  await expect(amend).not.toBeChecked();
+  await page.screenshot({ path: testInfo.outputPath("amend-restored.png"), animations: "disabled" });
 });
 
 test("AI prompt configuration supports edits and restoring the default", async ({ workbench: page }, testInfo) => {

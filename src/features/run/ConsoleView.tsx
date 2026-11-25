@@ -30,6 +30,7 @@ import { useConsoleSelectAll } from "./useConsoleSelectAll";
 import { hostBinding, formatBinding, hasPrimaryModifier, registerKeyClaim } from "@/platform/keymap";
 import { WidestColumns } from "@/platform/consoleColumns";
 import { tx } from "@/platform/i18n";
+import { executeAction } from "@/platform/actions";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
 import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions } from "@/ui/consoleFind";
 
@@ -117,6 +118,15 @@ export interface Fold {
 export type DisplayRow = { kind: "line"; index: number; fold?: Fold } | { kind: "fold"; fold: Fold };
 
 /**
+ * IDEA's Fold Lines Like This: the selection when it stays on one line, else the clicked line;
+ * trimmed, and `null` when that leaves nothing to fold on.
+ */
+export function foldLineText(selection: string, line: string | null): string | null {
+  const text = (selection || (line ?? "")).trim();
+  return text && !/[\r\n]/.test(text) ? text : null;
+}
+
+/**
  * Folds runs of consecutive output lines (one or more) that contain one of
  * `patterns`; runs whose first line id is in `expanded` stay open.
  */
@@ -134,7 +144,10 @@ export function foldRows(
       const fold: Fold = { start: i, count: j - i, id: lines[i]!.id, expanded: expanded.has(lines[i]!.id) };
       const prev = rows[rows.length - 1];
       if (prev?.kind === "line") prev.fold = fold;
-      else if (!fold.expanded) rows.push({ kind: "fold", fold });
+      else if (fold.expanded) {
+        rows.push({ kind: "line", index: i, fold });
+        i++;
+      } else rows.push({ kind: "fold", fold });
       if (fold.expanded) for (; i < j; i++) rows.push({ kind: "line", index: i });
       i = j;
       continue;
@@ -227,7 +240,7 @@ export function ConsoleView({
   // Pending input continues the open line (a prompt), or starts a row of its own.
   const lastRow = folded[folded.length - 1];
   const inputInline =
-    !!input && !!model.openLine && lastRow?.kind === "line" && !lastRow.fold && lines[lastRow.index] === model.openLine;
+    !!input && !!model.openLine && lastRow?.kind === "line" && lines[lastRow.index] === model.openLine;
   const inputRow = !!input && !inputInline;
   const [widest] = useState(() => new WidestColumns());
   // eslint-disable-next-line react-hooks/exhaustive-deps -- `version` marks in-place appends to `lines`
@@ -252,7 +265,7 @@ export function ConsoleView({
     getItemKey: (i) => {
       const r = rows[i];
       if (!r) return "input";
-      return r.kind === "fold" ? `f${r.fold.id}` : (lines[r.index]?.id ?? i);
+      return r.kind === "fold" ? r.fold.id : (lines[r.index]?.id ?? i);
     },
   });
 
@@ -407,9 +420,18 @@ export function ConsoleView({
     scrolledMatch.current = key;
   }, [findOpen, activeMatch, rowOfLine, rows, virtualizer]);
 
+  /** The output line a context menu opened on; folds and the input row have none. */
+  const lineAt = (target: EventTarget) => {
+    const index = (target as Element).closest?.("[data-index]")?.getAttribute("data-index");
+    const row = index == null ? undefined : rows[Number(index)];
+    const line = row?.kind === "line" ? lines[row.index] : undefined;
+    return line && line.kind !== "system" ? line.text : null;
+  };
+
   const onContextMenu = (e: MouseEvent) => {
     e.preventDefault();
     const selection = selectedOutput();
+    const foldText = foldLineText(selection, lineAt(e.target));
     showContextMenu(e, [
       {
         label: "Copy",
@@ -427,6 +449,12 @@ export function ConsoleView({
         run: openFind,
       },
       { kind: "separator" },
+      {
+        label: "Fold Lines Like This",
+        disabled: !foldText,
+        // Opens Settings › Console with the text added to the fold patterns, for OK / Cancel there.
+        run: () => void executeAction("file.settings", `build.console#${foldText}`),
+      },
       { label: "Clear All", icon: "trash", disabled: !onClear, run: () => onClear?.() },
       ...(input
         ? [{ kind: "separator" } as const, { label: "Send EOF", shortcut: "⌃D", run: () => input.onEof() }]
@@ -443,7 +471,7 @@ export function ConsoleView({
     }
     if (onSelectAllKeyDown(e)) return;
     if (copySelectionOnKeyDown(e, selectedOutput)) return;
-    if (!input) return;
+    if (!input || e.target instanceof HTMLButtonElement) return;
     if (e.key === "d" && e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       input.onEof();
@@ -480,19 +508,24 @@ export function ConsoleView({
   const foldButton = (fold: Fold, attached: boolean) =>
     fold.expanded ? (
       <button
+        key={fold.id}
         type="button"
         className={styles.foldToggle}
+        style={{ height: rowHeight }}
         title={tx("Collapse folded lines")}
         aria-label={tx("Collapse folded lines")}
+        aria-expanded={true}
         onClick={() => toggleFold(fold.id)}
       >
-        <Icon name="chevron-up" size={10} />
+        <Icon name="chevron-down" size={10} />
       </button>
     ) : (
       <button
+        key={fold.id}
         type="button"
         className={styles.fold}
         title={tx("Expand folded lines")}
+        aria-expanded={false}
         onClick={() => toggleFold(fold.id)}
       >
         {`${attached ? " " : ""}${fold.count === 1 ? tx`<${fold.count} internal line>` : tx`<${fold.count} internal lines>`}`}
@@ -603,6 +636,7 @@ export function ConsoleView({
                 className={clsx(styles.line, styles[line.kind])}
                 style={{ ...rowStyle(item.start), color, background: ruled?.line?.bg }}
               >
+                {row.fold?.expanded && foldButton(row.fold, false)}
                 <Line
                   line={line}
                   marks={marksByLine.get(row.index)}
@@ -610,7 +644,7 @@ export function ConsoleView({
                   length={line.text.length}
                   cwd={cwd}
                 />
-                {row.fold && foldButton(row.fold, true)}
+                {row.fold && !row.fold.expanded && foldButton(row.fold, true)}
                 {inputInline && item.index === rows.length - 1 && pendingInput}
                 {"\n"}
               </div>

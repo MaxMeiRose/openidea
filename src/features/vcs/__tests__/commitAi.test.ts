@@ -62,7 +62,15 @@ beforeEach(() => {
   useChangelists.setState({ state: initialChangelists() });
   useProject.setState({
     settings: {
-      vcs: { commit: { aiProvider: "claude", aiClaudeModel: "sonnet", aiPrompt: "Use a concise Chinese subject." } },
+      vcs: {
+        git: { stagingArea: false },
+        commit: {
+          includeChangesByDefault: false,
+          aiProvider: "claude",
+          aiClaudeModel: "sonnet",
+          aiPrompt: "Use a concise Chinese subject.",
+        },
+      },
     } as Settings,
   });
   useCommitAi.setState({ request: null, error: null });

@@ -1,10 +1,12 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import { reorderedTabs, useWindowGroup } from "@/platform/windowGroups";
 import { usePlatform } from "@/platform/platformInfo";
 import { IconButton, showContextMenu } from "@/ui";
 import { notifications } from "./contributions";
+import { subscribeTabColors, tabColorOverride, tabColorVars, tabColorsVersion } from "./tabColors";
+import { TabColorPicker } from "./TabColorPicker";
 import styles from "./WindowGroupTabs.module.css";
 
 function run(work: Promise<unknown>) {
@@ -19,6 +21,7 @@ function run(work: Promise<unknown>) {
 
 export function WindowGroupTabs() {
   const tabs = useWindowGroup((state) => state.tabs);
+  useSyncExternalStore(subscribeTabColors, tabColorsVersion);
   const drag = useRef<{ label: string; x: number; moved: boolean } | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const tx = useTx();
@@ -62,6 +65,8 @@ export function WindowGroupTabs() {
             className={`${styles.item} ${tab.current ? styles.selected : ""} ${dragging === tab.label ? styles.dragging : ""}`}
             key={tab.label}
             data-project-tab={tab.label}
+            data-tinted={tab.root && tabColorOverride(tab.root) ? "" : undefined}
+            style={tabColorVars(tab.name, tab.root ? tabColorOverride(tab.root) : null) as CSSProperties}
             onPointerDown={(e) => {
               drag.current = null;
               if (e.button === 0 && (e.target as Element).closest('[role="tab"]'))
@@ -105,6 +110,10 @@ export function WindowGroupTabs() {
                 {
                   label: "Move Tab to New Window",
                   run: () => executeAction("window.detachTab", tab.label),
+                },
+                {
+                  label: tx("Change Project Color…"),
+                  run: () => executeAction("window.setTabColor", tab.label),
                 },
                 { kind: "separator" },
                 {
@@ -167,6 +176,7 @@ export function WindowGroupTabs() {
           </div>
         ))}
       </div>
+      <TabColorPicker />
     </div>
   );
 }

@@ -13,15 +13,17 @@ export function sendSelection(target?: string): boolean {
   // A selection ending at a line start does not include that line.
   const end = sel.to > sel.from && state.doc.lineAt(sel.to).from === sel.to ? sel.to - 1 : sel.to;
   const lines = sel.empty ? undefined : { from: state.doc.lineAt(sel.from).number, to: state.doc.lineAt(end).number };
-  addReferences([{ path: handle.ctx.path, lines }], target);
-  return true;
+  return addReferences([{ path: handle.ctx.path, lines }], target) > 0;
 }
 
 /** Files and folders from the Project view. */
 export function sendPaths(paths: readonly string[], target?: string): boolean {
-  const refs = paths.filter((path) => path && !isVirtualUri(path)).map((path) => ({ path }));
-  if (refs.length) addReferences(refs, target);
-  return refs.length > 0;
+  return (
+    addReferences(
+      paths.filter((path) => path && !isVirtualUri(path)).map((path) => ({ path })),
+      target,
+    ) > 0
+  );
 }
 
 /**

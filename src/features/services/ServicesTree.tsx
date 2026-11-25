@@ -23,6 +23,7 @@ import {
   type TreeReorder,
 } from "@/ui";
 import {
+  SERVICES_WINDOW,
   useServiceProviders,
   useToolWindowShown,
   serviceProviders,
@@ -30,6 +31,7 @@ import {
   type ServiceTreeItem,
   type ServiceItemAction,
 } from "@/workbench/contributions";
+import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import {
   addServiceMenu,
   clearProviderRoots,
@@ -88,6 +90,9 @@ export function ServicesTreeView() {
   const selectedKey = useServicesTree((s) => s.selectedKey);
   const selectedKeys = useServicesTree((s) => s.selectedKeys);
   const expanded = useServicesTree((s) => s.expanded);
+  const anchor = useToolWindowLayout((s) => s.placements[SERVICES_WINDOW]?.anchor ?? "bottom");
+  const sideDocked = anchor !== "bottom";
+  const orientation = sideDocked ? "vertical" : "horizontal";
   const addRef = useRef<HTMLButtonElement>(null);
   const filterRef = useRef<HTMLButtonElement>(null);
 
@@ -115,7 +120,8 @@ export function ServicesTreeView() {
   };
   const moveActions = (item: ServiceTreeItem): ServiceItemAction[] => {
     const located = index.get(item.key);
-    const siblings = located?.parent?.children;
+    // A provider's roots (a run type's group) have no parent row; they reorder among themselves.
+    const siblings = located?.parent?.children ?? (located ? rootsByProvider[located.provider] : undefined);
     if (!located || !siblings || !providers.find((p) => p.id === located.provider)?.reorder) return [];
     const at = siblings.findIndex((s) => s.key === item.key);
     return ([-1, 1] as const).map((delta) => {
@@ -225,8 +231,13 @@ export function ServicesTreeView() {
           </button>
         </div>
       ) : (
-        <SplitGroup orientation="horizontal" className={styles.split} storageKey="openidea.services.detailSplit">
-          <SplitPanel id="services-items" defaultSize="40%" minSize="160px">
+        <SplitGroup
+          key={orientation}
+          orientation={orientation}
+          className={styles.split}
+          storageKey={sideDocked ? "openidea.services.detailSplit.vertical" : "openidea.services.detailSplit"}
+        >
+          <SplitPanel id="services-items" defaultSize="40%" minSize={sideDocked ? "80px" : "160px"}>
             <div className={styles.treePane}>
               {detailActions.length > 0 && toolbar}
               <div className={styles.treeContent}>
@@ -258,6 +269,11 @@ export function ServicesTreeView() {
                       const p = index.get(n.key);
                       providers.find((x) => x.id === p?.provider)?.activate?.(n);
                     }}
+                    onJumpToSource={(n) => {
+                      const p = providers.find((x) => x.id === index.get(n.key)?.provider);
+                      if (p?.jumpToSource) p.jumpToSource(n);
+                      else p?.activate?.(n);
+                    }}
                     onContextMenu={(n, keys, e) => {
                       e.preventDefault();
                       if (!n) {
@@ -286,7 +302,7 @@ export function ServicesTreeView() {
           <SplitHandle />
           <SplitPanel
             id="services-detail"
-            minSize="200px"
+            minSize={sideDocked ? "120px" : "200px"}
             // The panel library puts `overflow: auto` inline; the detail content
             // (a console, a log) owns its scrolling, so the pane must not add a second
             // bar. A column flex box lets that content fill the pane.

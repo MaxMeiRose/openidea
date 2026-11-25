@@ -12,9 +12,11 @@ import { CURRENT_FILE, useRun, isLive } from "./store";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { isDebugOnly } from "./types";
 import styles from "./Run.module.css";
+import { useChromeIconSize } from "@/ui/density";
 
 /** Title bar: configuration chooser, Run / Debug, and Rerun / Stop while running. */
 export function RunWidget() {
+  const iconSize = useChromeIconSize();
   const tx = useTx();
   const label = useRemoteLabel();
   const configs = useRun((s) => s.configs);
@@ -69,6 +71,7 @@ export function RunWidget() {
         aria-haspopup="listbox"
         aria-expanded={chooserOpen}
         data-run-chooser=""
+        data-toolbar-icon-dropdown={selected ? "" : undefined}
         onClick={() => void executeAction("run.chooseConfig", "select")}
       >
         {selected && (
@@ -80,7 +83,7 @@ export function RunWidget() {
             )}
           </span>
         )}
-        <span className={styles.widgetName}>
+        <span className={styles.widgetName} data-toolbar-label="">
           {selected ? label(selected) : tx(currentFile ? "Current File" : "Select Configuration")}
         </span>
         <Icon name="chevron-down" size={14} className={styles.widgetChevron} />
@@ -92,20 +95,20 @@ export function RunWidget() {
               <IconButton
                 icon="run"
                 size="large"
-                iconSize={18}
+                iconSize={iconSize - 2}
                 className={clsx(styles.widgetButton, styles.widgetRun)}
                 title="Run"
                 disabled
               />
             )}
             <span className={clsx(styles.widgetButton, styles.widgetLoading)}>
-              <Spinner variant="spokes" size={18} label={tx("Starting…")} />
+              <Spinner variant="spokes" size={iconSize - 2} label={tx("Starting…")} />
             </span>
             {!debugging && (
               <IconButton
                 icon="debug"
                 size="large"
-                iconSize={18}
+                iconSize={iconSize - 2}
                 className={styles.widgetButton}
                 title="Debug"
                 disabled
@@ -118,7 +121,7 @@ export function RunWidget() {
               <IconButton
                 icon="resume"
                 size="large"
-                iconSize={20}
+                iconSize={iconSize}
                 className={styles.widgetButton}
                 title="Resume Program"
                 shortcut={shortcutLabel("debug.resume")}
@@ -141,7 +144,7 @@ export function RunWidget() {
             <IconButton
               icon="run"
               size="large"
-              iconSize={20}
+              iconSize={iconSize}
               className={clsx(styles.widgetButton, styles.widgetRun)}
               title={
                 selected
@@ -159,7 +162,7 @@ export function RunWidget() {
             <IconButton
               icon="debug"
               size="large"
-              iconSize={20}
+              iconSize={iconSize}
               className={styles.widgetButton}
               title={selected ? tx`Debug '${selected.name}'` : currentFile ? "Debug Current File" : "Debug"}
               shortcut={shortcutLabel("run.debug")}
@@ -196,7 +199,7 @@ export function RunWidget() {
           ref={moreRef}
           icon="more"
           size="large"
-          iconSize={20}
+          iconSize={iconSize}
           className={styles.widgetButton}
           title="More Actions"
           aria-haspopup="menu"

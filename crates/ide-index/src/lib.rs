@@ -8,7 +8,8 @@ use ide_language::{LanguageRegistry, Syntax};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -92,15 +93,18 @@ pub struct ProjectIndex {
 }
 
 /// Folders indexed alongside the internal state root.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct IndexRoots {
     pub include_root: bool,
     pub folders: Vec<PathBuf>,
+    /// Folders with exclude globs of their own (an attached project's), relative to the folder;
+    /// the other folders share the project's.
+    pub excludes: std::collections::BTreeMap<PathBuf, Vec<String>>,
 }
 
 impl From<Vec<PathBuf>> for IndexRoots {
     fn from(folders: Vec<PathBuf>) -> Self {
-        Self { include_root: true, folders }
+        Self { include_root: true, folders, ..Default::default() }
     }
 }
 
@@ -265,7 +269,7 @@ impl ProjectIndex {
     pub fn find_files(&self, query: &str, limit: usize) -> Vec<FileMatch> {
         let recent = self.shared.recent.lock().clone();
         let d = self.shared.data.read();
-        matching::find_files(&d, &matching::Recents::new(&recent), query, limit)
+        matching::find_files(&d, &matching::Recents::new(&recent), query, Some(&self.root), limit)
     }
 
     /// All indexed files with this exact basename, for resolving printed source locations.
@@ -275,6 +279,28 @@ impl ProjectIndex {
         let mut files: Vec<_> = data.files.iter().flatten().filter(|file| file.name() == name).collect();
         files.sort_by(|a, b| a.rel.len().cmp(&b.rel.len()).then_with(|| a.rel.cmp(&b.rel)));
         files.into_iter().map(|file| file.path.clone()).collect()
+    }
+
+    /// Find exact basenames across the indexed workspace in a single pass.
+    pub fn files_with_names(&self, names: &HashSet<&OsStr>) -> Vec<PathBuf> {
+        if names.is_empty() {
+            return Vec::new();
+        }
+        self.shared
+            .data
+            .read()
+            .files
+            .iter()
+            .flatten()
+            .filter(|file| !file.ignored && file.path.file_name().is_some_and(|name| names.contains(name)))
+            .map(|file| file.path.clone())
+            .collect()
+    }
+
+    /// Exact folder names in the project scope, including empty folders absent from file search.
+    /// Run off the caller's request thread because discovering those folders walks the disk.
+    pub fn directories_with_names(&self, names: &HashSet<&OsStr>) -> Vec<PathBuf> {
+        if names.is_empty() { Vec::new() } else { self.shared.filter().directories_with_names(names) }
     }
 
     /// Up to `limit` indexed files below `dir` (VCS-ignored ones left out) whose path relative to
@@ -301,7 +327,7 @@ impl ProjectIndex {
 
     /// Fuzzy search for folders that hold indexed files; `rel_path` ends in `/`.
     pub fn find_dirs(&self, query: &str, limit: usize) -> Vec<FileMatch> {
-        matching::find_dirs(&self.shared.data.read(), query, limit)
+        matching::find_dirs(&self.shared.data.read(), query, Some(&self.root), limit)
     }
 
     /// Fuzzy symbol search; CamelHump aware (`OCo` → `OrderController`).
@@ -574,11 +600,11 @@ pub mod bench_support {
         }
 
         pub fn find_files(&self, query: &str, limit: usize) -> Vec<FileMatch> {
-            matching::find_files(&self.data, &matching::Recents::new(&self.recent), query, limit)
+            matching::find_files(&self.data, &matching::Recents::new(&self.recent), query, None, limit)
         }
 
         pub fn find_dirs(&self, query: &str, limit: usize) -> Vec<FileMatch> {
-            matching::find_dirs(&self.data, query, limit)
+            matching::find_dirs(&self.data, query, None, limit)
         }
 
         pub fn find_symbols(&self, query: &str, filter: SymbolFilter, limit: usize) -> Vec<SymbolMatch> {

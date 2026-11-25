@@ -70,6 +70,9 @@ describe("helpers", () => {
       expect(formatDownloads(1234)).toMatch(/^1\.2\s?K$/);
       useI18n.setState({ locale: "zh" });
       expect(formatDownloads(12_340)).toBe("1.2万");
+      expect(formatDownloads(1234, "en")).toBe("1.2K");
+      expect(formatDownloads(1500, "tr")).toBe("1,5B");
+      expect(formatDownloads(1_500_000, "tr")).toBe("1,5M");
     } finally {
       useI18n.setState({ locale });
     }

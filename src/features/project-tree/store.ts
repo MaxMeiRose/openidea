@@ -11,7 +11,7 @@ import { withDocument } from "@/editor/lsp/files";
 import { IpcError } from "@/platform/ipc";
 import { libraryEntryPaths } from "@/platform/virtualDocs";
 import { isIgnoredName } from "@/platform/ignoredNames";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { notifications } from "@/workbench/contributions";
 import { ipcPath } from "@/platform/paths";
 import {
@@ -46,7 +46,7 @@ import {
   type ProjectViewLead,
   type ProjectViewRootContribution,
 } from "@/workbench/contributions";
-import { ancestorsWithin, isSameOrInside, nameOf, type PackageKind } from "./paths";
+import { ancestorsWithin, insideAnyOf, isInside, isSameOrInside, nameOf, type PackageKind } from "./paths";
 
 export interface ViewOptions extends TreeOptions {
   /** Select the active editor's file in the tree (IDEA: Always Select Opened File). */
@@ -63,6 +63,8 @@ export interface ViewOptions extends TreeOptions {
   showMembers: boolean;
   /** Show the location of each project root beside its name. */
   showRootPaths: boolean;
+  /** Rows wider than the pane scroll sideways; off clips long names (VS Code's horizontal scrolling). */
+  horizontalScroll: boolean;
 }
 
 export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
@@ -75,6 +77,7 @@ export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
   previewTab: false,
   showMembers: false,
   showRootPaths: true,
+  horizontalScroll: true,
 };
 
 function storedOptions(): ViewOptions {
@@ -324,6 +327,8 @@ export const currentModel = () => selectModel(get());
 
 let generation = 0;
 const inflight = new Map<string, Promise<void>>();
+/** Listings read by a batch and not applied yet; `reload` marks folders that were loaded when read. */
+const pending = new Map<string, { entries: readonly FileEntry[]; reload: boolean }>();
 let persistTimer: ReturnType<typeof setTimeout> | undefined;
 
 /** Resets the view for a newly opened project, restoring its expansion state. */
@@ -335,6 +340,7 @@ export function initProjectTree(
 ) {
   generation++;
   inflight.clear();
+  pending.clear();
   outlineInflight.clear();
   clearTimeout(persistTimer);
   modeExpanded.clear();
@@ -506,25 +512,73 @@ function putListing(path: string, entries: readonly FileEntry[]) {
   set({ listings: new Map(listings).set(path, merged) });
 }
 
+/** Folder reads a batch runs at once; a checkout can change thousands of folders. */
+const READ_SLOTS = 8;
+let readsRunning = 0;
+const readQueue: (() => void)[] = [];
+
+async function withReadSlot<T>(read: () => Promise<T>): Promise<T> {
+  if (readsRunning < READ_SLOTS) readsRunning++;
+  else await new Promise<void>((resolve) => readQueue.push(resolve));
+  try {
+    return await read();
+  } finally {
+    const next = readQueue.shift();
+    if (next) next();
+    else readsRunning--;
+  }
+}
+
+/** Applies the batched listings in one update, so the tree model is built once for all of them. */
+function flushPending() {
+  const { listings } = get();
+  let next: Map<string, readonly FileEntry[]> | undefined;
+  for (const [path, { entries, reload }] of pending) {
+    // A folder dropped while the batch was reading stays dropped.
+    if (reload && !listings.has(path)) continue;
+    const merged = mergeListing(listings.get(path), entries);
+    if (merged !== listings.get(path)) (next ??= new Map(listings)).set(path, merged);
+  }
+  pending.clear();
+  if (next) set({ listings: next });
+}
+
 /** Loads (or reloads) one folder. Concurrent calls for the same folder share a request. */
 export function loadDir(path: string, force = false): Promise<void> {
+  return load(path, force, false);
+}
+
+/**
+ * With `batched`, the listing waits in `pending` for `flushPending` and the read takes one of `READ_SLOTS`;
+ * a later read of the same folder replaces it, so a flush never applies a listing older than one already read.
+ */
+function load(path: string, force: boolean, batched: boolean): Promise<void> {
   const { root, listings } = get();
   if (!root || isGroupKey(path)) return Promise.resolve();
   if (!force && listings.has(path)) return Promise.resolve();
   const running = inflight.get(path);
   if (running) return running;
   const gen = generation;
+  const reload = listings.has(path);
   const p = (async () => {
     try {
-      const entries = await projectFs(root).readDir(path);
+      const read = () => projectFs(root).readDir(path);
+      const entries = await (batched ? withReadSlot(read) : read());
       if (gen !== generation) return;
-      putListing(path, entries);
+      if (batched) pending.set(path, { entries, reload });
+      else {
+        pending.delete(path);
+        putListing(path, entries);
+      }
       // Compact Middle Packages needs to look one level down a single-folder chain.
       const s = get();
       if (treeOptions(s).compact) {
         const visible = visibleEntries(entries, treeOptions(s));
         const only = visible.length === 1 ? visible[0]! : null;
-        if (only && isDirEntry(only) && !only.ignored && !s.listings.has(only.path)) void loadDir(only.path);
+        if (only && isDirEntry(only) && !only.ignored && !s.listings.has(only.path)) {
+          const next = load(only.path, false, batched);
+          if (batched) await next;
+        }
       }
     } catch (e) {
       if (gen !== generation) return;
@@ -547,6 +601,12 @@ export function loadDir(path: string, force = false): Promise<void> {
   return p;
 }
 
+/** Re-reads `paths` as one batch: bounded concurrent reads, one update of the listings. */
+async function reloadDirs(paths: readonly string[]) {
+  await Promise.all(paths.map((p) => load(p, true, true)));
+  flushPending();
+}
+
 /** Applies a backend `fsChanged` event: reloads affected loaded folders only. */
 export async function applyFsChange(event: {
   created: string[];
@@ -560,7 +620,8 @@ export async function applyFsChange(event: {
   if (plan.drop.length) {
     const listings = new Map(s.listings);
     dropListings(listings, plan.drop);
-    const gone = (k: string) => plan.drop.some((d) => isSameOrInside(pathOfKey(k), d));
+    const dropped = insideAnyOf(plan.drop);
+    const gone = (k: string) => dropped(pathOfKey(k));
     const selected = [...s.selected].filter((k) => !gone(k));
     set({
       listings,
@@ -580,18 +641,18 @@ export async function applyFsChange(event: {
       });
     }
   }
-  await Promise.all(plan.reload.map((p) => loadDir(p, true)));
+  await reloadDirs(plan.reload);
   // Member rows go stale when the file changes on disk: drop and refetch.
   if (event.modified.length) dropOutlines(event.modified);
   if (event.removed.length) {
     const outlines = new Map(get().outlines);
+    const inRemoved = insideAnyOf(event.removed);
     let changed = false;
-    for (const p of event.removed)
-      for (const key of [...outlines.keys()])
-        if (isSameOrInside(key, p)) {
-          outlines.delete(key);
-          changed = true;
-        }
+    for (const key of [...outlines.keys()])
+      if (inRemoved(key)) {
+        outlines.delete(key);
+        changed = true;
+      }
     if (changed) set({ outlines });
   }
 }
@@ -599,7 +660,7 @@ export async function applyFsChange(event: {
 /** Re-reads the folders among `dirs` the tree has loaded; the rest stay unread. */
 export async function reloadLoadedDirs(dirs: readonly string[]) {
   const { listings } = get();
-  await Promise.all(dirs.filter((p) => listings.has(p)).map((p) => loadDir(p, true)));
+  await reloadDirs(dirs.filter((p) => listings.has(p)));
 }
 
 /**
@@ -609,13 +670,13 @@ export async function reloadLoadedDirs(dirs: readonly string[]) {
 export async function reloadArchiveDirs() {
   const { listings } = get();
   const inArchive = (p: string) => p.endsWith("!") || p.includes("!/") || p.includes("!\\");
-  await Promise.all([...listings.keys()].filter(inArchive).map((p) => loadDir(p, true)));
+  await reloadDirs([...listings.keys()].filter(inArchive));
 }
 
 /** Re-reads every loaded folder (View › Reload from Disk). */
 export async function reloadAll() {
   const { listings } = get();
-  await Promise.all([...listings.keys()].map((p) => loadDir(p, true)));
+  await reloadDirs([...listings.keys()]);
 }
 
 // ---------------------------------------------------------------------------
@@ -727,23 +788,29 @@ export function extraRootOf(path: string): string | null {
   return null;
 }
 
-/** Whether the current pane can show `path` (Select In switches to "Project" otherwise). */
-export function modeShows(path: string): boolean {
-  const { mode, root } = get();
-  if (!root) return false;
+/** Whether a pane can show `path`. */
+export function modeShows(path: string, mode = get().mode): boolean {
+  const state = get();
+  if (!state.root) return false;
   switch (mode) {
     case "unity":
-      return unityPathVisible(path, treeOptions(get()));
+      return !!state.unity && unityPathVisible(path, treeOptions({ ...state, mode }));
     case "project":
       return true;
     case "projectFiles":
-      return memberRootOf(path) !== null || (!get().members && isSameOrInside(path, root));
+      return memberRootOf(path) !== null || (!state.members && isSameOrInside(path, state.root));
     case "scratches":
       return projectViewRoots(useProjectViewRoots.getState().roots).some(
         (r) => r.scope === "scratches" && r.path !== undefined && isSameOrInside(path, r.path),
       );
-    default:
-      return currentModel().keyOfPath.has(path);
+    default: {
+      if (mode === state.mode) return currentModel().keyOfPath.has(path);
+      const pane = { ...state, mode };
+      const files = filesOf(pane);
+      if (files?.includes(path)) return true;
+      // Only a folder that contains a listed file needs a tree lookup.
+      return !!files?.some((file) => isInside(file, path)) && selectModel(pane).keyOfPath.has(path);
+    }
   }
 }
 
@@ -797,7 +864,7 @@ export function explainHiddenPath(path: string, shown: string) {
   notifications().notify({
     level: "info",
     key: "project.hiddenPath",
-    title: tx`${nameOf(path)} is hidden because ${title} is off`,
+    title: tx`${nameOf(path)} is hidden because ${txPart(title)} is off`,
     actions: [
       {
         label: tx(title),

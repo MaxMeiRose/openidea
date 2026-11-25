@@ -16,14 +16,18 @@ import type {
   AgentModelCatalog,
   AgentPrompt,
   AgentProvider,
+  AgentSkillMode,
   AgentTask,
   ExternalSession,
   Isolation,
   RequestId,
 } from "@/bindings";
 import { useChangesOptions } from "./changesOptions";
+import { auxiliaryWindow, windowLabel } from "@/platform/auxWindow";
+import { routeToWindow, taskWindowDraft, taskWindowFocused, updateTaskWindowDraft } from "./taskWindowRouting";
 import { clearAgentTaskFontZoom, resetAllAgentFontZoom } from "./fontZoom";
 import { clearDismissedAssets } from "./sessionAssetsModel";
+import { useSkillsCatalog } from "./skillsModel";
 import { basename, useProject } from "@/platform/project";
 import { defaultTaskProject } from "./project";
 import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
@@ -35,11 +39,12 @@ import {
   canSend,
   shellCommand,
   cursorModelDefaults,
+  hasMention,
   isMentioned,
   emptyDraft,
-  fileRefForPath,
   mentionOf,
   isPerModelOption,
+  referenceOf,
   toPrompt,
   withIdeContext,
   type ComposerDraft,
@@ -82,6 +87,8 @@ export interface Draft {
   base: string | null;
   /** Per-session MCP server enable/disable overrides (`server_name` -> `enabled`) for the next task. */
   mcpOverrides?: Record<string, boolean>;
+  /** Per-session skill modes (`skill name` -> mode) for the next task. */
+  skillOverrides?: Record<string, AgentSkillMode>;
 }
 
 /** Composer key of the New Task page; sessions use their task id. */
@@ -310,17 +317,26 @@ export function draftConfig(
   const model = config.find((o) => o.category === "model")?.current;
   if (model) {
     config.push(
-      ...((catalog ?? provider)?.thoughtLevels?.[model] ?? []).map((o) => {
-        const choice = draft.thoughtLevels?.[model]?.[o.id] ?? defaults[o.id];
-        return {
-          ...o,
-          defaultValue: o.defaultValue ?? o.current,
-          current: choice !== undefined && o.values.some((v) => v.value === choice) ? choice : o.current,
-        };
-      }),
+      ...(draftModelSettings((catalog ?? provider)?.thoughtLevels?.[model], draft.thoughtLevels?.[model], defaults) ??
+        []),
     );
   }
   return config;
+}
+
+export function draftModelSettings(
+  options: AgentConfigOption[] | undefined,
+  choices: Record<string, string> | undefined,
+  defaults: Record<string, string>,
+) {
+  return options?.map((o) => {
+    const choice = choices?.[o.id] ?? defaults[o.id];
+    return {
+      ...o,
+      defaultValue: o.defaultValue ?? o.current,
+      current: choice !== undefined && o.values.some((v) => v.value === choice) ? choice : o.current,
+    };
+  });
 }
 
 export function setDraftOption(id: string, value: string) {
@@ -343,9 +359,14 @@ export function setDraftOption(id: string, value: string) {
   }
 }
 
-export const composerDraft = (key: string) => useAgents.getState().composers.get(key) ?? emptyDraft();
+export const composerDraft = (key: string) =>
+  taskWindowDraft(key) ?? useAgents.getState().composers.get(key) ?? emptyDraft();
 
 export function updateComposer(key: string, patch: Partial<ComposerDraft>) {
+  if (updateTaskWindowDraft(key, patch)) {
+    useAgents.setState({ lastComposer: key });
+    return;
+  }
   useAgents.setState((s) => ({
     composers: new Map(s.composers).set(key, {
       ...(s.composers.get(key) ?? emptyDraft()),
@@ -367,7 +388,7 @@ function clearSubmittedComposer(key: string, submitted: ComposerDraft, started: 
 /** Session tabs on screen; a task can be shown in more than one split. */
 const visible = new Map<string, number>();
 const windowFocused = () => document.visibilityState !== "hidden" && document.hasFocus();
-const viewing = (task: string) => visible.has(task) && windowFocused();
+const viewing = (task: string) => (visible.has(task) && windowFocused()) || taskWindowFocused(task);
 
 function setUnread(task: string, value: boolean) {
   const s = useAgents.getState();
@@ -449,13 +470,13 @@ export async function refreshModels(
 }
 
 /** Discover switch candidates without using or updating the session's settings. */
-export async function refreshTaskModels(id: string, force = true): Promise<void> {
+export async function refreshTaskModels(id: string, force = true, model: string | null = null): Promise<void> {
   const { tasks, providers } = useAgents.getState();
   const task = tasks.get(id);
-  if (!task || task.status === "archived" || !task.config.some((o) => o.category === "model")) return;
+  if (!task || task.status === "archived" || (!task.model && !task.config.some((o) => o.category === "model"))) return;
   const provider = providers.find((p) => p.id === task.provider);
   if (!provider?.installed || useProject.getState().project?.trusted === false) return;
-  await refreshProviderModels(provider, force, null, null);
+  await refreshProviderModels(provider, force, model, null);
 }
 
 async function refreshProviderModels(
@@ -542,6 +563,7 @@ async function refreshProviderModels(
 export async function connect(): Promise<void> {
   if (!isTauri()) return;
   const gen = ++generation;
+  clearChangeRefreshes();
   const channel = new Channel<AgentEvent>();
   channel.onmessage = (e) => {
     if (gen === generation) onEvent(e);
@@ -549,7 +571,7 @@ export async function connect(): Promise<void> {
   let tasks: AgentTask[], providers: AgentProvider[];
   try {
     [tasks, providers] = await Promise.all([
-      call(commands.agentSubscribe(channel)),
+      call(commands.agentSubscribe(channel, windowLabel())),
       useProject.getState().project?.trusted === false
         ? Promise.resolve([] as AgentProvider[])
         : call(commands.agentProviders()),
@@ -641,8 +663,6 @@ const CACHED_CLOSED_TASKS = 5;
 
 /** Recent closed-task ids kept in memory so reopening a just-closed tab avoids refetching. */
 const closedTaskMru: string[] = [];
-/** Bumped when a task's cache is dropped, so a fetch started before that doesn't refill it. */
-const cacheDrops = new Map<string, number>();
 
 function isTaskKey(key: string, taskId: string): boolean {
   return key === taskId || key.startsWith(`${taskId}/`);
@@ -664,11 +684,9 @@ function clearTaskMaps(taskId: string, clearStreaming = false) {
     if (isTaskKey(key, taskId)) positions.delete(key);
   }
   if (clearStreaming) streamingReply.delete(taskId);
-  const timer = pendingChanges.get(taskId);
-  if (timer !== undefined) {
-    clearTimeout(timer);
-    pendingChanges.delete(taskId);
-  }
+  cancelScheduledChanges(taskId);
+  const last = changeRefreshes.get(taskId);
+  if (last) last.cache.dropped = true;
 }
 
 function withoutTaskCache(s: AgentsState, taskId: string): Partial<AgentsState> | null {
@@ -707,8 +725,6 @@ function withoutTaskCache(s: AgentsState, taskId: string): Partial<AgentsState> 
 
 function dropTaskCache(taskId: string) {
   clearTaskMaps(taskId);
-  // A deleted task needs no marker: fetches already discard results for tasks that are gone.
-  if (useAgents.getState().tasks.has(taskId)) cacheDrops.set(taskId, (cacheDrops.get(taskId) ?? 0) + 1);
   useAgents.setState((s) => withoutTaskCache(s, taskId) ?? s);
 }
 
@@ -752,9 +768,7 @@ export function disconnect() {
   streamingReply.clear();
   modelFlights.clear();
   closedTaskMru.length = 0;
-  cacheDrops.clear();
-  for (const timer of pendingChanges.values()) clearTimeout(timer);
-  pendingChanges.clear();
+  clearChangeRefreshes();
   resetAllAgentFontZoom();
   useAgents.setState({
     loaded: false,
@@ -808,7 +822,6 @@ function onEvent(e: AgentEvent) {
     }
     case "removed": {
       clearTaskMaps(e.id, true);
-      cacheDrops.delete(e.id);
       const tasks = new Map(s.tasks);
       tasks.delete(e.id);
       const composers = new Map(s.composers);
@@ -817,7 +830,8 @@ function onEvent(e: AgentEvent) {
       unread.delete(e.id);
       // A deleted task leaves its group and the pinned area.
       const organize = pruneOrganize(s.organize, tasks.values());
-      if (organize !== s.organize) saveOrganize(s.organizeRoot, organize);
+      // The project window saves it: a lightweight window's copy may be older.
+      if (organize !== s.organize && !auxiliaryWindow()) saveOrganize(s.organizeRoot, organize);
       closeDockedTab(e.id);
       useAgents.setState({
         tasks,
@@ -884,6 +898,8 @@ function onEvent(e: AgentEvent) {
 
 /** In-app balloon for an Attention event; OS delivery goes through the general balloon path. */
 function notifyAttention(taskId: string, reason: "finished" | "input" | "failed") {
+  // The project window remains responsible for task notifications.
+  if (auxiliaryWindow()) return;
   if (viewing(taskId) || quietTasks.has(taskId)) return;
   const task = useAgents.getState().tasks.get(taskId);
   const title = task?.title ?? "Agent";
@@ -946,17 +962,49 @@ export async function loadEntries(task: string, subagent: string | null = null):
   }
 }
 
-export async function refreshChanges(task: string): Promise<void> {
-  // Discard a result that arrives after a project switch, the task's deletion, or its cache being dropped.
+const pendingChanges = new Map<string, ReturnType<typeof setTimeout>>();
+/** Last pass for each task. The active and trailing pass share a cache lifetime until eviction. */
+const changeRefreshes = new Map<string, { done: Promise<void>; started: boolean; cache: { dropped: boolean } }>();
+
+function cancelScheduledChanges(task: string) {
+  clearTimeout(pendingChanges.get(task));
+  pendingChanges.delete(task);
+}
+
+function clearChangeRefreshes() {
+  for (const timer of pendingChanges.values()) clearTimeout(timer);
+  pendingChanges.clear();
+  changeRefreshes.clear();
+}
+
+/** Waits for the first read that starts after this request, not for the queue to go idle. */
+export function refreshChanges(task: string): Promise<void> {
+  if (!useAgents.getState().tasks.has(task)) return Promise.resolve();
+  const last = changeRefreshes.get(task);
+  const current = last && !last.cache.dropped ? last : undefined;
+  if (current && !current.started) return current.done;
+
   const gen = generation;
-  const drops = cacheDrops.get(task);
-  const stillWanted = () =>
-    gen === generation && useAgents.getState().tasks.has(task) && cacheDrops.get(task) === drops;
-  // The whole task's changes are read in either scope: the session's summary counts them.
-  await Promise.all([
-    refreshTaskChanges(task, stillWanted),
-    useChangesOptions.getState().scope === "turn" && refreshTurnChanges(task, stillWanted),
-  ]);
+  const pass = { done: Promise.resolve(), started: false, cache: current?.cache ?? { dropped: false } };
+  const stillWanted = () => gen === generation && !pass.cache.dropped && useAgents.getState().tasks.has(task);
+  const read = async () => {
+    pass.started = true;
+    try {
+      if (!stillWanted()) return;
+      cancelScheduledChanges(task); // This read covers notifications still waiting on the timer.
+      // The session summary needs the whole task even when the pane shows just its last turn.
+      await Promise.all([
+        refreshTaskChanges(task, stillWanted),
+        useChangesOptions.getState().scope === "turn" && refreshTurnChanges(task, stillWanted),
+      ]);
+    } finally {
+      if (changeRefreshes.get(task) === pass) changeRefreshes.delete(task);
+    }
+  };
+  changeRefreshes.set(task, pass);
+  // A reopened tab can't cancel the obsolete IPC either; wait for it before starting a fresh read.
+  pass.done = last ? last.done.then(read, read) : read();
+  return pass.done;
 }
 
 async function refreshTurnChanges(task: string, stillWanted: () => boolean): Promise<void> {
@@ -1020,7 +1068,6 @@ export async function acceptChanges(task: string, relPaths: string[] | null): Pr
   }
 }
 
-const pendingChanges = new Map<string, ReturnType<typeof setTimeout>>();
 /** Reloads the task's changes after a short pause (tool diffs, commits landing). */
 export function scheduleChanges(task: string) {
   if (pendingChanges.has(task)) return;
@@ -1066,6 +1113,8 @@ export function useAgentCommands(
   task: string | null,
   offered: readonly AgentCommand[],
 ): readonly AgentCommand[] {
+  const skillOverrides = useAgents((s) => (task ? s.tasks.get(task)?.skillOverrides : s.draft.skillOverrides));
+  const catalogSkills = useSkillsCatalog((s) => s.skills);
   const [found, setFound] = useState<{
     for: unknown[];
     list: readonly AgentCommand[];
@@ -1074,18 +1123,48 @@ export function useAgentCommands(
     if (!provider || !isTauri()) return;
     let alive = true;
     call(commands.agentCommands(provider, task))
-      .then((list) => alive && setFound({ for: [provider, task, offered], list }))
+      .then((list) => alive && setFound({ for: [provider, task, offered, skillOverrides, catalogSkills], list }))
       .catch(() => {});
     return () => {
       alive = false;
     };
-  }, [provider, task, offered]);
+  }, [provider, task, offered, skillOverrides, catalogSkills]);
   // Until the list for these arguments arrives, what the agent offered.
-  const current = found && found.for[0] === provider && found.for[1] === task && found.for[2] === offered;
-  return current ? found.list : offered;
+  const current =
+    found &&
+    found.for[0] === provider &&
+    found.for[1] === task &&
+    found.for[2] === offered &&
+    found.for[3] === skillOverrides &&
+    found.for[4] === catalogSkills;
+  const base = current ? found.list : offered;
+  if (task !== null || !skillOverrides || Object.keys(skillOverrides).length === 0) return base;
+  const off = new Set(
+    Object.entries(skillOverrides)
+      .filter(([, mode]) => mode === "off")
+      .map(([name]) => name.toLowerCase()),
+  );
+  const filtered = base.filter((c) => !off.has(c.name.replace(/^\$/, "").toLowerCase()));
+  const extra: AgentCommand[] = [];
+  for (const [name, mode] of Object.entries(skillOverrides)) {
+    if (mode === "off") continue;
+    const lower = name.toLowerCase();
+    if (filtered.some((c) => c.name.replace(/^\$/, "").toLowerCase() === lower)) continue;
+    const match = catalogSkills.find((s) => s.skill.name.toLowerCase() === lower && s.origin !== "trust");
+    if (match && match.skill.userInvocable !== false) {
+      extra.push({
+        name: match.skill.name,
+        description: match.skill.description,
+        hint: match.skill.hint ?? null,
+        source: "skill",
+      });
+    }
+  }
+  return extra.length > 0 ? [...filtered, ...extra] : filtered;
 }
 
 export function openTask(task: string) {
+  if (routeToWindow(task)) return;
   forgetClosed(task);
   if (useAgents.getState().sessionLocation === "toolWindow") {
     showDockedTask(task);
@@ -1217,6 +1296,7 @@ export async function closeAndNewTask() {
 
 /** Opens the New Task page; `prompt` pre-fills it. */
 export function openHome(prompt?: string) {
+  if (routeToWindow(null, prompt)) return;
   useAgents.setState({ sessionsOpen: false });
   const project = useProject.getState().project;
   useAgents.setState({ lastComposer: HOME });
@@ -1254,6 +1334,7 @@ export async function startTask(
   const composer = composerDraft(HOME);
   if (!canSend(composer)) return;
   const started = generation;
+  const command = shellCommand(composer);
   const options = draftConfig(
     providers.find((p) => p.id === draft.provider),
     draft,
@@ -1288,6 +1369,9 @@ export async function startTask(
         isolation,
         base: isolation === "worktree" ? draft.base : null,
         mcpOverrides: draft.mcpOverrides ?? {},
+        skillOverrides: draft.skillOverrides ?? {},
+        // A `!` command runs in the new task before the agent hears anything.
+        idle: command !== null,
       }),
     );
     if (generation !== started) return;
@@ -1306,6 +1390,10 @@ export async function startTask(
       const closed = await editorService().closeInput?.(HOME_KEY);
       if (generation === started && closed !== false) openTask(task.id);
     }
+    if (command !== null && generation === started)
+      void execShell(task.id, command).catch((e: unknown) =>
+        notifications().notify({ level: "error", title: "Couldn't send the message", body: String(e) }),
+      );
   } catch (e) {
     if (generation === started) throw e;
   }
@@ -1431,6 +1519,15 @@ function remember(text: string) {
   save(HISTORY_KEY, history);
 }
 
+/** Prompts sent from the project's other windows join this window's history. */
+export function trackPromptHistory(): () => void {
+  const onStorage = (e: StorageEvent) => {
+    if (e.key === HISTORY_KEY) useAgents.setState({ history: load<string[]>(HISTORY_KEY, []) });
+  };
+  window.addEventListener("storage", onStorage);
+  return () => window.removeEventListener("storage", onStorage);
+}
+
 /** The `!` commands running per task, so Stop ends them. */
 const shellRuns = new Map<string, Set<RequestId>>();
 
@@ -1450,9 +1547,14 @@ function trackShell(task: string, request: RequestId, running: boolean) {
 
 /** Runs a `!` line in the task's folder; its output reaches the agent with the next message. */
 async function runShell(task: string, composer: ComposerDraft, command: string) {
+  clearSubmittedComposer(task, composer, generation);
+  remember(`!${command}`);
+  await execShell(task, command);
+}
+
+async function execShell(task: string, command: string) {
   const request = nextRequestId();
   trackShell(task, request, true);
-  clearSubmittedComposer(task, composer, generation);
   try {
     await call(commands.agentShell(task, command, request));
   } finally {
@@ -1607,6 +1709,10 @@ export function setDraftMcpOverrides(mcpOverrides: Record<string, boolean>) {
   updateDraft({ mcpOverrides });
 }
 
+export function setDraftSkillOverrides(skillOverrides: Record<string, AgentSkillMode>) {
+  updateDraft({ skillOverrides });
+}
+
 export async function setTaskMcpOverrides(task: string, overrides: Record<string, boolean>): Promise<void> {
   const prev = useAgents.getState().tasks.get(task);
   if (prev) {
@@ -1615,6 +1721,19 @@ export async function setTaskMcpOverrides(task: string, overrides: Record<string
     }));
   }
   const updated = await call(commands.agentSetMcpOverrides(task, overrides));
+  useAgents.setState((s) => ({
+    tasks: new Map(s.tasks).set(task, updated),
+  }));
+}
+
+export async function setTaskSkillOverrides(task: string, overrides: Record<string, AgentSkillMode>): Promise<void> {
+  const prev = useAgents.getState().tasks.get(task);
+  if (prev) {
+    useAgents.setState((s) => ({
+      tasks: new Map(s.tasks).set(task, { ...prev, skillOverrides: overrides }),
+    }));
+  }
+  const updated = await call(commands.agentSetSkillOverrides(task, overrides));
   useAgents.setState((s) => ({
     tasks: new Map(s.tasks).set(task, updated),
   }));
@@ -1645,31 +1764,88 @@ function activeComposerKey(): string {
   return s.lastComposer !== HOME && s.tasks.has(s.lastComposer) ? s.lastComposer : HOME;
 }
 
+/** The project a New Task started now would run in (the New Task page's project picker). */
+export function homeProjectRoot(): string | null {
+  const project = useProject.getState().project;
+  const members = project?.workspace?.projects ?? [];
+  const last = useAgents.getState().draft.projectRoot;
+  return last && members.includes(last) ? last : (members[0] ?? project?.root ?? null);
+}
+
+/** A file or folder (trailing slash) to reference, with the lines meant. */
+export interface ReferenceTarget {
+  path: string;
+  lines?: { from: number; to: number };
+}
+
 /**
  * Adds `@file` references (with an optional line range) to the composer on show (else the one
- * typed in last) and shows it: IDEA-style "send this to the chat".
+ * typed in last) and shows it: IDEA-style "send this to the chat". Paths resolve like the
+ * composer's own drops: inside the task's folder, or named by their workspace project. Returns
+ * how many were added; a path outside every project shows a notice.
  */
-export function addReferences(refs: Array<{ path: string; lines?: { from: number; to: number } }>, target?: string) {
+export function addReferences(targets: readonly ReferenceTarget[], target?: string): number {
+  return appendToComposer(
+    (mentions, text) => mentions.filter((m, i) => !hasMention(text, m) && mentions.indexOf(m) === i).join(" "),
+    targets,
+    target,
+  );
+}
+
+export function appendToComposer(
+  compose: (mentions: readonly string[], text: string) => string,
+  targets: readonly ReferenceTarget[] = [],
+  target?: string,
+): number {
   const s = useAgents.getState();
   const requested = target ?? activeComposerKey();
   const key = requested !== HOME && s.tasks.has(requested) ? requested : HOME;
   const task = key === HOME ? null : s.tasks.get(key)!;
-  if (!task && !s.homeOpen) openHome();
   const project = useProject.getState().project;
-  const projectRoot =
-    task?.projectRoot ?? (task ? project?.root : (useAgents.getState().draft.projectRoot ?? project?.root));
-  const root = task?.cwd ?? projectRoot;
+  const root = task ? task.cwd : homeProjectRoot();
+  const roots = {
+    root: root ?? "",
+    projectRoot: (task ? (task.projectRoot ?? project?.root) : null) ?? root ?? "",
+    members: project?.workspace?.projects,
+  };
   const current = composerDraft(key);
-  const files = refs.map((r) =>
-    projectRoot && root ? fileRefForPath(r.path, projectRoot, root) : { path: r.path, rel: r.path },
+  const files: FileRef[] = [];
+  const mentions: string[] = [];
+  for (const { path, lines } of targets) {
+    const ref = root ? referenceOf(roots, path) : null;
+    if (!ref) continue;
+    // A folder keeps its trailing slash, so its chip is a folder reference.
+    const rel = /[\\/]$/.test(path) && ref.rel !== "." ? `${ref.rel}/` : ref.rel;
+    files.push({ path: ref.path, rel });
+    mentions.push(mentionOf(rel, lines));
+  }
+  if (files.length < targets.length)
+    notifications().notify({ level: "info", title: tx("Only files of this window's projects can be referenced") });
+  const joined = compose(mentions, current.text);
+  if (!joined) {
+    // Every reference is already in the message: show it rather than doing nothing.
+    if (!files.length) return 0;
+    if (task) openTask(task.id);
+    else openHome();
+    focusComposer(key);
+    return files.length;
+  }
+  // A block of several lines (a test failure) goes in a paragraph of its own.
+  const text = joined.includes("\n")
+    ? `${current.text.trimEnd() ? `${current.text.trimEnd()}\n\n` : ""}${joined}\n`
+    : current.text && !/\s$/.test(current.text)
+      ? `${current.text} ${joined} `
+      : `${current.text}${joined} `;
+  const added = files.filter(
+    (f, i) =>
+      !current.files.some((c) => c.path === f.path && c.rel === f.rel) &&
+      files.findIndex((o) => o.path === f.path && o.rel === f.rel) === i,
   );
-  const mentions = refs.map((r, i) => mentionOf(files[i]!.rel, r.lines)).join(" ");
-  const text =
-    current.text && !/\s$/.test(current.text) ? `${current.text} ${mentions} ` : `${current.text}${mentions} `;
-  updateComposer(key, { text, files: [...current.files, ...files] });
+  updateComposer(key, { text, files: [...current.files, ...added] });
   if (task) openTask(task.id);
-  else if (!useAgents.getState().homeOpen && useAgents.getState().sessionLocation === "toolWindow") openHome();
+  else openHome();
   focusComposer(key);
+  return files.length;
 }
 
 /** Stops the task's turn, or with `subagent` only that subagent's work. */

@@ -129,6 +129,31 @@ mod imp {
     pub fn remove_window_status_item(id: &str) -> Result<(), Error> {
         wit::ui::remove_window_status_item(id).map_err(error)
     }
+    fn wit_status_item(item: &StatusItem) -> wit::ui::StatusItem {
+        wit::ui::StatusItem { text: item.text.clone(), tooltip: item.tooltip.clone(), command: item.command.clone() }
+    }
+    fn wit_status_menu(menu: &[StatusMenuEntry]) -> Vec<wit::ui::StatusMenuEntry> {
+        menu.iter()
+            .map(|entry| match entry {
+                StatusMenuEntry::Action { label, description, command, argument } => {
+                    wit::ui::StatusMenuEntry::Action(wit::ui::StatusMenuAction {
+                        label: label.clone(),
+                        description: description.clone(),
+                        command: command.clone(),
+                        argument: argument.clone(),
+                    })
+                }
+                StatusMenuEntry::Separator => wit::ui::StatusMenuEntry::Separator,
+                StatusMenuEntry::Header(label) => wit::ui::StatusMenuEntry::Header(label.clone()),
+            })
+            .collect()
+    }
+    pub fn set_status_item_menu(id: &str, item: &StatusItem, menu: &[StatusMenuEntry]) -> Result<(), Error> {
+        wit::ui::set_status_item_menu(id, &wit_status_item(item), &wit_status_menu(menu)).map_err(error)
+    }
+    pub fn set_window_status_item_menu(id: &str, item: &StatusItem, menu: &[StatusMenuEntry]) -> Result<(), Error> {
+        wit::ui::set_window_status_item_menu(id, &wit_status_item(item), &wit_status_menu(menu)).map_err(error)
+    }
     pub fn execute_command(id: &str, arg: Option<&str>) -> Result<Option<String>, Error> {
         wit::command_runner::execute(id, arg).map_err(error)
     }
@@ -1002,6 +1027,35 @@ mod imp {
         wit::process::start(&c, cwd).map_err(error)
     }
 
+    pub fn run_captured(
+        cmd: &crate::host::Command,
+        cwd: Option<&ProjectRes>,
+        stdin: Option<&str>,
+        options: Option<crate::host::ProcessOptions>,
+    ) -> Result<ProcessOutput, Error> {
+        let c = wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() };
+        let opts = options.map(|o| wit::process::ProcessOptions {
+            max_output_bytes: o.max_output_bytes,
+            buffer_bytes: o.buffer_bytes,
+        });
+        wit::process::run_captured(&c, cwd, stdin, opts)
+            .map(|o| ProcessOutput { status: o.status, stdout: o.stdout, stderr: o.stderr })
+            .map_err(error)
+    }
+
+    pub fn start_stream(
+        cmd: &crate::host::Command,
+        cwd: Option<&ProjectRes>,
+        options: Option<crate::host::ProcessOptions>,
+    ) -> Result<ChildRes, Error> {
+        let c = wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() };
+        let opts = options.map(|o| wit::process::ProcessOptions {
+            max_output_bytes: o.max_output_bytes,
+            buffer_bytes: o.buffer_bytes,
+        });
+        wit::process::start_stream(&c, cwd, opts).map_err(error)
+    }
+
     pub fn child_poll(child: &ChildRes, max: u32) -> Result<crate::host::Chunk, Error> {
         child.poll(max).map(chunk_in).map_err(error)
     }
@@ -1462,8 +1516,8 @@ pub struct Child {
 
 impl Child {
     /// What it printed since the last read, up to 1 MiB per stream, or one
-    /// whole character when `max_bytes` is smaller;
-    /// `status` is `Some` once it ended.
+    /// whole character when `max_bytes` is smaller. `status` is `Some` in the
+    /// chunk that holds the last of its output: poll until it is set.
     pub fn poll(&self, max_bytes: u32) -> Result<Chunk, Error> {
         imp::child_poll(&self.inner, max_bytes)
     }
@@ -1484,6 +1538,7 @@ impl Child {
     }
 
     /// Waits up to `timeout_ms` for it to end (0 only checks), then reads it.
+    /// When more is left than one chunk holds, `status` comes with a later [`poll`](Self::poll).
     pub fn wait(&self, timeout_ms: u32) -> Result<Chunk, Error> {
         imp::child_wait(&self.inner, timeout_ms)
     }
@@ -1493,6 +1548,30 @@ impl Child {
 /// variables; an existing key fails with an error naming it.
 pub fn run_command(cmd: &Command, project: Option<&Project>, stdin: Option<&str>) -> Result<ProcessOutput, Error> {
     imp::run_command(cmd, project.map(|p| &p.inner), stdin)
+}
+
+/// Options for process execution and streaming (API 1.15).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProcessOptions {
+    /// Maximum bytes captured per stream before returning an error (up to 128 MiB; default 16 MiB).
+    pub max_output_bytes: Option<u32>,
+    /// In-flight buffer size per stream for streaming backpressure (default 256 KiB, max 4 MiB).
+    pub buffer_bytes: Option<u32>,
+}
+
+/// Runs a [`Command`] with configurable capture options (API 1.15).
+pub fn run_captured(
+    cmd: &Command,
+    project: Option<&Project>,
+    stdin: Option<&str>,
+    options: Option<ProcessOptions>,
+) -> Result<ProcessOutput, Error> {
+    imp::run_captured(cmd, project.map(|p| &p.inner), stdin, options)
+}
+
+/// Starts a [`Command`] with backpressure-driven lossless streaming (API 1.15).
+pub fn start_stream(cmd: &Command, project: Option<&Project>, options: Option<ProcessOptions>) -> Result<Child, Error> {
+    imp::start_stream(cmd, project.map(|p| &p.inner), options).map(|inner| Child { inner })
 }
 
 /// Starts a [`Command`] and keeps it running behind a [`Child`] (at most 8 per
@@ -1729,12 +1808,12 @@ pub fn unsubscribe(kind: EventKind) {
 }
 
 /// Files outside the open projects, for a program the plugin integrates with
-/// or a tool installed elsewhere. Outside [`fs::plugin_dir`], paths need an
-/// `fs.read:<path>` (reading) or `fs.write:<path>` (writing) grant covering it;
-/// without one a
-/// call returns [`Error::Denied`] naming the capability the manifest has to
-/// declare. Paths are absolute, or start with `~/` for the user's home. A file
-/// inside a project is [`Project::read_file`] / [`Project::write_file`].
+/// or a tool installed elsewhere. Outside [`fs::plugin_dir`] and the plugin's
+/// install directory (read-only), paths need an `fs.read:<path>` (reading) or
+/// `fs.write:<path>` (writing) grant covering it; without one a call returns
+/// [`Error::Denied`] naming the capability the manifest has to declare. Paths
+/// are absolute, or start with `~/` for the user's home. A file inside a
+/// project is [`Project::read_file`] / [`Project::write_file`].
 pub mod fs {
     use super::imp;
     use crate::types::{Error, FileKind, FileStat};
@@ -1864,6 +1943,20 @@ pub fn remove_window_status_item(id: &str) -> Result<(), Error> {
     imp::remove_window_status_item(id)
 }
 
+/// [`set_status_item`] with a menu (API 1.14): clicking the item opens `menu`
+/// anchored to it instead of running the item's command; choosing an action runs
+/// its command. At most 64 entries; an empty menu is the same as [`set_status_item`].
+/// Fails without changing anything when an action names a command the plugin
+/// doesn't declare.
+pub fn set_status_item_menu(id: &str, item: &StatusItem, menu: &[StatusMenuEntry]) -> Result<(), Error> {
+    imp::set_status_item_menu(id, item, menu)
+}
+
+/// [`set_window_status_item`] with a menu, as [`set_status_item_menu`] (API 1.14).
+pub fn set_window_status_item_menu(id: &str, item: &StatusItem, menu: &[StatusMenuEntry]) -> Result<(), Error> {
+    imp::set_window_status_item_menu(id, item, menu)
+}
+
 /// An approved byte stream on the project machine (the server in remote projects).
 pub struct Connection {
     inner: imp::ConnectionRes,
@@ -1939,7 +2032,8 @@ pub fn output_reveal(channel: &str) -> Result<(), Error> {
 pub fn open_editors() -> Result<Vec<OpenEditor>, Error> {
     imp::open_editors()
 }
-/// Opens a project file (project.read) or plugin-dir file, optionally selecting a range.
+/// Opens a project file (project.read), a plugin-dir file, or a file in the
+/// plugin's install directory, optionally selecting a range.
 /// Only available in commands/events of a window.
 pub fn open_editor(path: &str, selection: Option<Range>) -> Result<(), Error> {
     imp::editor_open(path, selection)

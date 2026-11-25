@@ -8,9 +8,10 @@ import type {
   AgentLimit,
   AgentPrompt,
   AgentRetry,
+  AgentTokens,
   AgentUsage,
 } from "@/bindings";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 export interface FileRef {
   /** Absolute path (in the task's directory). */
@@ -73,11 +74,22 @@ export function messageTokens(text: string): MessageToken[] {
 
 export type Completion =
   | { kind: "file"; query: string; from: number; to: number }
-  | { kind: "command"; query: string; from: number; to: number };
+  | { kind: "command"; query: string; from: number; to: number }
+  /** A word of a `!` command line: its first word (`command`) or an argument. */
+  | { kind: "shell"; query: string; from: number; to: number; command: boolean };
 
-/** The `@file` or `/command` being typed at `caret`, if any; both may follow other text. */
+/**
+ * The `@file` or `/command` being typed at `caret`, if any; both may follow other text. In a
+ * `!` command line, the word at `caret` instead.
+ */
 export function completionAt(text: string, caret: number): Completion | null {
   const before = text.slice(0, caret);
+  if (text.startsWith("!") && caret > 0) {
+    if (before.includes("\n")) return null;
+    const query = /\S*$/.exec(before.slice(1))![0];
+    const from = caret - query.length;
+    return { kind: "shell", query, from, to: caret, command: !before.slice(1, from).trim() };
+  }
   const word = /(^|\s)([@/])([^\s@]*)$/.exec(before);
   if (!word) return null;
   const from = caret - word[3]!.length - 1;
@@ -87,6 +99,20 @@ export function completionAt(text: string, caret: number): Completion | null {
     from,
     to: caret,
   };
+}
+
+/**
+ * The earlier `!` commands (newest first, without the `!`) that extend `query`, each once.
+ */
+export function shellHistoryMatches(history: readonly string[], query: string, max: number): string[] {
+  const out: string[] = [];
+  for (const line of history) {
+    if (!line.startsWith("!") || line.includes("\n")) continue;
+    const command = line.slice(1).trim();
+    if (command && command !== query.trim() && command.startsWith(query) && !out.includes(command)) out.push(command);
+    if (out.length >= max) break;
+  }
+  return out;
 }
 
 /** Replaces the completion with `insert` plus a space; returns the text and the caret after it. */
@@ -360,6 +386,10 @@ export function mentionOf(rel: string, lines?: { from: number; to: number }): st
   return lines.from === lines.to ? `@${rel}:${lines.from}` : `@${rel}:${lines.from}-${lines.to}`;
 }
 
+/** Whether `text` holds exactly `mention` (as made by {@link mentionOf}): same file, same lines. */
+export const hasMention = (text: string, mention: string) =>
+  new RegExp(`(?:^|\\s)${escapeRe(mention)}(?=\\s|$)`).test(text);
+
 /** Whether `text` still holds the `@rel` mention, with or without a line range. */
 export const isMentioned = (text: string, rel: string) =>
   new RegExp(`@${escapeRe(rel)}(?![\\w./-])|@${escapeRe(rel)}:`).test(text);
@@ -549,7 +579,7 @@ const LIMIT_WINDOWS: Record<string, { short: string; name: string }> = {
 export function limitLabel(l: AgentLimit, now: number): { short: string; percent: number; detail: string } {
   const known = LIMIT_WINDOWS[l.window];
   const percent = Math.min(100, Math.round(l.usedPercent ?? 0));
-  const name = known ? tx(known.name) : l.window;
+  const name = known ? txPart(known.name) : l.window;
   const used = tx`${name}: ${percent}% used`;
   if (l.resetsMs == null)
     return {
@@ -585,6 +615,14 @@ export function costLabel(c: AgentCost): string {
     // Not an ISO 4217 code.
     return `${(c.amount ?? 0).toFixed(2)} ${c.currency}`;
   }
+}
+
+/** The last turn's tokens: "in 77.3k · cached 51.3k · out 509". */
+export function turnTokensLabel(t: AgentTokens): string {
+  const parts = [tx`in ${tokens(t.input)}`];
+  if (t.cached) parts.push(tx`cached ${tokens(t.cached)}`);
+  parts.push(tx`out ${tokens(t.output)}`);
+  return parts.join(" · ");
 }
 
 /** `850`, `83.1k`, `1M`. */

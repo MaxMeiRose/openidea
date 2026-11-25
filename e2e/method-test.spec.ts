@@ -21,7 +21,7 @@ async function openService(page: Page, source = SOURCE) {
     const path = "/dev/acme-api/OrderService.java";
     commands.fsProbe = async () => ({ status: "ok", data: { size: source.length, binary: false, tooLarge: false } });
     commands.fsReadText = async (file: string) => ({ status: "ok", data: file === path ? source : "" });
-    commands.javaMethodPrepare = async (invocation) => {
+    commands.javaMethodPrepare = async (invocation: MethodInvocation) => {
       (window as MethodTestWindow).__methodInput = invocation;
       return {
         status: "ok",

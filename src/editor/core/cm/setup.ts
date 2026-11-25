@@ -40,6 +40,7 @@ import { foldingExtension } from "./folding";
 import { syntaxHighlightField } from "./syntaxHighlight";
 import { indentGuides, rainbowIndentGuides } from "./indentGuides";
 import { rainbowBrackets } from "./rainbowBrackets";
+import { scopeContext } from "./scopeContext";
 import { stickyMaxLines, stickyScroll } from "./stickyScroll";
 import { findExtension } from "./find";
 import { codeLensExtension } from "./codeLens";
@@ -243,7 +244,7 @@ export function heavyExtension(docLength: number, settings?: EditorSettings): Ex
   if (docLength > HEAVY_LIMIT) return [];
   const prefs = prefsOf(settings);
   return [
-    prefs.codeEditing.highlightBraces ? bracketMatching({ renderMatch }) : [],
+    prefs.codeEditing.highlightBraces ? [bracketMatching({ renderMatch }), scopeContext] : [],
     prefs.appearance.indentGuides ? (prefs.appearance.rainbowIndentGuides ? rainbowIndentGuides : indentGuides) : [],
     prefs.appearance.showMinimap ? minimap : [],
     prefs.rainbowBrackets
@@ -278,7 +279,8 @@ export function distractionFreeExtension(
 }
 
 export function foldingFor(settings: EditorSettings | undefined): Extension {
-  return foldingExtension(prefsOf(settings).folding.showOutline);
+  const { showOutline, outlineVisibility } = prefsOf(settings).folding;
+  return foldingExtension(showOutline, outlineVisibility);
 }
 
 export function caretFor(settings: EditorSettings | undefined): Extension {

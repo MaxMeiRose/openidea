@@ -88,10 +88,13 @@ pub struct Connection {
 /// A forwarded port's host (`None`: the remote host itself) and remote port.
 type ForwardKey = (Option<String>, u16);
 
-/// A forwarded port: through the SSH connection, or `docker exec` in a dev container.
+/// A forwarded port: through the SSH connection, `docker exec` in a dev container, or — for
+/// WSL — nothing, the distribution's `localhost` already being this machine's.
 enum Forward {
     Ssh(ide_ssh::Tunnel),
     Container(ide_remote::container_tunnel::Tunnel),
+    /// The remote port, reachable here on the same port without a tunnel.
+    Wsl(u16),
 }
 
 impl Forward {
@@ -99,6 +102,7 @@ impl Forward {
         match self {
             Self::Ssh(t) => t.port(),
             Self::Container(t) => t.port(),
+            Self::Wsl(port) => *port,
         }
     }
 }
@@ -106,7 +110,12 @@ impl Forward {
 type Channels = Arc<Mutex<HashMap<u64, (Channel<ChannelFrame>, u64)>>>;
 
 #[derive(Default)]
-pub struct Connections(Mutex<HashMap<String, Arc<Connection>>>);
+pub struct Connections {
+    windows: Mutex<HashMap<String, Arc<Connection>>>,
+    /// The connect attempt allowed to publish for each window. A later connect, or a
+    /// disconnect, supersedes an attempt that is still starting the server.
+    attempts: Mutex<HashMap<String, u64>>,
+}
 
 impl Connection {
     /// Commands of a remote window that run on this machine follow this machine's decision about the
@@ -143,13 +152,13 @@ impl Connection {
 
 impl Connections {
     pub fn get(&self, window: &str) -> Option<Arc<Connection>> {
-        self.0.lock().get(window).cloned()
+        self.windows.lock().get(window).cloned()
     }
 
     /// The window connected to folder `root` of `target`.
     pub fn window_of(&self, target: &RemoteTarget, root: &str) -> Option<String> {
         let root = root.trim_end_matches('/');
-        self.0
+        self.windows
             .lock()
             .iter()
             // A dev container is one project: its folder there is only known once connected.
@@ -162,15 +171,129 @@ impl Connections {
 
     /// Every connected window.
     pub fn all(&self) -> Vec<(String, Arc<Connection>)> {
-        self.0.lock().iter().map(|(w, c)| (w.clone(), c.clone())).collect()
+        self.windows.lock().iter().map(|(w, c)| (w.clone(), c.clone())).collect()
+    }
+
+    /// Starts a connect for `window`. An older attempt can no longer publish.
+    pub fn begin(&self, window: &str) -> u64 {
+        self.bump(window)
+    }
+
+    fn bump(&self, window: &str) -> u64 {
+        let mut attempts = self.attempts.lock();
+        let next = attempts.get(window).copied().unwrap_or(0).wrapping_add(1);
+        attempts.insert(window.to_owned(), next);
+        next
+    }
+
+    /// Installs `connection` when `attempt` is still the one [`begin`] returned for `window`.
+    /// An older attempt leaves the connection a newer one published.
+    pub fn publish(&self, window: &str, attempt: u64, connection: Arc<Connection>) -> bool {
+        let attempts = self.attempts.lock();
+        if attempts.get(window).copied() != Some(attempt) {
+            return false;
+        }
+        if let Some(old) = self.windows.lock().insert(window.to_owned(), connection) {
+            old.peer.kill();
+            old.forwards.lock().clear();
+        }
+        true
     }
 
     pub fn disconnect(&self, window: &str) {
-        if let Some(c) = self.0.lock().remove(window) {
+        // Invalidate an attempt that has not published yet, or it would put the
+        // connection back after this disconnect.
+        self.bump(window);
+        if let Some(c) = self.windows.lock().remove(window) {
             c.peer.kill();
             c.forwards.lock().clear();
         }
     }
+}
+
+/// `ssh://` / `wsl://` / `devcontainer://` location, the same spelling the frontend stores.
+pub fn remote_location(target: &RemoteTarget, path: &str) -> String {
+    let (scheme, name) = match target {
+        RemoteTarget::Ssh { config } => ("ssh", config.as_str()),
+        RemoteTarget::Wsl { distro } => ("wsl", distro.as_str()),
+        RemoteTarget::DevContainer { folder, .. } => ("devcontainer", folder.as_str()),
+    };
+    let config = match target {
+        RemoteTarget::DevContainer { config, .. } if !config.is_empty() => format!(":{}", encode_uri_component(config)),
+        _ => String::new(),
+    };
+    let path = if path.starts_with('/') { path.to_owned() } else { format!("/{path}") };
+    format!("{scheme}://{}{config}{path}", encode_uri_component(name))
+}
+
+/// The remote project a `ssh://`, `wsl://` or `devcontainer://` location names.
+pub fn parse_remote_location(location: &str) -> Option<(RemoteTarget, String)> {
+    let (kind, rest) = if let Some(rest) = location.strip_prefix("ssh://") {
+        ("ssh", rest)
+    } else if let Some(rest) = location.strip_prefix("wsl://") {
+        ("wsl", rest)
+    } else {
+        ("devcontainer", location.strip_prefix("devcontainer://")?)
+    };
+    let slash = rest.find('/')?;
+    if slash == 0 {
+        return None;
+    }
+    let authority = &rest[..slash];
+    let path = rest[slash..].to_owned();
+    let (name, config) = if kind == "devcontainer" {
+        match authority.split_once(':') {
+            Some((name, config)) => (name, config),
+            None => (authority, ""),
+        }
+    } else {
+        (authority, "")
+    };
+    let name = decode_uri_component(name)?;
+    let config = decode_uri_component(config)?;
+    if name.is_empty() {
+        return None;
+    }
+    let target = match kind {
+        "ssh" => RemoteTarget::Ssh { config: name },
+        "wsl" => RemoteTarget::Wsl { distro: name },
+        _ => RemoteTarget::DevContainer { folder: name, config },
+    };
+    Some((target, path))
+}
+
+/// `encodeURIComponent`: the frontend builds locations with it.
+fn encode_uri_component(value: &str) -> String {
+    let mut out = String::new();
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+fn decode_uri_component(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return None;
+            }
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 /// Where [`remote_connect`] is (`fraction`: 0..1 of a download / upload).
@@ -512,6 +635,9 @@ pub async fn remote_connect(
     });
     progress(RemoteStage::Connecting, None);
     let label = AppState::owner_window(window.label()).to_owned();
+    // A later connect or a disconnect supersedes this attempt, so it cannot replace
+    // the connection that one published — or put one back after it was dropped.
+    let attempt = state.remote_dev.begin(&label);
     let channels: Channels = Arc::default();
     let connection_slot: Arc<std::sync::OnceLock<std::sync::Weak<Connection>>> = Arc::default();
     let handler = Arc::new(ClientHandler {
@@ -613,10 +739,14 @@ pub async fn remote_connect(
     if let RemoteTarget::DevContainer { folder, config } = &target {
         forward_configured_ports(&connection, folder, config).await;
     }
-    state.remote_dev.disconnect(&label);
+    if !state.remote_dev.publish(&label, attempt, connection.clone()) {
+        tracing::debug!("{label}: remote connection superseded");
+        connection.peer.kill();
+        connection.forwards.lock().clear();
+        return Err(IdeError::cancelled());
+    }
     state.host.close_project(&label);
     state.host.mcp_reports.set_remote(&label, std::path::PathBuf::from(&connection.root));
-    state.remote_dev.0.lock().insert(label.clone(), connection.clone());
     let weak = Arc::downgrade(&connection);
     let peer = connection.peer.clone();
     let auth_plugins = state.plugins.clone();
@@ -641,6 +771,9 @@ pub async fn remote_connect(
         sync_plugin_languages(&plugins, &connection, &label).await;
         sync_plugin_packages(&plugins, &connection, &label).await;
     });
+    if let Err(error) = crate::window_groups::persist(window.app_handle()).await {
+        tracing::warn!(%error, "cannot save window session after opening remote project");
+    }
     Ok(RemoteProject { target, root, host, server_version: info.version, os: info.os, commands, project })
 }
 
@@ -825,20 +958,48 @@ pub async fn remote_forward_port(
     Ok(port)
 }
 
+/// How a remote port reaches this machine: through the SSH connection, an exec-based
+/// container tunnel, or — for WSL — nothing, the distribution's `localhost` being this
+/// machine's. `None`: not reachable (another host only from a dev container).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForwardRoute {
+    Ssh,
+    Container,
+    Wsl,
+}
+
+fn forward_route(target: &RemoteTarget, host: Option<&str>) -> Option<ForwardRoute> {
+    match (target, host) {
+        (RemoteTarget::Ssh { .. }, None) => Some(ForwardRoute::Ssh),
+        (RemoteTarget::Ssh { .. }, Some(_)) => None,
+        (RemoteTarget::DevContainer { .. }, _) => Some(ForwardRoute::Container),
+        (RemoteTarget::Wsl { .. }, None) => Some(ForwardRoute::Wsl),
+        (RemoteTarget::Wsl { .. }, Some(_)) => None,
+    }
+}
+
 /// Forwards `remote_port` of `host` (`None`: the remote host itself) to the same local port
-/// when it is free, else to a free one. Another host is reached from a dev container only.
+/// when it is free, else to a free one. A WSL distribution shares this machine's loopback, so
+/// its port is already reachable on the same port here. Another host is reached from a dev
+/// container only.
 async fn open_forward(c: &Connection, host: Option<&str>, remote_port: u16) -> IdeResult<Forward> {
-    if let (Some(session), None) = (c.session.clone(), host) {
-        let tunnel = ide_ssh::Tunnel::listen_on(session, Some(remote_port), "localhost", remote_port).await?;
-        return Ok(Forward::Ssh(tunnel));
+    let unsupported = || IdeError::unavailable("Forwarding ports is not supported here yet");
+    match forward_route(&c.target, host) {
+        Some(ForwardRoute::Ssh) => {
+            let session = c.session.clone().ok_or_else(unsupported)?;
+            let tunnel = ide_ssh::Tunnel::listen_on(session, Some(remote_port), "localhost", remote_port).await?;
+            Ok(Forward::Ssh(tunnel))
+        }
+        Some(ForwardRoute::Container) => {
+            let exec = c.exec.clone().ok_or_else(unsupported)?;
+            let host = host.unwrap_or("localhost");
+            Ok(Forward::Container(
+                ide_remote::container_tunnel::Tunnel::listen(exec, remote_port, host, remote_port).await?,
+            ))
+        }
+        Some(ForwardRoute::Wsl) => Ok(Forward::Wsl(remote_port)),
+        None => Err(unsupported()),
     }
-    if let Some(exec) = c.exec.clone() {
-        let host = host.unwrap_or("localhost");
-        return Ok(Forward::Container(
-            ide_remote::container_tunnel::Tunnel::listen(exec, remote_port, host, remote_port).await?,
-        ));
-    }
-    Err(IdeError::unavailable("Forwarding ports is not supported in a WSL project yet"))
 }
 
 /// `web_url` answers with the remote host's built-in web server, on its loopback: the URL's
@@ -955,11 +1116,18 @@ pub async fn remote_invoke(
         .remote_dev
         .get(&label)
         .ok_or_else(|| IdeError::unavailable("this window is not connected to a remote host"))?;
+    let batch_execution = cmd == "db_execute_stream";
+    let mut finite_channel = None;
     if let Value::Object(map) = &mut args {
-        for v in map.values_mut() {
+        for (name, v) in map {
             if let Some(id) = v.get("$channel").and_then(Value::as_u64) {
                 let own = c.next_channel.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 c.channels.lock().insert(own, (on_channel.clone(), id));
+                if (batch_execution && name == "onProgress")
+                    || (cmd == "vcs_watch_commit_messages" && name == "onMessages")
+                {
+                    finite_channel = Some(own);
+                }
                 *v = serde_json::json!({ "$channel": own });
             }
         }
@@ -983,9 +1151,23 @@ pub async fn remote_invoke(
     };
     let web_url = cmd == "web_url";
     let call = Invoke { window: label, cmd, args };
-    let mut result = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30))
-        .await
-        .map_err(|e| lost_connection_error(older_server_error(e, &c.server_version, &c.host), &c))?;
+    let reply = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30)).await;
+    // These commands finish streaming before their reply. Other commands may retain their channels.
+    if let Some(id) = finite_channel {
+        c.channels.lock().remove(&id);
+    }
+    let mut result = reply.map_err(|e| {
+        if batch_execution
+            && !c.peer.is_closed()
+            && e.kind == ide_core::error::ErrorKind::Protocol
+            && e.message == "command db_execute_stream is not available remotely"
+        {
+            // The console can use the old command. This rejection happens before execution.
+            e
+        } else {
+            lost_connection_error(older_server_error(e, &c.server_version, &c.host), &c)
+        }
+    })?;
     if web_url && let Some(url) = result.as_str() {
         result = Value::String(forward_web_url(&c, url).await?);
     }
@@ -1032,6 +1214,50 @@ pub async fn remote_import_local(
     result
 }
 
+/// One file of a [`remote_download_local`] transfer starting: `done` of `total` files are finished.
+#[derive(Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadProgress {
+    pub path: String,
+    pub done: u32,
+    pub total: u32,
+}
+
+/// The project view's Download to…: remote files and folders of this window's project into the
+/// local folder `target`, each under its own name. Like Remote Host › Download to…, nothing is
+/// written outside `target`, even through a local symlink inside it.
+#[desktop_command(trust = trusted)]
+#[tauri::command]
+#[specta::specta]
+pub async fn remote_download_local(
+    window: Window,
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+    target: std::path::PathBuf,
+    request: ide_core::RequestId,
+    on_progress: Channel<DownloadProgress>,
+) -> IdeResult<ide_remote::TransferReport> {
+    let label = AppState::owner_window(window.label());
+    let c = state.remote_dev.get(label).ok_or_else(|| IdeError::unavailable("Remote project is disconnected"))?;
+    let Some(session) = c.session.clone() else {
+        return Err(IdeError::unavailable("Downloading files is not supported in a WSL project yet"));
+    };
+    let cancel = state.host.begin_request(request);
+    let result = async {
+        let fs = ide_ssh::RemoteFs::new(session.sftp().await?);
+        let mut progress = |path: &str, done: usize, total: usize| {
+            let _ =
+                on_progress.send(DownloadProgress { path: path.to_owned(), done: done as u32, total: total as u32 });
+        };
+        let result = ide_remote::service::download_into(&fs, &paths, &target, &cancel, &mut progress).await;
+        fs.close().await;
+        result
+    }
+    .await;
+    state.host.end_request(request);
+    result
+}
+
 /// A command the server does not know, from a server of another version than this app: says so,
 /// instead of the bare JSON-RPC error.
 fn older_server_error(e: IdeError, server_version: &str, host: &str) -> IdeError {
@@ -1068,6 +1294,42 @@ async fn invoke_reply(peer: &Peer, call: Invoke, entries_timeout: std::time::Dur
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_locations_round_trip_like_the_frontend() {
+        let cases = [
+            (RemoteTarget::Wsl { distro: "Ubuntu-24.04".into() }, "/home/me/app", "wsl://Ubuntu-24.04/home/me/app"),
+            (RemoteTarget::Ssh { config: "my box".into() }, "/srv/app", "ssh://my%20box/srv/app"),
+            (
+                RemoteTarget::DevContainer { folder: "/work/app".into(), config: "devcontainer.json".into() },
+                "/workspaces/app",
+                "devcontainer://%2Fwork%2Fapp:devcontainer.json/workspaces/app",
+            ),
+            (
+                RemoteTarget::DevContainer { folder: "/work/app".into(), config: String::new() },
+                "/workspaces/app",
+                "devcontainer://%2Fwork%2Fapp/workspaces/app",
+            ),
+        ];
+        for (target, path, location) in cases {
+            assert_eq!(remote_location(&target, path), location);
+            assert_eq!(parse_remote_location(location), Some((target, path.to_owned())));
+        }
+        assert!(parse_remote_location(r"\\wsl.localhost\Ubuntu\home\me\app").is_none());
+    }
+
+    #[test]
+    fn a_port_is_routed_by_the_target_and_its_host() {
+        let ssh = RemoteTarget::Ssh { config: "box".into() };
+        let wsl = RemoteTarget::Wsl { distro: "Ubuntu".into() };
+        let container = RemoteTarget::DevContainer { folder: "/work/app".into(), config: String::new() };
+        assert_eq!(forward_route(&ssh, None), Some(ForwardRoute::Ssh));
+        assert_eq!(forward_route(&ssh, Some("selenium")), None);
+        assert_eq!(forward_route(&container, None), Some(ForwardRoute::Container));
+        assert_eq!(forward_route(&container, Some("selenium")), Some(ForwardRoute::Container));
+        assert_eq!(forward_route(&wsl, None), Some(ForwardRoute::Wsl));
+        assert_eq!(forward_route(&wsl, Some("selenium")), None);
+    }
 
     #[test]
     fn a_command_missing_on_a_server_of_another_version_says_which_versions() {
@@ -1160,6 +1422,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_later_connect_supersedes_an_earlier_attempt() {
+        let connections = Connections::default();
+        let first = connections.begin("main");
+        let second = connections.begin("main");
+        let older = Arc::new(connected(RemoteTarget::Wsl { distro: "Ubuntu".into() }, "/home/me/old"));
+        assert!(!connections.publish("main", first, older.clone()));
+        assert!(connections.get("main").is_none());
+        let newer = Arc::new(connected(RemoteTarget::Wsl { distro: "Ubuntu".into() }, "/home/me/new"));
+        assert!(connections.publish("main", second, newer.clone()));
+        assert!(Arc::ptr_eq(&connections.get("main").unwrap(), &newer));
+        connections.disconnect("main");
+        assert!(connections.get("main").is_none());
+        assert!(!connections.publish("main", second, newer.clone()));
+        older.peer.kill();
+        newer.peer.kill();
+    }
+
+    #[tokio::test]
     async fn the_server_does_not_decide_trust_for_commands_run_here() {
         let tmp = tempfile::tempdir().unwrap();
         let trust = ide_host::trust::TrustStore::load(&tmp.path().join("config"), &tmp.path().join("data"));
@@ -1221,6 +1501,7 @@ ide_command::desktop_domain!(
     remote_connect,
     remote_current,
     remote_disconnect,
+    remote_download_local,
     remote_forward_port,
     remote_forwarded_ports,
     remote_import_local,

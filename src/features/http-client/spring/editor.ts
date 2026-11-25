@@ -22,6 +22,7 @@ import { gutterIconMarkup, showContextMenu, type MenuItem } from "@/ui";
 import { notifications, type MenuGroupContext } from "@/workbench/contributions";
 import { constantPool } from "./constants";
 import { springAt, springControllers, type Controller, type Endpoint } from "./endpoints";
+import { findClientItems } from "./feignNavigation";
 import { bodyLookup, findHost, renderRequest, skeleton, type SourceReader } from "./request";
 import { parseSource } from "./source";
 import type { ApiEndpointTarget } from "@/features/api-client/model";
@@ -85,17 +86,15 @@ export async function generateRequests(sourcePath: string, text: string, targets
   }
 }
 
-function endpointItems(sourcePath: string, text: string, e: Endpoint): MenuItem[] {
+function generateRequestItem(sourcePath: string, text: string, e: Endpoint): MenuItem {
   const generate = (path?: string) => void generateRequests(sourcePath, text, [{ endpoint: e, path }]);
-  return [
-    e.paths.length > 1
-      ? {
-          label: "Generate Request in HTTP Client",
-          icon: "file-http",
-          submenu: e.paths.map((p) => ({ label: `${e.httpMethod} ${p}`, verbatim: true, run: () => generate(p) })),
-        }
-      : { label: "Generate Request in HTTP Client", icon: "file-http", run: () => generate() },
-  ];
+  return e.paths.length > 1
+    ? {
+        label: "Generate Request in HTTP Client",
+        icon: "file-http",
+        submenu: e.paths.map((p) => ({ label: `${e.httpMethod} ${p}`, verbatim: true, run: () => generate(p) })),
+      }
+    : { label: "Generate Request in HTTP Client", icon: "file-http", run: () => generate() };
 }
 
 function controllerItems(sourcePath: string, text: string, c: Controller): MenuItem[] {
@@ -122,8 +121,9 @@ export function springMenuItems(sourcePath: string, text: string, offset: number
   if (endpoint)
     items.push(
       endpoint.paths.length > 1
-        ? endpointItems(sourcePath, text, endpoint)[0]!
+        ? generateRequestItem(sourcePath, text, endpoint)
         : { kind: "action", action: GENERATE_REQUEST, icon: "file-http" },
+      ...findClientItems(sourcePath, text, endpoint.offset),
     );
   if (controller?.endpoints.length)
     items.push({ kind: "action", action: GENERATE_CONTROLLER_REQUESTS, icon: "file-http" });
@@ -207,7 +207,7 @@ function computeMarks(state: EditorState): Mark[] {
         key: `${e.className}.${e.methodName}: ${e.httpMethod} ${e.paths.join(",")}`,
         title: `${tx("API Call")} · ${e.httpMethod} ${e.paths.join(", ")}`,
         methodName: e.methodName,
-        items: (path, text) => endpointItems(path, text, e),
+        items: (path, text) => [generateRequestItem(path, text, e), ...findClientItems(path, text, e.offset)],
       });
   }
   // One icon per line (the first wins).
@@ -324,7 +324,8 @@ export function springEditorExtension(ctx: EditorDocContext): Extension {
           const found = computeMarks(this.view.state);
           const cur = this.view.state.field(marksField);
           const same =
-            cur.length === found.length && cur.every((m, i) => m.pos === found[i]!.pos && m.key === found[i]!.key);
+            cur.length === found.length &&
+            cur.every((m, i) => m.pos === found[i]!.pos && m.offset === found[i]!.offset && m.key === found[i]!.key);
           if (!same) this.view.dispatch({ effects: setMarks.of(found) });
           // Paths built from other classes' constants: load those classes, then mark again.
           if (found.length) {

@@ -1,6 +1,7 @@
 import { writeClipboardText } from "@/platform/clipboard";
 import { onSearchCategoriesChanged, onEndpointsChanged } from "@/workbench/contributions";
 import { useFilePresentation } from "@/ui/filePresentation";
+import { useRowHeight } from "@/ui/density";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
 import { actionToggled, executeAction, executeActionFrom, getAction } from "@/platform/actions";
@@ -87,8 +88,7 @@ export function claimSearchKeys(input: () => HTMLElement | null): () => void {
   return registerKeyClaim((e) => e.target === input() && SEARCH_KEYS.has(e.key));
 }
 const ROW = 24;
-const MAX_LIST = 672;
-const MIN_LIST = 10 * ROW;
+const MIN_LIST_ROWS = 10;
 const DEBOUNCE_MS = 60;
 
 export function SearchEverywhereOverlay() {
@@ -101,6 +101,7 @@ const INITIAL_SELECTION: Selection = { key: null, anchorKey: null, lead: -1, anc
 
 function SearchEverywhereDialog() {
   const tx = useTx();
+  const rowHeight = useRowHeight(ROW);
   const tab = useSearchEverywhere((s) => s.tab);
   const hint = hintFor(tab, tx);
   const [tabs, setTabs] = useState(searchTabs);
@@ -473,8 +474,8 @@ function SearchEverywhereDialog() {
   };
 
   // While a query is typed the list keeps a minimum height so the popup doesn't jump with every keystroke.
-  const minList = parsed.text.trim() && !listing ? MIN_LIST : 0;
-  const listHeight = Math.min(MAX_LIST, Math.max(minList, rows.length * ROW));
+  const minList = parsed.text.trim() && !listing ? MIN_LIST_ROWS * rowHeight : 0;
+  const listHeight = Math.max(minList, rows.length * rowHeight);
   const previewTarget = previewOf(activeRow);
   const emptyQuery = !parsed.text.trim();
   const showEmpty = !rows.length && snap && !snap.loading && (!emptyQuery || tab !== "all");
@@ -522,8 +523,8 @@ function SearchEverywhereDialog() {
           isSelected={(r) => !!sel.keys?.has(r.key)}
           onActivate={(r, _i, e) => activate(r, (e as MouseEvent).shiftKey)}
           focusable={false}
-          rowHeight={ROW}
-          sectionHeight={ROW}
+          rowHeight={rowHeight}
+          sectionHeight={rowHeight}
           className={styles.list}
           aria-label={tx("Results")}
           renderItem={(r, state) => (
@@ -555,7 +556,7 @@ function SearchEverywhereDialog() {
     <Dialog
       open
       onClose={close}
-      width={760}
+      width={700}
       position="top"
       transparentBackdrop
       aria-label={tx("Search Everywhere")}
@@ -857,9 +858,11 @@ function ResultRow({
             <HighlightedText className={styles.name} text={row.display} indices={row.indices} tone={tone} />
             {row.container && <span className={styles.location}>{row.container}</span>}
           </span>
-          <span className={styles.right}>
-            {row.section === "classes" ? relDir(row.rel) || basename(row.rel) : basename(row.rel)}
-          </span>
+          {row.section === "classes" ? (
+            <ResultPath path={relDir(row.rel) || basename(row.rel)} className={styles.right} />
+          ) : (
+            <span className={styles.right}>{basename(row.rel)}</span>
+          )}
         </>
       );
     case "action": {
@@ -869,11 +872,16 @@ function ResultRow({
         <span
           className={clsx(styles.actionRow, !row.enabled && styles.disabled)}
           aria-disabled={!row.enabled || undefined}
+          title={row.title}
         >
           <span className={styles.icon}>{row.icon ? <Icon name={row.icon} size={16} /> : null}</span>
           <span className={styles.main}>
             <HighlightedText className={styles.name} text={row.title} indices={row.indices} tone={tone} />
-            {shortcut && <span className={styles.shortcut}>{shortcut}</span>}
+            {shortcut && (
+              <kbd className={styles.shortcut} title={shortcut}>
+                {shortcut}
+              </kbd>
+            )}
           </span>
           {toggled !== undefined ? (
             <span
@@ -893,7 +901,11 @@ function ResultRow({
               />
             </span>
           ) : (
-            row.category && <span className={styles.right}>{row.category}</span>
+            row.category && (
+              <span className={styles.right} title={row.category}>
+                {row.category}
+              </span>
+            )
           )}
         </span>
       );
@@ -922,8 +934,11 @@ function ResultRow({
           <span className={styles.main}>
             <CodeText path={row.path} text={row.text} indices={row.indices} />
           </span>
-          <span className={clsx(styles.right, active && styles.rightActive)}>
-            <span className={clsx(repeat && !active && styles.repeat)}>{basename(row.rel)}</span> {row.line + 1}
+          <span className={clsx(styles.right, styles.textLocation, active && styles.rightActive)}>
+            <span className={clsx(styles.textFile, repeat && !active && styles.repeat)} title={row.rel}>
+              {basename(row.rel)}
+            </span>{" "}
+            <span className={styles.textLine}>{row.line + 1}</span>
           </span>
         </>
       );
@@ -973,6 +988,16 @@ function CodeText({ path, text, indices }: { path: string; text: string; indices
   );
 }
 
+function ResultPath({ path, className }: { path: string; className?: string }) {
+  const separator = Math.max(0, path.lastIndexOf("/"));
+  return (
+    <span className={clsx(className, styles.path)} title={path}>
+      {separator > 0 && <span className={clsx(styles.pathPart, styles.pathPrefix)}>{path.slice(0, separator)}</span>}
+      <span className={styles.pathPart}>{path.slice(separator)}</span>
+    </span>
+  );
+}
+
 function FileRow({
   path,
   name,
@@ -994,11 +1019,11 @@ function FileRow({
     <>
       <Icon name={folder ? "folder" : icon} size={16} className={styles.icon} />
       <span className={styles.main}>
-        <span className={styles.name} style={deco.color ? { color: deco.color } : undefined}>
+        <span className={clsx(styles.name, styles.fileName)} style={deco.color ? { color: deco.color } : undefined}>
           <HighlightedText text={name} indices={indices} tone="strong" />
           {line !== null && <span className={styles.lineSuffix}>:{line + 1}</span>}
         </span>
-        {dir && <span className={styles.location}>{dir}</span>}
+        {dir && <ResultPath path={dir} className={styles.location} />}
       </span>
     </>
   );
