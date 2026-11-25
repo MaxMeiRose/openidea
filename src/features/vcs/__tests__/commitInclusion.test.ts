@@ -66,6 +66,8 @@ describe("changes left out of a commit (#1539)", () => {
     useCommit.setState({
       message: "Commit 5 of 20",
       amend: false,
+      amendPreview: null,
+      amendTarget: null,
       checks: new Map(files.map((f, index) => [f.path, index < 5 ? ("all" as const) : ("none" as const)])),
       excludedHunks: new Map([[files[5]!.path, new Set(["h1"])]]),
       excludedHunkLines: new Map(),
@@ -100,6 +102,56 @@ describe("changes left out of a commit (#1539)", () => {
     expect(await commitChanges()).toEqual([{ repo: "/p", id: "commit1" }]);
     expect(unstage).not.toHaveBeenCalled();
     expect(checkOf(other, useCommit.getState().checks, false)).toBe("none");
+  });
+
+  const selectOtherForAmend = (headCommit = "before-other") => {
+    const other: FileStatus = { ...files[1]!, path: "/other/src/f1.ts" };
+    useVcs.setState({
+      roots: ["/p", "/other"],
+      status: [files[0]!, other],
+      heads: { "/other": { head: "main", headCommit } },
+    });
+    useCommit.setState({
+      checks: new Map([[other.path, "all"]]),
+      amend: true,
+      amendPreview: {
+        root: "/other",
+        status: "ready",
+        expectedHead: "before-other",
+        head: {
+          id: "before-other",
+          shortId: "before",
+          parents: [],
+          author: "Author",
+          email: "author@example.test",
+          timeMs: 0,
+          summary: "Previous commit",
+          message: "Previous commit",
+          refs: [],
+        },
+        files: [],
+        differentCommitter: false,
+      },
+    });
+    return other;
+  };
+
+  it("amends the checked repository while other repositories remain open", async () => {
+    const other = selectOtherForAmend();
+    expect(await commitChanges()).toEqual([{ repo: "/other", id: "commit1" }]);
+    expect(commit.mock.calls[0]?.[0]).toBe("/other");
+    expect(commit.mock.calls[0]?.[2]).toMatchObject({
+      amend: true,
+      stage: [other.path],
+    });
+    expect(stage).not.toHaveBeenCalled();
+    expect(unstage).not.toHaveBeenCalled();
+  });
+
+  it("requires a fresh Amend preview when the checked repository's HEAD changes", async () => {
+    selectOtherForAmend("changed-head");
+    expect(await commitChanges()).toBeUndefined();
+    expect(commit).not.toHaveBeenCalled();
   });
 
   it("excludes unchecked files only in the repository being committed without changing either index", async () => {

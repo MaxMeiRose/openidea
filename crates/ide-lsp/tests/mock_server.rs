@@ -6392,7 +6392,8 @@ async fn a_stale_extension_answer_marks_the_references() {
     let (doc, _) = h.open("a.java", "int target;");
     h.wait_status("jdtls", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap();
     assert!(refs.stale, "the extension's stale answer must reach the client");
     assert_eq!(refs.locations.len(), 1);
 }

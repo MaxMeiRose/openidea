@@ -271,9 +271,13 @@ async function prepareAndCommit(
     draft.amendTarget ??
     (preview?.status === "ready" ? { root: preview.root, head: { commit: preview.expectedHead } } : null);
   if (amend && amended) {
-    const { heads, roots } = useVcs.getState();
+    const { heads } = useVcs.getState();
     const head = heads[amended.root]?.headCommit;
-    if (roots.length !== 1 || roots[0] !== amended.root || (head !== undefined && head !== amended.head.commit)) {
+    if (
+      plan.repositories.length !== 1 ||
+      plan.repositories[0] !== amended.root ||
+      (head !== undefined && head !== amended.head.commit)
+    ) {
       notifications().notify({
         group: "vcs",
         level: "warning",

@@ -2284,6 +2284,9 @@ export const commands = {
 	vcsWorktrees: (repo: string | null) => typedError<Worktree[], IdeError>(__TAURI_INVOKE("vcs_worktrees", { repo })),
 	/**  Create Patch › Save to file. */
 	vcsWritePatch: (path: string, patch: string, encoding: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_write_patch", { path, patch, encoding })),
+	webBrowserControl: (session: RequestId, action: BrowserAction) => typedError<BrowserStatus, IdeError>(__TAURI_INVOKE("web_browser_control", { session, action })),
+	/**  Creates a private localhost browser session owned by this window and project. */
+	webBrowserOpen: (url: string, session: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("web_browser_open", { url, session })),
 	/**  The browsers installed on this machine. */
 	webBrowsers: () => typedError<Browser[], IdeError>(__TAURI_INVOKE("web_browsers")),
 	/**  The web reference at `pos` of `doc` and its targets; `None` when there is no reference. */
@@ -3057,8 +3060,6 @@ export type AgentSettings_Deserialize = {
 	showUsageLimits?: boolean,
 	/**  What the session has cost so far, as the agent reports it. */
 	showCost?: boolean,
-	/**  A finished turn's work folds into one line under its message, leaving the reply. */
-	foldTurns?: boolean,
 	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
 	smoothText?: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
@@ -3102,8 +3103,6 @@ export type AgentSettings_Serialize = {
 	showUsageLimits: boolean,
 	/**  What the session has cost so far, as the agent reports it. */
 	showCost: boolean,
-	/**  A finished turn's work folds into one line under its message, leaving the reply. */
-	foldTurns: boolean,
 	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
 	smoothText: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
@@ -3942,6 +3941,26 @@ export type Browser = {
 	/**  `chrome`, `firefox`, `safari`, `edge`, `brave`, `chromium`. */
 	id: string,
 	name: string,
+};
+
+export type BrowserAction = { type: "navigate"; url: string } | { type: "back" } | { type: "forward" } | { type: "reload" } | { type: "inspect" } | { type: "cancel" } | { type: "layout"; bounds: BrowserBounds | null } | { type: "status" };
+
+/**  CSS pixels measured from the top left of the workbench viewport, along with the viewport size. */
+export type BrowserBounds = {
+	x: number | null,
+	y: number | null,
+	width: number | null,
+	height: number | null,
+	viewportWidth: number | null,
+	viewportHeight: number | null,
+};
+
+export type BrowserStatus = {
+	url: string,
+	canBack: boolean,
+	canForward: boolean,
+	inspecting: boolean,
+	element: InspectedElement | null,
 };
 
 export type BuildEvent = 
@@ -8573,6 +8592,12 @@ export type InspectSummary = {
 	failed: number,
 	cancelled: boolean,
 	elapsedMs: number,
+};
+
+export type InspectedElement = {
+	selector: string,
+	html: string,
+	styles: string,
 };
 
 export type InspectedFile = {
