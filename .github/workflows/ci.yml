@@ -332,7 +332,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
-        with: { version: 11 }
+        with: { version: 11.28.11 }
       - uses: actions/setup-node@v5
         with:
           node-version: 22
