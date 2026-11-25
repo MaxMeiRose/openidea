@@ -4,11 +4,14 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import composerStyles from "./Composer.module.css";
 import { EditorView } from "@codemirror/view";
-import type { AgentCommand, AgentConfigOption, AgentProvider } from "@/bindings";
+import type { AgentCommand, AgentConfigOption, AgentProvider, AgentSkillState } from "@/bindings";
 
 const agentCommands = vi.fn();
 const agentCreate = vi.fn();
 const agentRefreshModels = vi.fn();
+const agentMcpList = vi.fn();
+const agentMcpDiscoverSources = vi.fn();
+const agentSkillsList = vi.fn();
 const vcsBranches = vi.fn();
 const vcsBranchInfo = vi.fn();
 const findFiles = vi.fn();
@@ -24,6 +27,9 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       ...real.commands,
       agentCommands: (provider: string, task: string | null) => agentCommands(provider, task),
       agentCreate: (request: unknown) => agentCreate(request),
+      agentMcpList: () => agentMcpList(),
+      agentMcpDiscoverSources: () => agentMcpDiscoverSources(),
+      agentSkillsList: () => agentSkillsList(),
       agentRefreshModels: (provider: string, force: boolean, model: string | null) =>
         agentRefreshModels(provider, force, model),
       clipboardImage: () => clipboardImage(),
@@ -104,6 +110,9 @@ beforeEach(() => {
     }),
   );
   agentCommands.mockReset();
+  for (const request of [agentMcpList, agentMcpDiscoverSources, agentSkillsList]) {
+    request.mockReset().mockResolvedValue({ status: "ok", data: [] });
+  }
   agentRefreshModels.mockReset().mockImplementation(async (provider: string) => ({
     status: "ok",
     data: {
@@ -215,19 +224,19 @@ describe("New Task composer commands", () => {
     fireEvent.click(screen.getByRole("button", { name: "Model" }));
     fireEvent.click(screen.getByRole("option", { name: "opus" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Model" })).toBeEnabled());
-    fireEvent.click(await screen.findByRole("button", { name: "Effort" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Model settings:/ }));
     fireEvent.click(screen.getByRole("option", { name: "max" }));
     expect(useAgents.getState().draft.thoughtLevels?.opus).toEqual({ effort: "max" });
     // Switching away clears a level unavailable on the next model.
     fireEvent.click(screen.getByRole("button", { name: "Model" }));
     fireEvent.click(screen.getByRole("option", { name: "haiku" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Model" })).toBeEnabled());
-    expect(screen.queryByRole("button", { name: "Effort" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Model settings:/ })).toBeNull();
     expect(useAgents.getState().draft.config).toEqual({ model: "haiku" });
     fireEvent.click(screen.getByRole("button", { name: "Model" }));
     fireEvent.click(screen.getByRole("option", { name: "opus" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Model" })).toBeEnabled());
-    expect(await screen.findByRole("button", { name: "Effort" })).toHaveTextContent("max");
+    expect(await screen.findByRole("button", { name: /^Model settings:/ })).toHaveTextContent("max");
     typeIn(screen.getByRole("textbox"), "test task");
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(agentCreate).toHaveBeenCalled());
@@ -242,6 +251,8 @@ describe("New Task composer commands", () => {
   it("opens the per-session MCP picker when /mcp is completed in the composer", async () => {
     agentCommands.mockResolvedValue({ status: "ok", data: [] });
     render(<HomeEditor />);
+    expect(agentMcpList).not.toHaveBeenCalled();
+    expect(agentMcpDiscoverSources).not.toHaveBeenCalled();
     const box = screen.getByRole("textbox");
     typeIn(box, "/mc");
     const list = await screen.findByRole("listbox", { name: "Commands" });
@@ -249,11 +260,14 @@ describe("New Task composer commands", () => {
     fireEvent.keyDown(box, { key: "Enter" });
     expect(textOf(box)).toBe("");
     expect(await screen.findByText("Session MCP Servers")).toBeInTheDocument();
+    expect(agentMcpList).toHaveBeenCalledOnce();
+    expect(agentMcpDiscoverSources).toHaveBeenCalledOnce();
   });
 
   it("opens the per-session skills picker when /skills is completed in the composer", async () => {
     agentCommands.mockResolvedValue({ status: "ok", data: [] });
     render(<HomeEditor />);
+    expect(agentSkillsList).not.toHaveBeenCalled();
     const box = screen.getByRole("textbox");
     typeIn(box, "/sk");
     const list = await screen.findByRole("listbox", { name: "Commands" });
@@ -261,6 +275,7 @@ describe("New Task composer commands", () => {
     fireEvent.keyDown(box, { key: "Enter" });
     expect(textOf(box)).toBe("");
     expect(await screen.findByText("Session Skills")).toBeInTheDocument();
+    expect(agentSkillsList).toHaveBeenCalledOnce();
   });
 
   it("names the icon-only Start action and disables it while starting", async () => {
@@ -399,34 +414,32 @@ describe("New Task composer commands", () => {
     expect(agentCreate.mock.calls[0]![0]).toMatchObject({ idle: true, prompt: { text: "!gi" } });
   });
 
-  it("reflects per-session draft skillOverrides immediately in / completion", async () => {
+  it.each(["saved", "edited"])("reflects %s draft skill overrides in / completion", async (source) => {
     agentCommands.mockResolvedValue({
       status: "ok",
       data: [command("triage", "Triage issues", "skill"), command("compact", "Compact")],
     });
-    useSkillsCatalog.setState({
-      loaded: true,
-      skills: [
-        {
-          skill: {
-            name: "impeccable",
-            description: "Muted globally, enabled for this draft",
-            path: "/skills/impeccable",
-            source: "user",
-            valid: true,
-            warnings: [],
-          },
-          mode: "off",
-          origin: "user",
+    const skills: AgentSkillState[] = [
+      {
+        skill: {
+          name: "impeccable",
+          description: "Muted globally, enabled for this draft",
+          path: "/skills/impeccable",
+          source: "user",
+          valid: true,
+          warnings: [],
         },
-      ],
-    });
+        mode: "off",
+        origin: "user",
+      },
+    ];
+    const overrides = { triage: "off", impeccable: "auto" } as const;
+    agentSkillsList.mockResolvedValue({ status: "ok", data: skills });
+    useSkillsCatalog.setState({ loaded: source === "edited", skills: source === "edited" ? skills : [] });
+    if (source === "saved") setDraftSkillOverrides(overrides);
     render(<HomeEditor />);
     await waitFor(() => expect(agentCommands).toHaveBeenCalled());
-
-    act(() => {
-      setDraftSkillOverrides({ triage: "off", impeccable: "auto" });
-    });
+    if (source === "edited") act(() => setDraftSkillOverrides(overrides));
 
     const box = screen.getByRole("textbox");
     typeIn(box, "/");

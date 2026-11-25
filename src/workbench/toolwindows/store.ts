@@ -7,6 +7,7 @@
 import { create } from "zustand";
 import { setContext } from "@/platform/context";
 import { useProject } from "@/platform/project";
+import { parseRemoteLocation } from "@/platform/remote";
 import {
   useContributions,
   type ToolWindowAnchor,
@@ -241,7 +242,8 @@ function storageKey(scope: string) {
 
 function readStorage(scope: string): Record<string, unknown> | null {
   try {
-    const raw = localStorage.getItem(storageKey(scope));
+    const legacy = parseRemoteLocation(scope)?.path;
+    const raw = localStorage.getItem(storageKey(scope)) ?? (legacy ? localStorage.getItem(storageKey(legacy)) : null);
     const v: unknown = raw ? JSON.parse(raw) : null;
     return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
   } catch {
@@ -705,6 +707,25 @@ export function hideActiveToolWindow() {
   }
   const id = s.focused ?? s.lastActive;
   if (id) hideToolWindow(id);
+}
+
+/**
+ * Hide Side Tool Windows (IDEA's HideSideWindows): hides both areas of the side the active
+ * (else last active) window is docked on. Nothing when that window isn't shown.
+ */
+export function hideSideToolWindows() {
+  const s = useToolWindowLayout.getState();
+  const id = s.focused ?? s.lastActive;
+  const anchor = id && isToolWindowVisible(id) ? anchorOf(id) : undefined;
+  if (!anchor) return;
+  const side = windowsOn(anchor, s.visible);
+  const hadFocus = side.some((w) => s.focused === w || isFocusWithinToolWindow(w));
+  update({
+    visible: { ...s.visible, [anchor]: null, [`${anchor}-split`]: null },
+    maximized: s.maximized === anchor ? null : s.maximized,
+    lastActive: s.lastActive && side.includes(s.lastActive) ? null : s.lastActive,
+  });
+  if (hadFocus) focusEditor();
 }
 
 export function setToolWindowSize(anchor: ToolWindowAnchor, px: number) {

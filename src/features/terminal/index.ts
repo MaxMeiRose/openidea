@@ -5,19 +5,33 @@
  */
 import { createElement } from "react";
 import { registerActions } from "@/platform/actions";
-import { onIdeEvent } from "@/platform/ipc";
+import { commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { isRemoteWindow, parseRemoteLocation, projectLocation } from "@/platform/remote";
 import { useSystemFontStore } from "@/platform/systemFonts";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import {
+  EDITOR_TAB_MIME,
+  maybeEditorService,
   provideEmbeddedTerminal,
   registerAgentContextSource,
+  registerEditorDropHandler,
   registerEditorKind,
+  registerMenuGroup,
   registerToolWindow,
   toolWindowService,
 } from "@/workbench/contributions";
 import { lazyComponent } from "@/ui";
-import { CLI_KIND, CliDoneMark, cliData, moveTerminalToEditor } from "./cli";
+import {
+  CLI_KIND,
+  CliDoneMark,
+  TERMINAL_TAB_MIME,
+  cliData,
+  cliEditorPayload,
+  moveEditorToTerminal,
+  moveTerminalToEditor,
+  splitCliTab,
+} from "./cli";
 import { installTerminalKeys } from "./keys";
 import { loadTerminalRuntime, terminalRuntime } from "./loader";
 import { SAMPLE_TUI_END, SAMPLE_TUI_START, sampleTuiFrame } from "./sampleTui";
@@ -122,7 +136,7 @@ export function activate(): () => void {
       icon: "toolwindow-terminal",
       anchor: "bottom",
       order: 10,
-      component: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.TerminalView)),
+      component: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.TerminalView), { prefetch: true }),
       headerContent: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.TerminalTabs)),
       plainTitle: true,
       headerMenu: [
@@ -131,6 +145,13 @@ export function activate(): () => void {
         { kind: "separator" },
         { kind: "action", action: "file.settings", arg: "tools.terminal", label: "Settings", icon: "settings" },
       ],
+      onStripeDrop: {
+        accepts: (type, data) => type === EDITOR_TAB_MIME && cliEditorPayload(data.payload) !== null,
+        drop: (data) => {
+          const input = cliEditorPayload(data.payload);
+          if (input) void moveEditorToTerminal(input);
+        },
+      },
     }),
     // Terminal sessions moved to the editor (#2202): saved with the editor session, kept alive while hidden.
     registerEditorKind({
@@ -143,8 +164,22 @@ export function activate(): () => void {
       // A reopened tab shows Start: nothing runs on its own.
       restorable: true,
       keepAlive: true,
+      singleton: true,
+      splitInput: splitCliTab,
       onClose: (input) => terminalRuntime()?.disposeCli(input.key),
       isBusy: (input) => terminalRuntime()?.cliBusy(input.key) ?? false,
+    }),
+    registerEditorDropHandler({
+      accepts: (type) => type === TERMINAL_TAB_MIME,
+      allowSplit: true,
+      drop: ({ payload }, target) => void moveTerminalToEditor(payload, target),
+    }),
+    registerMenuGroup({
+      id: "terminal.editorTab",
+      menus: ["editorTab"],
+      order: 10,
+      items: (_, { input }) =>
+        input?.kind === CLI_KIND ? [{ kind: "action", action: "terminal.moveToToolWindow", arg: input.key }] : [],
     }),
     registerActions([
       {
@@ -154,7 +189,19 @@ export function activate(): () => void {
         category: "Terminal",
         when: "projectOpen",
         keywords: ["terminal", "editor", "cli", "claude", "codex"],
-        run: (arg) => moveTerminalToEditor(typeof arg === "string" ? arg : undefined),
+        run: ({ arg }) => moveTerminalToEditor(typeof arg === "string" ? arg : undefined),
+      },
+      {
+        id: "terminal.moveToToolWindow",
+        title: "Move to Terminal",
+        description:
+          "Moves a terminal editor tab, with its running session, back to the Terminal tool window (arg: input key).",
+        category: "Terminal",
+        icon: "terminal",
+        when: "projectOpen",
+        enabled: ({ arg }) => typeof arg === "string" || maybeEditorService()?.activeInput?.()?.kind === CLI_KIND,
+        keywords: ["terminal", "editor", "dock", "tool window"],
+        run: ({ arg }) => moveEditorToTerminal(typeof arg === "string" ? arg : undefined),
       },
       {
         id: "terminal.new",
@@ -367,15 +414,43 @@ export function activate(): () => void {
       return () => document.removeEventListener("visibilitychange", onVisibility);
     })(),
     // Sessions belong to the project. Remember this project's tabs, then open the next one's.
-    useProject.subscribe((s, prev) => {
-      const rt = terminalRuntime();
-      if (rt && s.project?.root !== prev.project?.root) {
-        if (rt.useTerminalFind.getState().open) rt.closeTerminalFind();
-        rt.syncTerminalProject(s.project?.root ?? null);
-        // The editor drops the old project's tabs without `onClose`; their CLIs end with it.
-        rt.disposeAllClis();
-      }
-    }),
+    (() => {
+      let prevLocation = projectLocation(useProject.getState().project?.root);
+      return useProject.subscribe((s) => {
+        const nextLocation = projectLocation(s.project?.root);
+        if (nextLocation === prevLocation) return;
+        const wasRemote = !!prevLocation && parseRemoteLocation(prevLocation) !== null;
+        prevLocation = nextLocation;
+        const rt = terminalRuntime();
+        if (rt) {
+          if (rt.useTerminalFind.getState().open) rt.closeTerminalFind();
+          rt.syncTerminalProject(s.project?.root ?? null, nextLocation);
+          // The editor drops the old project's tabs without `onClose`; their CLIs end with it locally,
+          // or detach without killing the remote daemon's PTYs.
+          rt.disposeAllClis(!wasRemote);
+        } else if (s.project?.root && isRemoteWindow() && isTauri()) {
+          const root = s.project.root;
+          void commands
+            .termList()
+            .then(async (list) => {
+              if (list.length > 0 && useProject.getState().project?.root === root) {
+                await loadTerminalRuntime();
+              }
+            })
+            .catch(() => {});
+        }
+      });
+    })(),
+    (() => {
+      if (typeof window === "undefined") return () => {};
+      const flush = () => terminalRuntime()?.rememberTerminals();
+      window.addEventListener("pagehide", flush);
+      window.addEventListener("beforeunload", flush);
+      return () => {
+        window.removeEventListener("pagehide", flush);
+        window.removeEventListener("beforeunload", flush);
+      };
+    })(),
   ];
 
   if (typeof MutationObserver !== "undefined" && typeof document !== "undefined") {

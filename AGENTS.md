@@ -66,11 +66,6 @@ Unclear product decisions → `needs-decision` and stop.
 
 Do not use Impeccable or its related skills in this repository, including globally installed copies.
 
-Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
-`verify` drives the running app through Tauri MCP and captures screenshot evidence;
-`issue-fix` takes an issue from reproduction to one PR;
-`eval` takes a failing code-intelligence eval to a fix with before / after numbers.
-
 ## Commands
 
 - Optional: `mise install` provisions the contributor toolchain; `mise tasks` lists the task aliases.
@@ -79,7 +74,8 @@ Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
   `pnpm dev:app` also enables the global Tauri API. `pnpm dev:status` reports
   this worktree's running MCP bridges and actual ports.
 - `pnpm build` — typecheck + bundle frontend.
-- `pnpm dogfood:build` / `pnpm dogfood:install` (or `mise run dogfood:build` / `mise run dogfood:install`) — build and locally install the grey-icon dogfood desktop app sharing release settings and data.
+- `pnpm dogfood:local` — build and locally install the grey-icon dogfood desktop app sharing release settings and data.
+- `pnpm dogfood:all` — build and install the local desktop app and its configured remote backends.
 - `pnpm dogfood:remote <remote_name> [--restart | --no-restart] [--clean]` (or `mise run dogfood:remote <remote_name>`) — sync backend sources to a host from **Tools › SSH Configurations**, build `openidea-server`, and stage it for Remote Development.
 - `cargo nextest run --workspace` (or `cargo test`), `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`.
 - `cargo test -p ide-host --test language_smoke -- --ignored --exact <language>` — code intelligence
@@ -110,7 +106,7 @@ Run what CI runs for the parts you touched:
   commit `src/bindings.ts`; CI fails if it differs.
 - Frontend: `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm knip`, `pnpm test`,
   `pnpm build`, and `pnpm e2e` for UI flows.
-- UI or runtime behaviour: verify in the running app (`.agents/skills/verify`).
+- UI or runtime behaviour: verify in the running app through its worktree-scoped Tauri MCP bridge.
 
 ## Pitfalls
 

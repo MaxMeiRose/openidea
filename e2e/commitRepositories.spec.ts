@@ -26,6 +26,7 @@ async function stubRepositories(page: Page) {
     handlers.vcs_status = () => files.filter((file) => !committed.has(file.path));
     handlers.vcs_stage = () => null;
     handlers.vcs_unstage = () => null;
+    handlers.vcs_config_get = () => "configured";
     handlers.vcs_commit = (args) => {
       for (const path of (args.options as { stage: string[] }).stage) committed.add(path);
       return "2222222";

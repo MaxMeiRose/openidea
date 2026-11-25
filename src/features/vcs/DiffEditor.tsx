@@ -16,7 +16,7 @@ import {
 } from "react";
 import clsx from "clsx";
 import { EditorView, keymap } from "@codemirror/view";
-import { Compartment, Prec, Text, type ChangeSet, type Extension } from "@codemirror/state";
+import { Compartment, Prec, Text, type ChangeSet, type EditorSelection, type Extension } from "@codemirror/state";
 import { history, historyKeymap } from "@codemirror/commands";
 import {
   MergeView,
@@ -121,6 +121,7 @@ import { PaddedPanes, UnalignedPanes, type DiffPanes } from "./diffScroll";
 import { groupOf } from "./changes";
 import { commitLineTarget, EXCLUDE_COMMIT_LINES, INCLUDE_COMMIT_LINES, inclusionGutter } from "./hunkInclusion";
 import { unifiedCommitLines, unifiedCommitSelection } from "./unifiedCommitLines";
+import { unifiedLineNumbers } from "./unifiedLineNumbers";
 import { hunksOverlapping } from "./hunks";
 import { requireDisplayedText, staleDiff, writeIndexChunk } from "./stagingDiffEdits";
 import {
@@ -232,6 +233,26 @@ function revealPos(v: EditorView, pos: number) {
   });
 }
 
+function keepViewState(state: DiffViewState, side: Side): Extension {
+  return EditorView.updateListener.of((u) => {
+    const uncollapsed = u.transactions.flatMap((tr) =>
+      tr.effects.filter((e) => e.is(uncollapseUnchanged)).map((e) => e.value as number),
+    );
+    // A pane nobody touched keeps nothing, so its doc isn't held for the tab's lifetime.
+    if (!u.docChanged && !u.selectionSet && !uncollapsed.length) return;
+    const saved = state[side];
+    const expanded = saved?.doc === u.startState.doc ? saved.expanded.map((pos) => u.changes.mapPos(pos)) : [];
+    state[side] = { doc: u.state.doc, selection: u.state.selection, expanded: [...expanded, ...uncollapsed] };
+  });
+}
+
+/** Puts back a pane's selection and expanded lines, if its doc hasn't changed since. */
+function restoreViewState(state: DiffViewState, side: Side, view: EditorView) {
+  const saved = state[side];
+  if (!saved || !saved.doc.eq(view.state.doc)) return;
+  view.dispatch({ selection: saved.selection, effects: saved.expanded.map((pos) => uncollapseUnchanged.of(pos)) });
+}
+
 /** The panes as diff viewer contributions see them. */
 function viewerHost(views: Views, data: DiffData, mode: DiffMode, focused: () => "a" | "b"): DiffViewerHost {
   const chunks = () => getChunks(views.b.state)?.chunks ?? [];
@@ -341,6 +362,16 @@ function typedSidesOf(data: DiffData): { left?: Text; right?: Text } {
   return typed;
 }
 
+/** A pane's selection and the unchanged lines expanded in it, for its doc. */
+interface PaneViewState {
+  doc: Text;
+  selection: EditorSelection;
+  expanded: number[];
+}
+
+/** What a diff's panes keep across rebuilds and remounts, filled in by the diff editor. */
+export type DiffViewState = Partial<Record<Side, PaneViewState>>;
+
 export interface DiffEditorProps {
   input: EditorInput;
   documentOwner?: string;
@@ -362,6 +393,8 @@ export interface DiffEditorProps {
    * toolbar, side-by-side panes always aligned, and not taking the editor tab's focus.
    */
   fit?: boolean;
+  /** Kept by a host that unmounts the diff (an all-in-one diff block scrolled away) to restore it. */
+  viewState?: DiffViewState;
 }
 
 export function DiffEditor(props: DiffEditorProps) {
@@ -394,6 +427,7 @@ function TwoPaneDiff({
   onJumpToSource,
   onClose,
   fit = false,
+  viewState,
   gitModes,
   metadataLoading,
 }: DiffEditorProps & { gitModes?: [string | null, string | null]; metadataLoading: boolean }) {
@@ -727,6 +761,7 @@ function TwoPaneDiff({
       notes: "left" | "right",
       key: Side,
     ): Extension[] => [
+      viewState ? keepViewState(viewState, key) : [],
       stage && key === indexSide ? stage.extension() : [],
       stage && key === indexSide
         ? EditorView.contentAttributes.of({ "aria-label": tx(sideLabel(key === "a" ? left : right)) })
@@ -735,7 +770,7 @@ function TwoPaneDiff({
       viewerBase({
         readOnly: !editable,
         findBar: true,
-        lineNumbers: viewMode === "split" && notes === "left" ? "after" : true,
+        lineNumbers: viewMode === "split" ? (notes === "left" ? "after" : true) : single,
       }),
       collapseUnchanged ? collapsedDiffLines() : [],
       changedRanges,
@@ -924,6 +959,7 @@ function TwoPaneDiff({
           includable ? unifiedCommitSelection : [],
           highlightChanges ? diffWords : [],
           unifiedOnLeft ? unifiedLeftDiff(highlightChanges) : [],
+          single ? [] : unifiedLineNumbers(unifiedOnLeft),
           unifiedMergeView({
             original: unifiedOnLeft ? textB : textA,
             highlightChanges,
@@ -1002,6 +1038,10 @@ function TwoPaneDiff({
         destroyPanes();
       };
     }
+    if (viewState && !carry) {
+      if (views.a) restoreViewState(viewState, "a", views.a);
+      restoreViewState(viewState, views.a ? "b" : mainSide(views), views.b);
+    }
     viewsRef.current = views;
     const built = viewerHost(views, dataRef.current, viewMode, () => focusedSide.current);
     const detach = contribs.map((c) => c.attach?.(built));
@@ -1055,6 +1095,7 @@ function TwoPaneDiff({
     right,
     swapped,
     reload,
+    viewState,
   ]);
 
   useEffect(() => {
@@ -1929,7 +1970,13 @@ function TwoPaneDiff({
               chunkInfo.moves > 0 &&
               (chunkInfo.moves === 1 ? tx(" · 1 moved block") : tx` · ${chunkInfo.moves} moved blocks`)}
           </span>
-          {contribs.map((c, i) => c.Toolbar && <c.Toolbar key={i} host={viewer} />)}
+          {contribs.map((c, i) => {
+            if (!c.Toolbar) return null;
+            return (
+              // oxlint-disable-next-line react/no-array-index-key -- contributions have no stable id; position is the identity
+              <c.Toolbar key={i} host={viewer} />
+            );
+          })}
           {toolbarActions}
           {canExternal && (
             <IconButton

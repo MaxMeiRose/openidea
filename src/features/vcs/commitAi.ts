@@ -48,6 +48,7 @@ export async function commitAiContext() {
     const renamed = renamedFromPath(file);
     const kind = selection === "staged" ? (file.staged ?? effectiveKind(file)) : effectiveKind(file);
     const base = { repository: fileRepo, path: file.relPath, kind, selection };
+    // oxlint-disable-next-line no-await-in-loop -- files consume the shared context limit in selection order
     const [before, after] = await Promise.all([
       call(commands.vcsFileAt(renamed ?? path, "HEAD")),
       selection === "staged" ? call(commands.vcsFileAt(path, ":0")) : readWorkingText(path),
@@ -56,6 +57,7 @@ export async function commitAiContext() {
       files.push({ ...base, renamedFrom: file.renamedFrom, contentUnavailable: true });
       continue;
     }
+    // oxlint-disable-next-line no-await-in-loop -- consume this file before moving to the next one
     const hunks = await commands.vcsDiffHunks(before ?? "", after ?? "");
     const keys = hunkKeys(after ?? "", hunks);
     const excluded = commit.excludedHunks.get(path) ?? commit.excludedHunks.get(file.path);
@@ -75,25 +77,26 @@ export async function commitAiContext() {
       }),
     });
   }
-  const previous = [];
-  if (commit.amend) {
-    for (const repository of repositories) {
-      const [head] = await call(
-        commands.vcsLog(repository, {
-          branch: "HEAD",
-          path: null,
-          author: null,
-          text: null,
-          range: null,
-          skip: 0,
-          limit: 1,
+  const previous = commit.amend
+    ? await Promise.all(
+        repositories.map(async (repository) => {
+          const [head] = await call(
+            commands.vcsLog(repository, {
+              branch: "HEAD",
+              path: null,
+              author: null,
+              text: null,
+              range: null,
+              skip: 0,
+              limit: 1,
+            }),
+          );
+          if (!head) throw new Error(tx("There is no commit to amend."));
+          const files = await call(commands.vcsCommitFiles(repository, head.id));
+          return { repository, message: head.message.slice(0, FILE_LIMIT), files };
         }),
-      );
-      if (!head) throw new Error(tx("There is no commit to amend."));
-      const files = await call(commands.vcsCommitFiles(repository, head.id));
-      previous.push({ repository, message: head.message.slice(0, FILE_LIMIT), files });
-    }
-  }
+      )
+    : [];
   const context = JSON.stringify({
     instructions: effectiveCommitAiPrompt(cfg.aiPrompt),
     language: useI18n.getState().locale,

@@ -152,12 +152,12 @@ describe("change list model", () => {
     const { state, feature } = twoLists();
     const checks = withListDefaults(status, "/r", state, new Map());
     expect(checks.get("/r/src/b.ts")).toBe("none");
-    expect(planCommit(status, checks).included).toEqual([]);
+    expect(planCommit(status, checks, false).included).toEqual([]);
     // An explicit checkbox wins.
     const explicit = withListDefaults(status, "/r", state, new Map([["/r/src/b.ts", "all" as const]]));
     expect(explicit.get("/r/src/b.ts")).toBe("all");
 
     const only = checksForList(status, "/r", state, feature);
-    expect(planCommit(status, only).included.map((f) => f.relPath)).toEqual(["src/b.ts"]);
+    expect(planCommit(status, only, false).included.map((f) => f.relPath)).toEqual(["src/b.ts"]);
   });
 });

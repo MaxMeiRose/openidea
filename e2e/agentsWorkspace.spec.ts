@@ -70,6 +70,7 @@ async function seed(page: Page) {
         type: "permission",
         id: 1,
         title: "Run go test ./... in /dev/acme-api",
+        command: "go test ./...",
         chosen: null,
         options: [
           { id: "accept", name: "Allow once", kind: "allow_once" },
@@ -78,14 +79,15 @@ async function seed(page: Page) {
         ],
       },
       {
-        type: "permission",
-        id: 2,
+        type: "question",
+        id: "environment",
         title: "Choose deployment environment",
         chosen: null,
-        options: [
-          { id: "answer-0", name: "Development", kind: "allow_once" },
-          { id: "answer-1", name: "Staging", kind: "allow_once" },
-          { id: "reject", name: "Skip", kind: "reject_once" },
+        questions: [
+          {
+            question: "Choose deployment environment",
+            options: [{ label: "Development" }, { label: "Staging" }],
+          },
         ],
       },
     ];
@@ -129,6 +131,17 @@ async function seed(page: Page) {
       }));
       return { status: "ok", data: null };
     };
+    commands.agentAnswerQuestion = async (id: string, question: string, answer: string | null) => {
+      store.useAgents.setState((state: { entries: Map<string, AgentEntry[]> }) => ({
+        entries: new Map(state.entries).set(
+          id,
+          (state.entries.get(id) ?? []).map((entry) =>
+            entry.type === "question" && entry.id === question ? { ...entry, chosen: answer ?? "Cancelled" } : entry,
+          ),
+        ),
+      }));
+      return { status: "ok", data: null };
+    };
     setToolWindowSize("right", 600);
     store.dockTask("a");
   });
@@ -162,18 +175,32 @@ test("session history can be searched and switched without closing the conversat
   await expect(agents.getByText("A different conversation.")).toBeVisible();
   await agents.getByRole("textbox", { name: "Message" }).fill("Draft for the second task");
   await agents.getByRole("tab", { name: "Project review" }).click();
-  await expect(agents.getByRole("textbox", { name: "Message" })).toHaveValue("Draft for the first task");
+  await expect(agents.getByRole("textbox", { name: "Message" })).toHaveText("Draft for the first task");
   await agents.getByRole("button", { name: "Agent sessions" }).click();
+  await expect(history.getByRole("textbox", { name: "Search sessions" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(history.getByRole("textbox", { name: "Search sessions" })).toHaveValue("");
+  await expect(history).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(history).toHaveCount(0);
-  await expect(agents.getByRole("textbox", { name: "Message" })).toHaveValue("Draft for the first task");
+  await expect(agents.getByRole("textbox", { name: "Message" })).toHaveText("Draft for the first task");
 });
 
 test("conversation content fills the Agents panel as it grows and shrinks", async ({ workbench: page }) => {
   await page.setViewportSize({ width: 1800, height: 1000 });
   await seed(page);
+  await page.evaluate(async () => {
+    const path = "/src/platform/project.ts";
+    const defaultsPath = "/src/features/settings/model/schema.ts";
+    const { useProject } = await import(path);
+    const { DEFAULT_SETTINGS } = await import(defaultsPath);
+    useProject.setState((state: ReturnType<typeof useProject.getState>) => {
+      const settings = state.settings ?? structuredClone(DEFAULT_SETTINGS);
+      return { settings: { ...settings, agents: { ...settings.agents, fitWindowWidth: true } } };
+    });
+  });
   const agents = page.getByRole("region", { name: "Agents" });
-  const stream = agents.locator("[data-agent-stream]");
+  const stream = agents.locator('div[data-selection-scope][tabindex="-1"]');
   for (const width of [1080, 680, 320, 1080]) {
     await page.evaluate(async (size) => {
       const path = "/src/workbench/toolwindows/store.ts";
@@ -184,9 +211,7 @@ test("conversation content fills the Agents panel as it grows and shrinks", asyn
         stream.evaluate((element) => {
           const style = getComputedStyle(element);
           const available = element.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-          const items = Array.from(element.children).filter((child) =>
-            child.matches('[class*="markdown"], [class*="message"], details'),
-          );
+          const items = Array.from(element.children).filter((child) => child.childElementCount > 0);
           return {
             count: items.length,
             fillsWidth: items.every((child) => Math.abs(child.getBoundingClientRect().width - available) < 1),
@@ -205,8 +230,8 @@ test("approval stays beside the composer while scrolling and reviewing changes, 
   const agents = page.getByRole("region", { name: "Agents" });
   const composer = agents.getByRole("textbox", { name: "Message" });
   await composer.fill("Keep this draft during approval");
-  const stream = agents.locator("[data-agent-stream]");
-  const card = agents.getByRole("alert", { name: "Run go test ./... in /dev/acme-api" });
+  const stream = agents.locator('div[data-selection-scope][tabindex="-1"]');
+  const card = agents.getByRole("region", { name: /wants to run a command/i, includeHidden: true });
   const before = (await card.boundingBox())!;
   const inputBounds = (await composer.boundingBox())!;
   expect(before.y + before.height).toBeLessThanOrEqual(inputBounds.y);
@@ -217,31 +242,38 @@ test("approval stays beside the composer while scrolling and reviewing changes, 
   await expect.poll(() => stream.evaluate((element) => element.scrollTop)).toBe(0);
   await expect(card).toBeVisible();
   expect((await card.boundingBox())!.y).toBeCloseTo(before.y, 0);
-  await agents.getByRole("button", { name: "Show changes" }).click();
+  await agents.getByRole("button", { name: /1 changed file/ }).click();
   await expect(card).toBeVisible();
-  await expect(agents.getByRole("button", { name: "Allow once" })).toBeVisible();
+  await expect(agents.getByRole("button", { name: "Allow Once" })).toBeVisible();
   await agents.getByRole("button", { name: "Back to conversation" }).click();
-  await expect(composer).toHaveValue("Keep this draft during approval");
-  await agents.getByRole("button", { name: "More options" }).click();
-  await page.getByRole("menuitem", { name: "Allow for this session" }).click();
-  const question = agents.getByRole("alert", { name: "Choose deployment environment" });
-  await expect(question.getByRole("button", { name: "Submit answer" })).toBeDisabled();
+  await expect(composer).toHaveText("Keep this draft during approval");
+  await agents.getByRole("button", { name: "Allow for This Session" }).click();
+  const question = agents.getByRole("form", { name: "Choose deployment environment" });
+  await expect(question.getByRole("button", { name: "Submit" })).toBeDisabled();
   await question.getByRole("radio", { name: "Staging" }).check();
-  await question.getByRole("button", { name: "Submit answer" }).click();
-  await expect(agents.locator("[data-agent-permission-dock]")).toHaveCount(0);
-  await expect(composer).toHaveValue("Keep this draft during approval");
+  await question.getByRole("button", { name: "Submit" }).click();
+  await expect(agents.getByRole("button", { name: "Allow Once" })).toHaveCount(0);
+  await expect(card.getByText(/^Allowed for this session:/)).toBeAttached();
+  await expect(question).toHaveCount(0);
+  await expect(composer).toHaveText("Keep this draft during approval");
 });
 
-test("tool output, code blocks and tables stay usable in a narrow Agents panel", async ({ workbench: page }) => {
+test("tool output, code blocks and tables stay usable in a narrow Agents panel", async ({
+  workbench: page,
+}, testInfo) => {
   await seed(page);
   const agents = page.getByRole("region", { name: "Agents" });
-  const stream = agents.locator("[data-agent-stream]");
+  const stream = agents.locator('div[data-selection-scope][tabindex="-1"]');
   await stream.evaluate((element) => {
     element.scrollTop = 0;
     element.dispatchEvent(new Event("scroll"));
   });
   await expect(agents.getByRole("button", { name: "Copy Code" })).toHaveCount(1);
-  const group = agents.locator("details").filter({ has: page.getByText("Terminal", { exact: true }) });
+  await agents.getByText("Ran 2 commands", { exact: true }).click();
+  const group = agents
+    .locator("details")
+    .filter({ has: page.getByText("Terminal", { exact: true }) })
+    .last();
   await expect(group).not.toHaveAttribute("open");
   await group.locator("summary").first().click();
   const first = group.locator("details").filter({ has: page.getByText("go test ./...", { exact: true }) });
@@ -256,8 +288,8 @@ test("tool output, code blocks and tables stay usable in a narrow Agents panel",
   });
   await expect.poll(() => stream.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
   await expect(agents.getByRole("button", { name: "Agent sessions" })).toBeVisible();
-  await expect(agents.getByRole("button", { name: "Allow once" })).toBeVisible();
-  await page.screenshot({ path: "/tmp/openidea-agents-ui-narrow.png", animations: "disabled" });
+  await expect(agents.getByRole("button", { name: "Allow Once" })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("agents-ui-narrow.png"), animations: "disabled" });
   await page.evaluate(async () => {
     const path = "/src/workbench/toolwindows/store.ts";
     (await import(path)).setToolWindowSize("right", 640);
@@ -265,13 +297,13 @@ test("tool output, code blocks and tables stay usable in a narrow Agents panel",
   await stream.evaluate((element) => {
     element.scrollTop = 0;
   });
-  await page.screenshot({ path: "/tmp/openidea-agents-ui-wide.png", animations: "disabled" });
+  await page.screenshot({ path: testInfo.outputPath("agents-ui-wide.png"), animations: "disabled" });
   await page.evaluate(async () => {
     const path = "/src/workbench/theme.ts";
     (await import(path)).useThemeOverride.setState({ theme: "dark" });
   });
-  await agents.screenshot({ path: "/tmp/openidea-agents-ui-dark.png", animations: "disabled" });
+  await agents.screenshot({ path: testInfo.outputPath("agents-ui-dark.png"), animations: "disabled" });
   await agents.getByRole("button", { name: "Agent sessions" }).click();
-  await agents.screenshot({ path: "/tmp/openidea-agents-ui-history.png", animations: "disabled" });
+  await agents.screenshot({ path: testInfo.outputPath("agents-ui-history.png"), animations: "disabled" });
   await page.keyboard.press("Escape");
 });

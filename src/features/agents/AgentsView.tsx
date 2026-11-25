@@ -50,7 +50,8 @@ import {
   useAgents,
 } from "./store";
 import { sendPaths } from "./references";
-import { groupMenu, taskMenu } from "./taskActions";
+import { canArchive, groupMenu, taskMenu } from "./taskActions";
+import { setFocusedTaskList } from "./taskListFocus";
 import { groupMembers, pinnedMembers, ungroupedMembers, type OrganizeGroup } from "./organize";
 import { matchTask } from "./taskSearch";
 import { SessionEditor } from "./SessionEditor";
@@ -284,7 +285,13 @@ export function AgentsView() {
         previous.focus({ preventScroll: true });
     };
   }, [historyOpen, loaded, inline, docked]);
+  const selectedRef = useRef(selected);
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+  useEffect(() => () => setFocusedTaskList(null), []);
   const organize = useAgents((s) => s.organize);
+  const pinned = useMemo(() => new Set(organize.pinned), [organize.pinned]);
   const treeRef = useRef<TreeHandle>(null);
   // While searching: the matching tasks of every section, collapsed ones included; empty sections go.
   const matches = useMemo(() => {
@@ -362,8 +369,43 @@ export function AgentsView() {
   const dragTask = (e: ReactPointerEvent<HTMLSpanElement>, task: string) =>
     startPointerDrag(e, e.currentTarget, { type: TASK_DRAG, payload: task });
 
+  // The tasks under `task` in its section, for Archive All Below.
+  const tasksBelow = (task: string): AgentTask[] => {
+    for (const root of roots) {
+      const members = root.kind === "group" ? root.group.tasks : root.kind === "task" ? [] : root.tasks;
+      const at = members.findIndex((t) => t.id === task);
+      if (at >= 0) return members.slice(at + 1);
+    }
+    return [];
+  };
+  const rowButton = (label: string, icon: "pin" | "archive", run: () => void) => (
+    <button
+      type="button"
+      className={styles.rowAction}
+      aria-label={tx(label)}
+      title={tx(label)}
+      // The row selects on mouse down and opens on double click; these buttons do neither.
+      onPointerDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        run();
+      }}
+    >
+      <Icon name={icon} size={14} />
+    </button>
+  );
+
   const taskList = (
-    <div className={styles.tasks}>
+    <div
+      className={styles.tasks}
+      onFocus={() => setFocusedTaskList(() => [...selectedRef.current])}
+      onBlur={(e) => {
+        if (!(e.relatedTarget instanceof Element && e.currentTarget.contains(e.relatedTarget)))
+          setFocusedTaskList(null);
+      }}
+    >
       <div className={styles.historySearch}>
         <SearchField
           ref={searchRef}
@@ -451,7 +493,7 @@ export function AgentsView() {
             const task = tasks.get(id);
             return task ? [task] : [];
           });
-          showContextMenu(e, taskMenu(selection));
+          showContextMenu(e, taskMenu(selection, selection.length === 1 ? tasksBelow(n.task.id) : []));
         }}
         renderNode={(n) => {
           switch (n.kind) {
@@ -484,7 +526,6 @@ export function AgentsView() {
                     if (inline && !e.metaKey && !e.ctrlKey && !e.shiftKey) showTask(n.task.id);
                   }}
                 >
-                  <TaskStatusIcon status={n.task.status} />
                   <span className={styles.taskSummary}>
                     <span className={styles.title} data-unread={unread.has(n.task.id) || undefined}>
                       {matches?.get(n.task.id)?.length ? (
@@ -496,12 +537,32 @@ export function AgentsView() {
                     <span className={styles.detail}>
                       {providerName(n.task.provider)}
                       {n.task.model ? ` · ${n.task.model}` : ""}
-                      {n.task.isolation === "worktree" ? ` · ${branchLabel(n.task.branch)}` : ""}
-                      {project?.workspace ? ` · ${basename(n.task.projectRoot ?? project.root)}` : ""}
                     </span>
                   </span>
                   {unread.has(n.task.id) && (
                     <span className={styles.unreadDot} role="img" aria-label={tx("Unread")} title={tx("Unread")} />
+                  )}
+                  {project?.workspace && (
+                    <span className={styles.taskProject} title={n.task.projectRoot ?? project.root}>
+                      {basename(n.task.projectRoot ?? project.root)}
+                    </span>
+                  )}
+                  {n.task.isolation === "worktree" && (
+                    <span className={styles.detail}>{branchLabel(n.task.branch)}</span>
+                  )}
+                  <span className={styles.rowActions}>
+                    {pinned.has(n.task.id)
+                      ? rowButton("Unpin", "pin", () => pinTasks([n.task.id], false))
+                      : rowButton("Pin", "pin", () => pinTasks([n.task.id], true))}
+                    {canArchive(n.task) &&
+                      rowButton("Archive", "archive", () => void executeAction("agents.archiveTasks", [n.task.id]))}
+                  </span>
+                  {/* Ready tasks say so by their group; the others show what they're doing, in a column
+                      beside the age so the marks line up whatever the title length. */}
+                  {n.task.status !== "ready" && (
+                    <span className={styles.status}>
+                      <TaskStatusIcon status={n.task.status} />
+                    </span>
                   )}
                   <span className={styles.age}>{age(n.task.updatedMs ?? 0)}</span>
                 </span>

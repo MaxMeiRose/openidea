@@ -125,6 +125,38 @@ describe("project view context menu", () => {
     }
   });
 
+  it("passes the selected Project view directory to Commit…", () => {
+    const items = contextMenuItems([node("/p/module", true)]);
+    const git = items.find((item) => item.kind !== "separator" && item.kind !== "header" && item.label === "Git");
+    const commit =
+      git && "submenu" in git
+        ? git.submenu?.find((item) => item.kind !== "separator" && item.kind !== "header" && item.label === "Commit…")
+        : undefined;
+
+    expect(commit).toMatchObject({ kind: "action", action: "vcs.commit", arg: "/p/module" });
+  });
+
+  it("offers the GitHub group in the Git menu, like the editor menus do", () => {
+    const dispose = registerActions(
+      ["github.pullRequests", "github.createPullRequest", "github.checkoutPullRequest", "github.openInBrowser"].map(
+        (id) => ({ id, title: id, when: "projectOpen", run: () => undefined }),
+      ),
+    );
+    try {
+      const git = resolveMenuItems(contextMenuItems([node(`${ROOT}/a.py`)])).find((r) => r.label === "Git")!;
+      const isLabelled = (i: MenuItem): i is Extract<MenuItem, { kind?: "item" }> => "label" in i;
+      const subs = git.submenu!.filter(isLabelled).find((i) => i.label === "GitHub")?.submenu;
+      expect(subs && resolveMenuItems(subs).map((i) => i.key)).toEqual([
+        "github.pullRequests",
+        "github.createPullRequest",
+        "github.checkoutPullRequest",
+        "github.openInBrowser",
+      ]);
+    } finally {
+      dispose();
+    }
+  });
+
   it("lists contributed links in Copy Path/Reference…", () => {
     disposers.push(
       registerMenuGroup({
@@ -141,6 +173,22 @@ describe("project view context menu", () => {
       "Path From Content Root",
       "-",
       "Link /p/src true",
+    ]);
+  });
+
+  it("lists contributed links in Copy Path/Reference… of library files too", () => {
+    disposers.push(
+      registerMenuGroup({
+        id: "test.link",
+        menus: ["copyPath"],
+        items: (_menu, ctx) => [{ label: `Link ${ctx.paths.join()}`, verbatim: true, run: () => undefined }],
+      }),
+    );
+    expect(sub(contextMenuItems([{ ...node("/root/.m2/lib.jar"), readOnly: true }]), "Copy Path/Reference…")).toEqual([
+      "Absolute Path",
+      "File Name",
+      "-",
+      "Link /root/.m2/lib.jar",
     ]);
   });
 

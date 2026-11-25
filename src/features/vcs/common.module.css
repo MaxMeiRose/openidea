@@ -161,17 +161,22 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* Checkable changes tree in the Shelve / Create Patch dialogs. */
+/* Checkable changes tree in the Shelve / Create Patch / Rollback dialogs. */
 .fileTree {
   display: flex;
+  flex-direction: column;
   height: 260px;
   margin: 0 14px;
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
+  overflow: hidden;
 }
 .fileTreeView {
   flex: 1;
   min-width: 0;
+  min-height: 0;
+  /* Override Tree's `height: 100%`: WebKit doesn't resolve percentage heights against a flex-basis height. */
+  height: auto;
 }
 .fileTreeRow {
   composes: fileRow;
@@ -243,6 +248,12 @@
   flex-wrap: wrap;
   max-width: 100%;
   font-size: var(--fs-ui);
+}
+/* A bare inline span puts its inline-flex checkbox child on the text baseline,
+   lifting it above the sibling controls; keep the tooltip wrapper centred. */
+.pushOptionWrap {
+  display: inline-flex;
+  align-items: center;
 }
 .pushTargetBar {
   display: flex;
@@ -791,6 +802,36 @@
   align-items: center;
   gap: var(--space-0-5);
 }
+.worktreeFields {
+  display: grid;
+  grid-template-columns: fit-content(44%) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.worktreeFields > :not(.worktreeLabel) {
+  grid-column: 2;
+  min-width: 0;
+}
+.worktreeLabel {
+  grid-column: 1;
+  min-width: 0;
+  font-size: var(--fs-ui);
+  overflow-wrap: anywhere;
+}
+.worktreeFields > .worktreeOptions {
+  display: flex;
+  flex-direction: column;
+  grid-column: 1 / -1;
+  gap: var(--space-2);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
+}
+.worktreeCopyOptions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
 .worktreeLocation {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -800,6 +841,9 @@
 .worktreeTarget {
   color: var(--fg-muted);
   overflow-wrap: anywhere;
+}
+.worktreeFields > .worktreeTarget {
+  font-size: var(--fs-small);
 }
 .comparisonDialog > [data-dialog-body] {
   display: flex;
@@ -878,12 +922,18 @@
 .comparisonTree {
   flex: 1;
   min-width: 0;
+  min-height: 0;
+  /* Stretch instead of Tree's `height: 100%`: WebKit doesn't resolve percentage heights against a flex-basis height. */
+  height: auto;
+  align-self: stretch;
   border: 1px solid var(--border);
 }
 .comparisonWithDiff .comparisonTree {
   flex: 0 0 30%;
 }
 .comparisonDiff {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-width: 0;
   min-height: 0;

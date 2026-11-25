@@ -60,6 +60,7 @@ pub struct Settings {
     pub spelling: SpellingSettings,
     /// Tools › SSH Configurations.
     pub ssh: SshSettings,
+    pub remote_development: RemoteDevelopmentSettings,
     /// Build, Execution, Deployment › Deployment.
     pub deployment: DeploymentSettings,
     /// Build, Execution, Deployment › Run Targets.
@@ -144,7 +145,7 @@ impl Default for AgentSettings {
             show_work_time: true,
             show_usage_limits: true,
             show_cost: false,
-            fold_turns: true,
+            fold_turns: false,
             smooth_text: true,
             fit_window_width: false,
             thinking: ThinkingDisplay::Auto,
@@ -578,6 +579,7 @@ impl Default for Settings {
             inspections: InspectionSettings::default(),
             spelling: SpellingSettings::default(),
             ssh: SshSettings::default(),
+            remote_development: RemoteDevelopmentSettings::default(),
             deployment: DeploymentSettings::default(),
             run_targets: Vec::new(),
             cmake: CMakeSettings::default(),
@@ -939,6 +941,8 @@ pub struct FileIconThemeOptions {
 #[serde(default, rename_all = "camelCase")]
 pub struct MainToolbarSettings {
     pub left: Vec<String>,
+    /// Centred in the toolbar (between the other two groups when they leave too little room).
+    pub center: Vec<String>,
     pub right: Vec<String>,
     /// Widgets the user removed.
     pub hidden: Vec<String>,
@@ -1208,11 +1212,13 @@ pub struct LanguagesSettings {
     pub oxfmt: ExternalFormatterSettings,
     pub biome: ExternalFormatterSettings,
     pub ruff: ExternalFormatterSettings,
+    pub black: ExternalFormatterSettings,
     pub java: JavaSettings,
     pub ruby: RubySettings,
     pub markdown: MarkdownSettings,
     pub arduino: ArduinoSettings,
     pub zig: ZigSettings,
+    pub flutter: FlutterSettings,
 }
 
 impl Default for LanguagesSettings {
@@ -1235,11 +1241,16 @@ impl Default for LanguagesSettings {
                 languages: vec!["python".into()],
                 ..ExternalFormatterSettings::default()
             },
+            black: ExternalFormatterSettings {
+                languages: vec!["python".into()],
+                ..ExternalFormatterSettings::default()
+            },
             java: JavaSettings::default(),
             ruby: RubySettings::default(),
             markdown: MarkdownSettings::default(),
             arduino: ArduinoSettings::default(),
             zig: ZigSettings::default(),
+            flutter: FlutterSettings::default(),
         }
     }
 }
@@ -1304,6 +1315,7 @@ impl LanguagesSettings {
             ExternalFormatter::Oxfmt => &self.oxfmt,
             ExternalFormatter::Biome => &self.biome,
             ExternalFormatter::Ruff => &self.ruff,
+            ExternalFormatter::Black => &self.black,
         }
     }
 }
@@ -1316,6 +1328,7 @@ pub enum ExternalFormatter {
     Oxfmt,
     Biome,
     Ruff,
+    Black,
 }
 
 impl ExternalFormatter {
@@ -1326,6 +1339,7 @@ impl ExternalFormatter {
             Self::Oxfmt => "oxfmt",
             Self::Biome => "biome",
             Self::Ruff => "ruff",
+            Self::Black => "black",
         }
     }
 }
@@ -1334,7 +1348,7 @@ impl ExternalFormatter {
 pub const BIOME_LANGUAGES: [&str; 8] =
     ["css", "graphql", "javascript", "javascriptreact", "typescript", "typescriptreact", "json", "jsonc"];
 
-/// An external formatter (Prettier, oxfmt, Biome, Ruff) and the languages it formats.
+/// An external formatter (Prettier, oxfmt, Biome, Ruff, Black) and the languages it formats.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ExternalFormatterSettings {
@@ -1396,6 +1410,9 @@ pub struct PythonSettings {
     pub hide_other_project_interpreters: bool,
     /// Show each interpreter's path under its name on the interpreters page.
     pub show_interpreter_paths: bool,
+    /// Folders the user added to an interpreter's `sys.path` (All Interpreters › Show Paths),
+    /// by interpreter executable; absolute or `~/`.
+    pub interpreter_paths: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for PythonSettings {
@@ -1407,6 +1424,7 @@ impl Default for PythonSettings {
             hidden_interpreters: Vec::new(),
             hide_other_project_interpreters: false,
             show_interpreter_paths: true,
+            interpreter_paths: BTreeMap::new(),
         }
     }
 }
@@ -1497,6 +1515,15 @@ impl Default for RustSettings {
 pub struct ZigSettings {
     /// Directory holding the `zig` executable; empty = the one on `PATH`.
     pub zig: String,
+}
+
+/// The Flutter plugin's "Flutter SDK path".
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FlutterSettings {
+    /// Flutter SDK root (holding `bin/flutter`); its `flutter` and Dart replace the ones on
+    /// `PATH`. Empty = `PATH`.
+    pub sdk: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
@@ -1641,6 +1668,20 @@ pub struct MavenSettings {
     /// Always update snapshots (`-U`): Maven checks remote repositories for newer SNAPSHOT
     /// dependencies on every sync, build and run, and jdtls on import (`java.maven.updateSnapshots`).
     pub update_snapshots: bool,
+    /// Who runs the JUnit 5 tests of the gutter's Run / Debug.
+    pub run_tests_using: MavenRunTestsUsing,
+}
+
+/// Build Tools › Maven › Run tests using. IDEA runs a Maven project's tests itself unless its build
+/// and run actions are delegated to Maven.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum MavenRunTestsUsing {
+    /// OpenIDEA's JUnit Platform runner on the language server's test classpath (`java/junit-runner`).
+    #[default]
+    Ide,
+    /// Surefire (`mvn test -Dtest=…`).
+    Maven,
 }
 
 impl MavenSettings {
@@ -2095,8 +2136,10 @@ mod tests {
         assert!(old.agents.show_cost);
         assert!(old.agents.show_context_usage && old.agents.show_work_time && old.agents.show_usage_limits);
         assert!(!old.agents.fit_window_width);
+        assert!(!old.agents.fold_turns);
         assert!(!Settings::default().agents.show_cost);
         assert!(!Settings::default().agents.fit_window_width);
+        assert!(!Settings::default().agents.fold_turns);
         let mut settings = Settings::default();
         settings.agents.show_usage_limits = false;
         settings.agents.fit_window_width = true;
@@ -2314,6 +2357,7 @@ mod maven_linkage_tests {
         let old: MavenSettings = serde_json::from_str(r#"{"home":"/opt/maven"}"#).unwrap();
         assert!(old.runner_jre.is_empty());
         assert!(!old.delegate_build);
+        assert_eq!(old.run_tests_using, MavenRunTestsUsing::Ide);
         assert!(MavenSettings::default().runner_jre.is_empty());
         let settings = MavenSettings { runner_jre: "/opt/jdk-21".into(), delegate_build: true, ..old };
         let encoded = serde_json::to_string(&settings).unwrap();

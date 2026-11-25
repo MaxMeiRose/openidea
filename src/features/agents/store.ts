@@ -27,15 +27,16 @@ import { auxiliaryWindow, windowLabel } from "@/platform/auxWindow";
 import { routeToWindow, taskWindowDraft, taskWindowFocused, updateTaskWindowDraft } from "./taskWindowRouting";
 import { clearAgentTaskFontZoom, resetAllAgentFontZoom } from "./fontZoom";
 import { clearDismissedAssets } from "./sessionAssetsModel";
-import { useSkillsCatalog } from "./skillsModel";
+import { useSkillsCatalog, useSkillsCatalogSync } from "./skillsModel";
 import { basename, useProject } from "@/platform/project";
+import { projectLocation } from "@/platform/remote";
 import { defaultTaskProject } from "./project";
 import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
 import { editorService, notifications, notifyTabTitlesChanged, toolWindowService } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
 import { confirm, showError } from "@/workbench/messages";
 import {
-  bypassDefaults,
+  approvalDefaults,
   canSend,
   shellCommand,
   cursorModelDefaults,
@@ -61,6 +62,7 @@ import {
   type TaskOrganize,
 } from "./organize";
 import {
+  CHANGES_KIND,
   HOME_KEY,
   HOME_KIND,
   SESSION_KIND,
@@ -136,7 +138,7 @@ interface AgentsState {
   external: ExternalSession[];
   /** Why the external sessions could not be listed. */
   externalError: string | null;
-  /** The Import Sessions from Other Apps dialog is open. */
+  /** The Import Sessions dialog is open. */
   importOpen: boolean;
   /** External sessions being imported (`provider:sessionId`), so none is imported twice. */
   importing: ReadonlySet<string>;
@@ -290,6 +292,7 @@ export function draftConfig(
   provider: AgentProvider | undefined,
   draft: Draft,
   defaults: Record<string, string> = providerDefaults(provider?.id),
+  newTaskApprovals: "bypass" | "ask" = useProject.getState().settings?.agents?.newTaskApprovals ?? "bypass",
 ): AgentConfigOption[] {
   const catalog = provider && useAgents.getState().modelCatalogs.get(provider.id);
   const offered = catalog?.config ?? provider?.config ?? [];
@@ -298,27 +301,31 @@ export function draftConfig(
     priorModel && draft.config[priorModel.id] !== undefined && !offered.some((o) => o.category === "model")
       ? [...offered, { ...priorModel, values: [] }]
       : offered;
-  const config = source
-    .filter((o) => !isPerModelOption(o))
-    .map((o) => {
-      const explicit = draft.config[o.id];
-      const choice = explicit ?? defaults[o.id];
-      return {
-        ...o,
-        defaultValue: o.defaultValue ?? o.current,
-        current:
-          o.category === "model" && explicit !== undefined
-            ? explicit
-            : choice !== undefined && o.values.some((v) => v.value === choice)
-              ? choice
-              : o.current,
-      };
-    });
+  const base = source.filter((o) => !isPerModelOption(o));
+  const approvals = approvalDefaults(base, newTaskApprovals);
+  const config = base.map((o) => {
+    const explicit = draft.config[o.id];
+    const choice = explicit ?? defaults[o.id] ?? approvals[o.id];
+    return {
+      ...o,
+      defaultValue: o.defaultValue ?? o.current,
+      current:
+        o.category === "model" && explicit !== undefined
+          ? explicit
+          : choice !== undefined && o.values.some((v) => v.value === choice)
+            ? choice
+            : o.current,
+    };
+  });
   const model = config.find((o) => o.category === "model")?.current;
   if (model) {
     config.push(
-      ...(draftModelSettings((catalog ?? provider)?.thoughtLevels?.[model], draft.thoughtLevels?.[model], defaults) ??
-        []),
+      ...(draftModelSettings(
+        (catalog ?? provider)?.thoughtLevels?.[model],
+        draft.thoughtLevels?.[model],
+        defaults,
+        provider?.id,
+      ) ?? []),
     );
   }
   return config;
@@ -328,9 +335,12 @@ export function draftModelSettings(
   options: AgentConfigOption[] | undefined,
   choices: Record<string, string> | undefined,
   defaults: Record<string, string>,
+  providerId?: string,
 ) {
-  return options?.map((o) => {
-    const choice = choices?.[o.id] ?? defaults[o.id];
+  if (!options) return undefined;
+  const modelDefaults = cursorModelDefaults(providerId, options);
+  return options.map((o) => {
+    const choice = choices?.[o.id] ?? defaults[o.id] ?? modelDefaults[o.id];
     return {
       ...o,
       defaultValue: o.defaultValue ?? o.current,
@@ -397,6 +407,11 @@ function setUnread(task: string, value: boolean) {
   if (value) unread.add(task);
   else unread.delete(task);
   useAgents.setState({ unread });
+}
+
+/** Marks tasks read or unread from the list's menu. */
+export function setTasksUnread(tasks: readonly string[], value: boolean) {
+  for (const task of tasks) setUnread(task, value);
 }
 
 function markUnread(task: string) {
@@ -585,7 +600,7 @@ export async function connect(): Promise<void> {
     return;
   }
   if (gen !== generation) return;
-  const organizeRoot = useProject.getState().project?.root ?? null;
+  const organizeRoot = projectLocation(useProject.getState().project?.root);
   useAgents.setState({
     loaded: true,
     error: null,
@@ -618,12 +633,16 @@ export async function connect(): Promise<void> {
   // Restored tabs of tasks deleted meanwhile close, like editors of deleted files.
   for (const t of tabs) {
     const task = (t.input.data as { task?: string } | undefined)?.task;
-    if (t.input.kind === SESSION_KIND && task && !useAgents.getState().tasks.has(task))
+    if (
+      (t.input.kind === SESSION_KIND || t.input.kind === CHANGES_KIND) &&
+      task &&
+      !useAgents.getState().tasks.has(task)
+    )
       await editors.closeInput?.(t.input.key);
   }
 }
 
-type EntryEvent = Extract<AgentEvent, { type: "entry" | "append" }>;
+type EntryEvent = Extract<AgentEvent, { type: "entry" | "append" | "toolOutput" }>;
 
 /** Entry events that arrived while their conversation loaded, applied on top of the copy it loads. */
 const arrivedWhileLoading = new Map<string, EntryEvent[]>();
@@ -632,7 +651,7 @@ const streamingReply = new Map<string, { index: number; reply: boolean }>();
 
 /** `entries` with the event applied; `null` when the copy can't take it. */
 function applyEntryEvent(entries: AgentEntry[], e: EntryEvent): AgentEntry[] | null {
-  if (e.type === "append") return appendEntry(entries, e.index, e.from, e.text);
+  if (e.type === "append" || e.type === "toolOutput") return appendEntry(entries, e.index, e.from, e.text);
   const have = entries[e.index];
   // Sent before the loaded copy was read: that copy already holds more of the message.
   if (
@@ -731,7 +750,9 @@ function dropTaskCache(taskId: string) {
 function isTaskOpenInUi(taskId: string): boolean {
   if (useAgents.getState().docked === taskId) return true;
   return (editorService().openTabs?.() ?? []).some(
-    (t) => t.input.kind === SESSION_KIND && (t.input.data as { task?: string } | undefined)?.task === taskId,
+    (t) =>
+      (t.input.kind === SESSION_KIND || t.input.kind === CHANGES_KIND) &&
+      (t.input.data as { task?: string } | undefined)?.task === taskId,
   );
 }
 
@@ -890,6 +911,10 @@ function onEvent(e: AgentEvent) {
         const streaming = streamingReply.get(e.task);
         if (shown ? shown.type === "agent" : streaming?.index === e.index && streaming.reply) markUnread(e.task);
       }
+      onEntryEvent(s, e);
+      break;
+    }
+    case "toolOutput": {
       onEntryEvent(s, e);
       break;
     }
@@ -1114,6 +1139,8 @@ export function useAgentCommands(
   offered: readonly AgentCommand[],
 ): readonly AgentCommand[] {
   const skillOverrides = useAgents((s) => (task ? s.tasks.get(task)?.skillOverrides : s.draft.skillOverrides));
+  // The server's draft commands omit skills that only this draft has enabled.
+  useSkillsCatalogSync(task === null && Object.values(skillOverrides ?? {}).some((mode) => mode !== "off"));
   const catalogSkills = useSkillsCatalog((s) => s.skills);
   const [found, setFound] = useState<{
     for: unknown[];
@@ -1348,17 +1375,9 @@ export async function startTask(
     )
   )
     return;
-  const askForApprovals = useProject.getState().settings?.agents?.newTaskApprovals === "ask";
-  const defaults = {
-    ...cursorModelDefaults(draft.provider, options),
-    ...(askForApprovals ? {} : bypassDefaults(options)),
-    ...providerDefaults(draft.provider),
-  };
-  const config = options.flatMap((o) => {
-    const value =
-      o.category === "model" || isPerModelOption(o) ? o.current : (draft.config[o.id] ?? defaults[o.id] ?? null);
-    return value !== null && o.values.some((v) => v.value === value) ? [{ id: o.id, value }] : [];
-  });
+  const config = options.flatMap((o) =>
+    o.current !== null && o.values.some((v) => v.value === o.current) ? [{ id: o.id, value: o.current }] : [],
+  );
   try {
     const task = await call(
       commands.agentCreate({
@@ -1626,24 +1645,44 @@ async function stopForEdit(task: string) {
 
 /**
  * Runs the conversation again from turn `turn` with `text` as its message: the agent is
- * stopped if it works, that turn and the later ones are dropped, then `text` is sent.
+ * stopped if it works, that turn and the later ones are dropped and the files they changed
+ * put back, then `text` is sent.
  * Whatever fails, the message is kept in the composer so it can be sent again.
  */
-export async function rerunFrom(task: string, turn: number, text: string, images: AgentImage[] = []): Promise<boolean> {
-  if (
-    turn === 0 &&
+export async function rerunFrom(
+  task: string,
+  turn: number,
+  text: string,
+  images: AgentImage[] = [],
+  confirmRewind?: { title: string; later?: boolean },
+): Promise<boolean> {
+  if (turn === 0) {
+    if (
+      !(await confirm({
+        title: "Start a Fresh Agent Session",
+        message:
+          "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.",
+        ok: "Start Fresh",
+        icon: "warning",
+      }))
+    )
+      return false;
+  } else if (
+    confirmRewind &&
     !(await confirm({
-      title: "Start a Fresh Agent Session",
-      message:
-        "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are.",
-      ok: "Start Fresh",
+      title: confirmRewind.title,
+      message: confirmRewind.later
+        ? "The messages after this one are replaced, and the files the agent changed since go back to how they were before this message was sent."
+        : "The files the agent changed since go back to how they were before this message was sent.",
+      ok: "Roll Back",
       icon: "warning",
     }))
-  )
+  ) {
     return false;
+  }
   try {
     await stopForEdit(task);
-    await call(commands.agentRollback(task, turn));
+    await call(commands.agentRollback(task, turn, true));
     await call(commands.agentPrompt(task, { text, files: [], images }, false));
   } catch (e) {
     restoreComposer(task, text, images);
@@ -1652,11 +1691,14 @@ export async function rerunFrom(task: string, turn: number, text: string, images
   return true;
 }
 
-/** Drops `turn` and the later turns, and puts the message back in the composer to edit. */
-export async function retractFrom(task: string, turn: number, text: string, images: AgentImage[] = []): Promise<void> {
+/**
+ * Rolls back to before `turn`: drops it and the later turns, puts back the files they changed,
+ * and puts the message back in the composer to edit.
+ */
+export async function rollBackTo(task: string, turn: number, text: string, images: AgentImage[] = []): Promise<void> {
   try {
     await stopForEdit(task);
-    const prompt = await call(commands.agentRollback(task, turn));
+    const prompt = await call(commands.agentRollback(task, turn, true));
     // The agent only hands back the text; the images come from the message itself.
     restoreComposer(task, prompt?.text ?? text, images);
   } catch (e) {
@@ -1778,6 +1820,22 @@ export interface ReferenceTarget {
   lines?: { from: number; to: number };
 }
 
+/** The active composer's task and path roots for agent references. */
+export function composerReferenceContext(target?: string) {
+  const state = useAgents.getState();
+  const requested = target ?? activeComposerKey();
+  const key = requested !== HOME && state.tasks.has(requested) ? requested : HOME;
+  const task = key === HOME ? null : (useAgents.getState().tasks.get(key) ?? null);
+  const project = useProject.getState().project;
+  const root = (task ? task.cwd : homeProjectRoot()) ?? "";
+  const roots = {
+    root,
+    projectRoot: (task ? (task.projectRoot ?? project?.root) : null) ?? root,
+    members: project?.workspace?.projects,
+  };
+  return { key, task, roots };
+}
+
 /**
  * Adds `@file` references (with an optional line range) to the composer on show (else the one
  * typed in last) and shows it: IDEA-style "send this to the chat". Paths resolve like the
@@ -1797,22 +1855,12 @@ export function appendToComposer(
   targets: readonly ReferenceTarget[] = [],
   target?: string,
 ): number {
-  const s = useAgents.getState();
-  const requested = target ?? activeComposerKey();
-  const key = requested !== HOME && s.tasks.has(requested) ? requested : HOME;
-  const task = key === HOME ? null : s.tasks.get(key)!;
-  const project = useProject.getState().project;
-  const root = task ? task.cwd : homeProjectRoot();
-  const roots = {
-    root: root ?? "",
-    projectRoot: (task ? (task.projectRoot ?? project?.root) : null) ?? root ?? "",
-    members: project?.workspace?.projects,
-  };
+  const { key, task, roots } = composerReferenceContext(target);
   const current = composerDraft(key);
   const files: FileRef[] = [];
   const mentions: string[] = [];
   for (const { path, lines } of targets) {
-    const ref = root ? referenceOf(roots, path) : null;
+    const ref = roots.root ? referenceOf(roots, path) : null;
     if (!ref) continue;
     // A folder keeps its trailing slash, so its chip is a folder reference.
     const rel = /[\\/]$/.test(path) && ref.rel !== "." ? `${ref.rel}/` : ref.rel;

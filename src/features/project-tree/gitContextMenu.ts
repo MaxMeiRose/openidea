@@ -55,3 +55,38 @@ export function repositoryAction(id: string, label: string, repos: readonly stri
     })),
   };
 }
+
+const REPOSITORY_ACTIONS = new Set([
+  "vcs.push",
+  "vcs.pull",
+  "vcs.fetch",
+  "vcs.merge",
+  "vcs.rebase",
+  "vcs.branches",
+  "vcs.newBranch",
+  "vcs.checkoutRevision",
+  "vcs.newTag",
+  "vcs.resetHead",
+  "vcs.stash",
+  "vcs.unstash",
+  "vcs.manageRemotes",
+  "github.pullRequests",
+  "github.createPullRequest",
+  "github.checkoutPullRequest",
+  "github.openInBrowser",
+]);
+
+/** Repository operations in a shared Git menu use the repositories of its selection. */
+export function scopeRepositoryActions(items: readonly MenuItem[], repos: readonly string[]): MenuItem[] {
+  return items.flatMap((item): MenuItem[] => {
+    if (item.kind === "action" && REPOSITORY_ACTIONS.has(item.action)) {
+      const label = typeof item.label === "string" ? item.label : (getAction(item.action)?.title ?? item.action);
+      const scoped = repositoryAction(item.action, label, repos);
+      return scoped ? [scoped] : [];
+    }
+    if ("submenu" in item && item.submenu) {
+      return [{ ...item, submenu: scopeRepositoryActions(item.submenu, repos) }];
+    }
+    return [item];
+  });
+}

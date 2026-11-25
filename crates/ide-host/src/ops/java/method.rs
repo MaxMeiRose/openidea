@@ -33,7 +33,7 @@ pub async fn prepare(
         let maven = ide_sdk::apply::maven_command(&project.root, &settings)
             .or(wrapper)
             .or_else(|| {
-                ide_run::which::find_executable(
+                ide_core::process::find_executable(
                     if cfg!(windows) { "mvn.cmd" } else { "mvn" },
                     &std::env::var_os("PATH").unwrap_or_default(),
                 )

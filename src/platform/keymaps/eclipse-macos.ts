@@ -15,6 +15,8 @@ export const eclipseMacos: Record<string, string[]> = {
   "refactor.changeSignature": ["Alt+Meta+C"],
   "db.modifyTable": ["Alt+Meta+C"],
   "vcs.commit": [],
+  // Eclipse gives ⌃⇧Space to Parameter Info / Quick Documentation.
+  "code.smartTypeCompletion": [],
   "editor.closeTab": ["Meta+W"],
   "toolwindow.closeContent": ["Meta+W"],
   "editor.closeAllTabs": ["Meta+Shift+W"],
@@ -111,6 +113,8 @@ export const eclipseMacos: Record<string, string[]> = {
   "navigate.prevOccurrence": [],
   "editor.prevTab": ["Shift+Meta+F6", "Meta+Alt+Left"],
   "db.previousResultTab": ["Shift+Meta+F6", "Meta+Alt+Left"],
+  "editor.moveToPageTop": [],
+  "editor.moveToPageBottom": [],
   "code.quickDocumentation": ["F2"],
   "db.quickDoc": ["F2"],
   "localHistory.recentChanges": [],

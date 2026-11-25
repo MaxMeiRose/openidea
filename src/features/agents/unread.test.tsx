@@ -15,7 +15,7 @@ import {
 import { AgentsView } from "./AgentsView";
 import { AgentsStatus } from "./AgentsStatus";
 import { activate } from "./index";
-import { openChangeDiff } from "./session/ChangesPane";
+import { openChangeDiff } from "./session/ChangesTab";
 import * as actions from "@/platform/actions";
 import { registerActions } from "@/platform/actions";
 import { commands } from "@/platform/ipc";
@@ -539,7 +539,7 @@ describe("docking a conversation in the tool window", () => {
       expect(sendPaths(["/projects/b/src/other.go"])).toBe(true);
     });
     expect(toPrompt(useAgents.getState().composers.get("one")!)).toMatchObject({
-      text: "@src/main.go:2 @/projects/b/src/other.go",
+      text: "@src/main.go:2 @b/src/other.go",
       files: ["/worktrees/a/src/main.go", "/projects/b/src/other.go"],
     });
     expect(useAgents.getState().composers.has("two")).toBe(false);

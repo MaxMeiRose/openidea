@@ -1,11 +1,12 @@
 /** Context menu and "New" popup of the project view. */
 import { executeAction, getAction } from "@/platform/actions";
+import { getContext } from "@/platform/context";
 import { canOpenWithSystemApp, canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import { formatBinding, hostBinding, isMacHost, shortcutLabel } from "@/platform/keymap";
 import { projectFolder, relativePath, useProject } from "@/platform/project";
 import { attachedProjectOf, currentDetectedRoots, currentRoots } from "@/platform/projectRoots";
 import type { MenuItem } from "@/ui";
-import { menuGroupItems, toolWindowService, type MenuGroupContext } from "@/workbench/contributions";
+import { menuGroupItems, gitMenuItems, toolWindowService, type MenuGroupContext } from "@/workbench/contributions";
 import type { FolderRole } from "@/platform/languageSettings";
 import { directoryRole, markDirectory } from "./markDirectory";
 import { fileColorMenu } from "./fileColor";
@@ -31,11 +32,10 @@ import {
   reformatNodes,
   reloadFromDisk,
   revealInFinder,
-  vcsArg,
 } from "./operations";
 import { canDownload } from "./download";
 import { isSameOrInside } from "./paths";
-import { repositoriesForSelection, repositoryAction } from "./gitContextMenu";
+import { repositoriesForSelection, scopeRepositoryActions } from "./gitContextMenu";
 import { useVcs } from "@/features/vcs/store";
 import { useProjectTree } from "./store";
 import { tx, txPart } from "@/platform/i18n";
@@ -372,55 +372,26 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
 
   // Git ›
   const vcs = useVcs.getState();
-  const repos = inWorkspace && vcs.available ? repositoriesForSelection(nodes, vcs.roots) : [];
+  const roots = vcs.roots.length ? vcs.roots : project?.isGit ? [project.root] : [];
+  const repos =
+    inWorkspace && (vcs.available || project?.isGit || getContext().vcsAvailable === true)
+      ? repositoriesForSelection(nodes, roots)
+      : [];
   if (repos.length) {
-    const arg = vcsArg(nodes);
-    const dirs = nodes.some((n) => n.dir);
-    const repoAction = (id: string, label: string) => repositoryAction(id, label, repos);
     push(
       submenu(
         "git",
         "Git",
         [
-          act("vcs.commit", undefined, dirs || nodes.length > 1 ? "Commit…" : "Commit File…"),
-          act("vcs.addToVcs", arg, "Add"),
-          nonRoot.length === nodes.length &&
-            nodes.length > 0 &&
-            nodes.every((n) => !vcs.roots.includes(n.path)) &&
-            nodes.every((n) => !n.placeholder) &&
-            submenu("gitIgnore", "Add to .gitignore", [
-              act("vcs.ignoreShared", arg, ".gitignore"),
-              act("vcs.ignoreLocal", arg, ".git/info/exclude"),
-            ]),
-          { kind: "separator" },
-          singleFile && act("vcs.annotate", singleFile.path, "Annotate with Git Blame"),
-          act("vcs.showDiff", arg, "Show Diff"),
-          nodes.length > 0 &&
-            nodes.every((n) => !n.placeholder) &&
-            act("vcs.compareWithBranch", arg, "Compare with Branch…"),
-          singleFile && act("vcs.compareWithRevision", singleFile.path, "Compare with Revision…"),
-          nodes.length > 0 && nodes.every((n) => !n.placeholder) && act("vcs.showHistory", arg, "Show History"),
-          singleFile && act("vcs.showCurrentRevision", singleFile.path, "Show Current Revision"),
-          act("vcs.showLog", undefined, "Show Git Log"),
-          act("vcs.rollback", arg, "Rollback…"),
-          { kind: "separator" },
-          repoAction("vcs.push", "Push…"),
-          repoAction("vcs.pull", "Pull…"),
-          repoAction("vcs.fetch", "Fetch"),
-          repoAction("vcs.merge", "Merge…"),
-          repoAction("vcs.rebase", "Rebase…"),
-          { kind: "separator" },
-          repoAction("vcs.branches", "Branches…"),
-          repoAction("vcs.newBranch", "New Branch…"),
-          repoAction("vcs.checkoutRevision", "Checkout Tag or Revision…"),
-          repoAction("vcs.newTag", "New Tag…"),
-          repoAction("vcs.resetHead", "Reset HEAD…"),
-          { kind: "separator" },
-          repoAction("vcs.stash", "Stash Changes…"),
-          repoAction("vcs.unstash", "Unstash Changes…"),
-          { kind: "separator" },
-          repoAction("vcs.manageRemotes", "Manage Remotes…"),
-          act("vcs.clone", undefined, "Clone…"),
+          ...scopeRepositoryActions(
+            gitMenuItems({
+              paths: nodes.map((n) => n.path),
+              dirs: nodes.map((n) => n.dir),
+              file: !!singleFile,
+              ignore: nonRoot.length === nodes.length && nodes.length > 0 && nodes.every((n) => !n.placeholder),
+            }),
+            repos,
+          ),
         ],
         "branch",
       ),
@@ -519,6 +490,8 @@ function libraryMenuItems(nodes: ProjectNode[]): MenuItem[] {
           run: () => void copyPaths("absolute", nodes),
         },
         { id: "name", label: "File Name", run: () => void copyPaths("name", nodes) },
+        { kind: "separator" },
+        ...menuGroupItems("copyPath", menuGroupContext(nodes)),
       ],
     },
     { kind: "separator" },
