@@ -63,13 +63,12 @@ test("⌘K commits the checked changes with the typed message", async ({ workben
   const panel = page.getByRole("region", { name: "Commit", exact: true });
   const commit = panel.getByRole("button", { name: "Commit", exact: true });
   const changes = panel.getByRole("tree", { name: "Changes" });
-  // Every change starts excluded until explicitly picked.
+  // Tracked changes follow the default inclusion setting.
   const tracked = changes.getByRole("checkbox", { name: "Include build.gradle.kts in commit" });
-  await expect(tracked).not.toBeChecked();
+  await expect(tracked).toBeChecked();
   await expect(changes.getByRole("checkbox", { name: "Include Unversioned Files in commit" })).not.toBeChecked();
   const message = panel.getByRole("textbox", { name: "Commit message" });
   await expect(message).toBeFocused();
-  await tracked.click();
 
   // Committing without a message is refused.
   await commit.click();

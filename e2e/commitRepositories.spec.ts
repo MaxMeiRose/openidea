@@ -45,9 +45,7 @@ async function stubRepositories(page: Page) {
   });
 }
 
-test("commit changes start unchecked and another repository stays unchecked after committing", async ({
-  workbench: page,
-}, testInfo) => {
+test("another repository stays unchecked after committing selected files", async ({ workbench: page }, testInfo) => {
   await stubRepositories(page);
   await page.keyboard.press("Meta+k");
   const panel = page.getByRole("region", { name: "Commit", exact: true });
@@ -56,6 +54,7 @@ test("commit changes start unchecked and another repository stays unchecked afte
   const server = changes.getByRole("checkbox", { name: "Include server.ts in commit" });
   await expect(client).toBeVisible();
   await expect(server).toBeVisible();
+  await changes.getByRole("checkbox", { name: "Include Changes in commit", exact: true }).click();
   await page.screenshot({ path: testInfo.outputPath("commit-defaults.png"), animations: "disabled" });
   await expect(client).not.toBeChecked();
   await expect(server).not.toBeChecked();

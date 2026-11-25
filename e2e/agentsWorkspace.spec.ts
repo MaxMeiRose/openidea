@@ -245,7 +245,11 @@ test("approval stays beside the composer while scrolling and reviewing changes, 
   await agents.getByRole("button", { name: /1 changed file/ }).click();
   await expect(card).toBeVisible();
   await expect(agents.getByRole("button", { name: "Allow Once" })).toBeVisible();
-  await agents.getByRole("button", { name: "Back to conversation" }).click();
+  await expect(page.getByRole("region", { name: "Changes", exact: true })).toBeVisible();
+  await page
+    .getByRole("tablist", { name: "Editor tabs" })
+    .getByRole("button", { name: "Close Tab", exact: true })
+    .click();
   await expect(composer).toHaveText("Keep this draft during approval");
   await agents.getByRole("button", { name: "Allow for This Session" }).click();
   const question = agents.getByRole("form", { name: "Choose deployment environment" });

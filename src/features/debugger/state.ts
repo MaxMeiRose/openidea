@@ -235,6 +235,8 @@ interface PendingOutput {
 }
 const pendingOutput: PendingOutput[] = [];
 let outputFlushHandle: { raf: number; timeout: number } | null = null;
+/** When the console last showed queued output (`performance.now()`). */
+let lastOutputFlush = -Infinity;
 
 function cancelOutputFlush() {
   if (!outputFlushHandle) return;
@@ -663,10 +665,14 @@ export function appendConsoleQueued(session: DebugSessionId, category: string, r
   }
   capPendingOutput(session);
   if (outputFlushHandle === null) {
-    outputFlushHandle = {
-      raf: requestAnimationFrame(flushConsoleOutput),
-      timeout: window.setTimeout(flushConsoleOutput, 100),
-    };
+    // Next frame, or later when Settings › Tools › Terminal › Max FPS asks for fewer frames (#5897).
+    const fps = Number(workflowSettings().terminal.maxFps);
+    const since = performance.now() - lastOutputFlush;
+    const wait = fps > 0 && since >= 0 ? Math.round(1000 / fps) - since : 0;
+    outputFlushHandle =
+      wait > 16
+        ? { raf: 0, timeout: window.setTimeout(flushConsoleOutput, wait) }
+        : { raf: requestAnimationFrame(flushConsoleOutput), timeout: window.setTimeout(flushConsoleOutput, 100) };
   }
 }
 
@@ -696,6 +702,7 @@ function capPendingOutput(session: DebugSessionId) {
 function flushConsoleOutput() {
   cancelOutputFlush();
   if (pendingOutput.length === 0) return;
+  lastOutputFlush = performance.now();
   const chunks = pendingOutput.splice(0);
   let portsChanged = false;
   const dropped = new Map(pendingDropped);

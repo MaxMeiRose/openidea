@@ -15,7 +15,7 @@ import {
   type ReactNode,
 } from "react";
 import clsx from "clsx";
-import { EditorView, keymap } from "@codemirror/view";
+import { BlockType, EditorView, keymap } from "@codemirror/view";
 import { Compartment, Prec, Text, type ChangeSet, type EditorSelection, type Extension } from "@codemirror/state";
 import { history, historyKeymap } from "@codemirror/commands";
 import {
@@ -1270,10 +1270,19 @@ function TwoPaneDiff({
             key: step,
             read: () => {
               const documentTop = v.documentTop - scroller.getBoundingClientRect().top + scroller.scrollTop;
-              const caret = v.coordsAtPos(v.state.selection.main.head);
+              const head = v.state.selection.main.head;
+              const visible = v.visibleRanges.some(({ from, to }) => from <= head && head <= to);
+              const caret = visible ? v.coordsAtPos(head) : null;
+              const line = v.lineBlockAt(head);
+              const parts = line.type;
+              const textBlock =
+                typeof parts === "number"
+                  ? line
+                  : (parts.find((block) => block.type === BlockType.Text && block.from <= head && head <= block.to) ??
+                    line);
               const lineTop = caret
                 ? (caret.top + caret.bottom) / 2 - v.documentTop
-                : v.lineBlockAt(v.state.selection.main.head).top;
+                : textBlock.top + v.defaultLineHeight / 2;
               return documentTop + lineTop - scroller.clientHeight / 2;
             },
             write: (top) => {
