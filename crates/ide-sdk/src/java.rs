@@ -1629,7 +1629,7 @@ pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
     install_bundle(
         data_dir,
         "java-usages",
-        "1.19.1",
+        "1.19.2",
         include_bytes!("../../../java/java-usages/openidea-java-usages.jar"),
     )
 }
