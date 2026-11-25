@@ -73,13 +73,13 @@ describe("validateWorkflow", () => {
     expect(policy("other")).toBe("shelve");
   });
 
-  it("leaves commit changes unchecked by default and honors explicit inclusion", () => {
+  it("uses default commit inclusion and honors explicit choices", () => {
     const inclusion = (includeChangesByDefault: unknown) =>
       validateWorkflow({ vcs: { commit: { includeChangesByDefault } } }).vcs.commit.includeChangesByDefault;
-    expect(inclusion(undefined)).toBe(false);
+    expect(inclusion(undefined)).toBe(true);
     expect(inclusion(true)).toBe(true);
     expect(inclusion(false)).toBe(false);
-    expect(inclusion("false")).toBe(false);
+    expect(inclusion("false")).toBe(true);
   });
 
   it("keeps the double-click choice unset until it is made", () => {

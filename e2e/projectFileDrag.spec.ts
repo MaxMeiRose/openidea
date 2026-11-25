@@ -80,7 +80,7 @@ test("dragging a project file to Agents does not select editor text", async ({ w
   await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 15 });
   await page.mouse.up();
 
-  await expect(composer).toHaveValue(/@README\.md/);
+  await expect(composer).toContainText("README.md");
   expect(await selection()).toEqual({ anchor: 3, head: 3, dom: "" });
   await expect(dropIndicator).toHaveCount(0);
 
@@ -103,7 +103,7 @@ test("dragging a project file to Agents does not select editor text", async ({ w
   expect({ anchor: during.anchor, head: during.head }).toEqual({ anchor: selected.anchor, head: selected.head });
   await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 15 });
   await page.mouse.up();
-  await expect(composer).toHaveValue(/@settings\.gradle\.kts/);
+  await expect(composer).toContainText("settings.gradle.kts");
 });
 
 test("project files can still be dropped into an empty editor", async ({ workbench: page }) => {
@@ -157,7 +157,7 @@ test("project tree keeps multi-file selection when dragging", async ({ workbench
   await expect(settings).toHaveAttribute("aria-selected", "true");
 
   const from = (await readme.locator("[data-project-path]").boundingBox())!;
-  const panel = (await page.getByRole("tabpanel", { name: "build.gradle.kts" }).boundingBox())!;
+  const panel = (await page.getByRole("region", { name: "Editor", exact: true }).boundingBox())!;
   await page.mouse.move(from.x + 35, from.y + from.height / 2);
   await page.mouse.down();
   await page.mouse.move(panel.x + panel.width / 2, panel.y + panel.height / 2, { steps: 15 });

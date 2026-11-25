@@ -161,7 +161,7 @@ interface BillingUsers {
     await (await import(contributions)).editorService().openFile(`${root}/users/src/main/java/UserController.java`);
   });
 
-  await page.locator('[data-icon-source="spring"][title="GET /users/{id}"]').click();
+  await page.locator('[data-icon-source="spring"][title="API Call · GET /users/{id}"]').click({ button: "right" });
   await expect(page.getByRole("menuitem", { name: "Generate Request in HTTP Client" })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("controller-menu.png"), animations: "disabled" });
   await page.getByRole("menuitem", { name: "Find Feign Clients" }).click({ timeout: 5_000 });

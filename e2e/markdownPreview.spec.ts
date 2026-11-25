@@ -6,7 +6,7 @@ const width = (node: Locator) => node.evaluate((el) => el.getBoundingClientRect(
 async function open(page: Page) {
   const editor = await openFromTree(page, "README.md");
   await page.getByRole("button", { name: "Editor and Preview", exact: true }).click();
-  const divider = page.getByRole("separator", { name: "Resize Markdown editor and preview" });
+  const divider = page.getByRole("separator", { name: "Resize Markdown preview" });
   await expect(divider).toBeVisible();
   return { editor, divider, preview: page.getByRole("document", { name: "Markdown preview" }) };
 }
@@ -25,6 +25,7 @@ test("Markdown divider resizes both panes and keeps them usable at the edges", a
   const { editor, divider, preview } = await open(page);
   const initial = await width(editor);
   const previewInitial = await width(preview);
+  const minimum = (initial + previewInitial) * 0.1;
   await drag(page, divider, 150);
   await expect.poll(() => width(editor)).toBeCloseTo(initial + 150, 0);
   await expect.poll(() => width(preview)).toBeCloseTo(previewInitial - 150, 0);
@@ -32,11 +33,9 @@ test("Markdown divider resizes both panes and keeps them usable at the edges", a
   await expect.poll(() => width(editor)).toBeCloseTo(initial - 70, 0);
 
   await drag(page, divider, -2000);
-  await expect.poll(() => width(editor)).toBeGreaterThanOrEqual(119);
-  await expect.poll(() => width(editor)).toBeLessThan(121);
+  await expect.poll(() => width(editor)).toBeCloseTo(minimum, 0);
   await drag(page, divider, 2000);
-  await expect.poll(() => width(preview)).toBeGreaterThanOrEqual(119);
-  await expect.poll(() => width(preview)).toBeLessThan(121);
+  await expect.poll(() => width(preview)).toBeCloseTo(minimum, 0);
 });
 
 test("Markdown layouts preserve edits, the editor instance and the chosen split ratio", async ({ workbench: page }) => {
@@ -50,7 +49,7 @@ test("Markdown layouts preserve edits, the editor instance and the chosen split 
   const source = await editor.elementHandle();
   await drag(page, divider, 130);
   const splitWidth = await width(editor);
-  const totalWidth = splitWidth + (await width(preview)) + 1;
+  const totalWidth = splitWidth + (await width(preview)) + (await width(divider));
 
   await page.getByRole("button", { name: "Preview Only", exact: true }).click();
   await expect(editor).toBeHidden();

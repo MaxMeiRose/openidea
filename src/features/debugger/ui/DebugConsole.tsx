@@ -40,6 +40,7 @@ import { consoleLinkMenu, debugConsoleUrl, openTarget, openUrl, runDirectory } f
 import { segmentLine, type SegmentMark } from "@/features/run/segments";
 import styles from "./DebugToolWindow.module.css";
 import { WidestColumns } from "@/platform/consoleColumns";
+import { useConsoleSelectAll } from "@/ui/useConsoleSelectAll";
 
 const EMPTY_FIND: FindResult = { matches: [], overflow: false, invalid: false };
 
@@ -128,6 +129,13 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const inner = useRef<HTMLDivElement>(null);
   // Scroll to End: follows new output; scrolling up turns it off, back to the end turns it on.
   const [follow, setFollow] = useState(true);
+  const bufferText = () => (lines ?? []).map((line) => line.text).join("");
+  const { selectAll, selectedOutput, onSelectAllKeyDown, onCopy } = useConsoleSelectAll(
+    scroller,
+    inner,
+    bufferText,
+    () => setFollow(false),
+  );
   const stick = useRef(true);
   stick.current = follow;
   // The debug console uses the same font as the Run console.
@@ -345,32 +353,6 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
     }
   };
 
-  /** Rows are virtualized, so "everything" is a selection of the container, not of the mounted rows. */
-  const selectAll = () => {
-    if (inner.current) window.getSelection()?.selectAllChildren(inner.current);
-  };
-  const allSelected = () => {
-    const el = inner.current;
-    const s = window.getSelection();
-    return (
-      !!el &&
-      !!s &&
-      !s.isCollapsed &&
-      s.anchorNode === el &&
-      s.focusNode === el &&
-      s.anchorOffset === 0 &&
-      s.focusOffset === el.childNodes.length
-    );
-  };
-  const bufferText = () => (lines ?? []).map((l) => l.text).join("");
-  /** The selected text; after Select All the whole buffer, including rows that are not mounted. */
-  const selectedOutput = () => {
-    if (allSelected()) return bufferText();
-    const s = window.getSelection();
-    const el = scroller.current;
-    if (!s || !el || !s.anchorNode || !el.contains(s.anchorNode)) return "";
-    return s.toString();
-  };
   const selectedText = () => {
     const el = scroller.current;
     const selection = window.getSelection();
@@ -381,16 +363,12 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
 
   const onOutputKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.nativeEvent.isComposing) return;
+    if (onSelectAllKeyDown(e)) return;
     if (hasPrimaryModifier(e) && !e.altKey && !e.shiftKey) {
       const key = e.key.toLowerCase();
       if (key === "f") {
         e.preventDefault();
         openFind();
-        return;
-      }
-      if (key === "a") {
-        e.preventDefault();
-        selectAll();
         return;
       }
     }
@@ -467,6 +445,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
           onContextMenu={onContextMenu}
           role="log"
           onKeyDown={onOutputKeyDown}
+          onCopy={onCopy}
           aria-label={tx("Debug console")}
           tabIndex={0}
         >

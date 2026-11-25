@@ -74,7 +74,7 @@ for (const debug of [false, true]) {
     if (!debug) await page.keyboard.press("Meta+F");
     const input = page.getByRole("textbox", { name: debug ? "Debug console input" : "Find in console", exact: true });
     await input.fill("editable field");
-    await input.press("Meta+A");
+    await input.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
     expect(await input.evaluate((el: HTMLInputElement) => [el.selectionStart, el.selectionEnd])).toEqual([
       0,
       "editable field".length,

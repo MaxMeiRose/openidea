@@ -372,9 +372,7 @@ test("keeps chat history readable and selections free of timestamps and status l
   const geometry = await stream.evaluate((root) => {
     const reply = root.querySelector<HTMLElement>("[class*='_reply_']")!;
     const bubble = root.querySelector<HTMLElement>("[class*='_user_']")!;
-    const composer = root
-      .closest("[class*='_conversation_']")!
-      .querySelector<HTMLElement>("[class*='_composerArea_']")!;
+    const composer = root.closest("[class*='_session_']")!.querySelector<HTMLElement>("[class*='_composerArea_']")!;
     const rr = reply.getBoundingClientRect();
     const br = bubble.getBoundingClientRect();
     const cr = composer.getBoundingClientRect();
@@ -399,6 +397,7 @@ test("keeps chat history readable and selections free of timestamps and status l
   expect(Math.abs(geometry.columnCenter - geometry.composerCenter)).toBeLessThan(1);
   await stream.getByText("hi", { exact: true }).hover();
   await expect(stream.locator("[class*='_messageTime_']").first()).toBeVisible();
+  await stream.focus();
   const selected = await stream.evaluate((root) => {
     const range = document.createRange();
     range.selectNodeContents(root);
@@ -412,7 +411,9 @@ test("keeps chat history readable and selections free of timestamps and status l
   expect(selected).toContain("What would you like me to proceed with?");
   expect(selected).not.toMatch(/AM|PM|5s|Reasoning|Requesting task context/);
   await page.keyboard.press("ControlOrMeta+c");
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
+  await expect
+    .poll(() => page.evaluate(async () => (await navigator.clipboard.readText()).replace(/\r\n/g, "\n")))
+    .toBe(selected.replace(/\r\n/g, "\n"));
   // The latest turn stays open: its reasoning shows as its own collapsed row.
   await stream.locator("[class*='_thought_'] > summary").click();
   await expect(stream.locator("[class*='_thoughtPreview_']")).toHaveText("Requesting task context");
@@ -497,8 +498,9 @@ test("fits conversation stream, composer, question card and off-screen rows live
         .at(-1)!
         .getBoundingClientRect();
       const bubble = root.querySelector<HTMLElement>("[class*='_user_']")!.getBoundingClientRect();
-      const composer = conversation.querySelector<HTMLElement>("[class*='_composerArea_']")!.getBoundingClientRect();
-      const question = conversation.querySelector<HTMLElement>("[class*='_questionCard_']")!.getBoundingClientRect();
+      const session = root.closest<HTMLElement>("[class*='_session_']")!;
+      const composer = session.querySelector<HTMLElement>("[class*='_composerArea_']")!.getBoundingClientRect();
+      const question = session.querySelector<HTMLElement>("[class*='_questionCard_']")!.getBoundingClientRect();
       const padding =
         Number.parseFloat(getComputedStyle(root).paddingLeft) + Number.parseFloat(getComputedStyle(root).paddingRight);
       return {

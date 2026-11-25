@@ -505,6 +505,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  min-height: var(--h-control-small);
   min-width: 0;
   max-height: 150px;
   overflow: auto;

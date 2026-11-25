@@ -296,8 +296,6 @@ pub fn run() {
         }
         tauri::WindowEvent::Focused(true) => {
             application_focus::changed(window.app_handle(), true);
-            #[cfg(target_os = "macos")]
-            window_groups::focused(window.app_handle(), window.label());
             if let Some(w) = window.try_state::<WindowsState>() {
                 w.focused(window.label());
             }
@@ -393,7 +391,7 @@ pub fn run() {
     });
 }
 
-#[cfg(windows)]
+#[cfg(not(target_os = "linux"))]
 fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
     use tauri_plugin_window_state::StateFlags;
     #[cfg(target_os = "windows")]

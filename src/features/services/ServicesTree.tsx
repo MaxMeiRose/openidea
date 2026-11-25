@@ -237,7 +237,7 @@ export function ServicesTreeView() {
           className={styles.split}
           storageKey={sideDocked ? "openidea.services.detailSplit.vertical" : "openidea.services.detailSplit"}
         >
-          <SplitPanel id="services-items" defaultSize="40%" minSize={sideDocked ? "80px" : "160px"}>
+          <SplitPanel id="services-items" defaultSize="30%" minSize={sideDocked ? "80px" : "160px"}>
             <div className={styles.treePane}>
               {detailActions.length > 0 && toolbar}
               <div className={styles.treeContent}>

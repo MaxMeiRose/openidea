@@ -1,4 +1,4 @@
-import { expect, openFromTree, test } from "./fixtures";
+import { expect, openFromTree, stubDesktop, test } from "./fixtures";
 
 test("editor Git submenu offers the registered file and repository actions in groups", async ({ workbench: page }) => {
   const editor = await openFromTree(page, "README.md");
@@ -68,16 +68,20 @@ test("editor Git submenu keeps repository actions disabled without Git", async (
   await expect(page.getByRole("menuitem", { name: "Get from Version Control…", exact: true })).toBeEnabled();
 });
 
-test("Project view Git submenu ends with Manage Remotes and Clone", async ({ workbench: page }) => {
+test("Project view Git submenu offers GitHub, Manage Remotes and Clone", async ({ workbench: page }) => {
+  await stubDesktop(page);
+  await page.evaluate(() => {
+    window.__ipc.handlers.vcs_remotes = () => [];
+    window.__ipc.handlers.vcs_branches = () => [];
+  });
   await page.getByRole("treeitem", { name: /README\.md/ }).click({ button: "right" });
   await page.getByRole("menuitem", { name: "Git", exact: true }).hover();
   const git = page
     .getByRole("menu")
     .filter({ has: page.getByRole("menuitem", { name: "Get from Version Control…", exact: true }) });
-  const items = git.locator('[role="menuitem"], [role="menuitemcheckbox"]');
-  await expect(items.nth(-3)).toHaveText(/GitHub/);
-  await expect(items.nth(-2)).toHaveText(/Manage Remotes…/);
-  await expect(items.nth(-1)).toHaveText(/Get from Version Control…/);
+  await expect(git.getByRole("menuitem", { name: "GitHub", exact: true })).toBeVisible();
+  await expect(git.getByRole("menuitem", { name: "Manage Remotes…", exact: true })).toBeVisible();
+  await expect(git.getByRole("menuitem", { name: "Get from Version Control…", exact: true })).toBeVisible();
   await git.getByRole("menuitem", { name: "Manage Remotes…", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Git Remotes" })).toBeVisible();
 });

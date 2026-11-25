@@ -151,8 +151,9 @@ for (const theme of ["dark", "light"] as const) {
       await expect(card.getByRole("button")).toHaveText(["Allow Once", "Always Allow", "Decline", "Decline and Stop"]);
       const geometry = await card.evaluate((el) => {
         // Asked above the composer, below the conversation.
-        const area = el.closest('[class*="_composerArea_"]')!;
-        const transcript = area.parentElement!.querySelector('[class*="_stream_"]')!;
+        const session = el.closest('[class*="_session_"]')!;
+        const area = session.querySelector('[class*="_composerHost_"]')!;
+        const transcript = session.querySelector('[class*="_stream_"]')!;
         const prompt = transcript.querySelector('[class*="_user_"]')!;
         const reply = transcript.querySelector('[class*="_agentCard_"]')!;
         const rect = el.getBoundingClientRect();

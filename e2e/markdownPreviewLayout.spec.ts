@@ -80,9 +80,11 @@ test("wrapped Markdown uses the source pane width beside the preview", async ({ 
           const right = Math.max(...Array.from(range.getClientRects(), (rect) => rect.right));
           const overview = line.closest(".cm-editor")!.querySelector(".cm-openidea-overview")!;
           const lane = overview.getBoundingClientRect();
-          const gap = lane.left - right;
+          const padding = parseFloat(getComputedStyle(line).paddingRight);
+          const content = line.closest(".cm-content")!.getBoundingClientRect();
+          const gap = content.right - padding - right;
           return {
-            padding: parseFloat(getComputedStyle(line).paddingRight) - lane.width,
+            padding: padding - lane.width,
             textFits: gap >= 0 && gap < 20,
           };
         }),

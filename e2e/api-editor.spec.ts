@@ -47,13 +47,13 @@ async function openSource(page: Page, source: string, path: string) {
 
 test("controller gutter icons prepare unsaved API mappings, parameters and JSON without sending", async ({
   workbench: page,
-}) => {
+}, testInfo) => {
   await page.setViewportSize({ width: 1900, height: 1050 });
   const editor = await openSource(page, SOURCE, "/dev/acme-api/OrderController.java");
   const current = SOURCE.replace("/api/orders", "/api/unsaved-orders");
   await editor.locator(".cm-content").fill(current);
   // CodeMirror hides its gutter container from the accessibility tree.
-  const calls = editor.locator('.cm-openidea-gutter-spring button[aria-label^="API Call · "]');
+  const calls = editor.locator('button[data-icon-source="spring"][aria-label^="API Call · "]');
   await expect(calls).toHaveCount(2);
   await expect(editor.locator(".cm-openidea-lens").getByRole("button", { name: "API Call", exact: true })).toHaveCount(
     0,
@@ -81,7 +81,7 @@ test("controller gutter icons prepare unsaved API mappings, parameters and JSON 
   );
   await calls.nth(1).click();
   await expect(client.getByRole("tablist", { name: "API request tabs" }).getByRole("tab")).toHaveCount(2);
-  await page.screenshot({ path: "/tmp/openidea-api-controller-gutter.png", animations: "disabled" });
+  await page.screenshot({ path: testInfo.outputPath("api-controller-gutter.png"), animations: "disabled" });
 });
 
 test("Kotlin controller gutter icons offer each mapped URL", async ({ workbench: page }) => {
@@ -92,7 +92,7 @@ class HealthController {
   fun health(): String = "ok"
 }`;
   const editor = await openSource(page, source, "/dev/acme-api/HealthController.kt");
-  await editor.locator('.cm-openidea-gutter-spring button[aria-label^="API Call · "]').click();
+  await editor.locator('button[data-icon-source="spring"][aria-label^="API Call · "]').click();
   await page.getByRole("menuitem", { name: "GET /api/ready", exact: true }).click();
   const client = page.getByRole("region", { name: "API Client", exact: true });
   await expect(client.getByRole("textbox", { name: "Request URL", exact: true })).toHaveValue("/api/ready");

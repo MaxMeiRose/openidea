@@ -162,7 +162,7 @@ for (const placement of ["editor", "toolWindow"] as const) {
       const history = conversation(page);
       for (const range of [false, true]) {
         const expected = await selectDraft(box, range);
-        await history.click({ position: { x: 12, y: 20 } });
+        await history.focus();
         await expect(history).toBeFocused();
         await history.press("Home");
         await expect.poll(() => history.evaluate((element) => element.scrollTop)).toBe(0);
@@ -383,7 +383,7 @@ test("Find Action focuses the current task input after closing its popup", async
   await expect.poll(() => selection(box)).toEqual(expected);
 });
 
-test("a task's changes open in a tab of their own", async ({ workbench: page }) => {
+test("a task's changes preserve its conversation draft", async ({ workbench: page }) => {
   await seedTasks(page, "editor");
   await seedChanges(page);
   const box = messageBox(page);
@@ -394,15 +394,13 @@ test("a task's changes open in a tab of their own", async ({ workbench: page }) 
   await expect(changes).toBeVisible();
   await expect(changes.getByRole("tree", { name: "Changed files" }).getByText("file.ts")).toBeVisible();
   await expect(changes.locator('[data-combined-block="/dev/acme-api/file.ts"]')).toBeVisible();
-  // The conversation stays in its tab, as it was.
   await expect(box).toBeHidden();
-  await page.getByRole("tab", { name: firstTask.title, exact: true }).click();
+  await page.getByRole("button", { name: "Back to conversation", exact: true }).click();
   await expect(box).toBeVisible();
 
-  // Again: the same tab, not another one.
   await chip.click();
   await expect(changes).toBeVisible();
-  await expect(page.getByRole("tab", { name: `Changes: ${firstTask.title}` })).toHaveCount(1);
+  await expect(page.getByRole("region", { name: "Changes", exact: true })).toHaveCount(1);
 });
 
 test("a docked task's changes open in the editor, the conversation staying in place", async ({ workbench: page }) => {

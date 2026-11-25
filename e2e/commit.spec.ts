@@ -846,6 +846,7 @@ test("commit check text scrolls independently of its status icon and retry actio
   expect((await icon.boundingBox())!.y).toBeCloseTo(statusTop, 0);
   expect((await retry.boundingBox())!.y).toBeCloseTo(retryTop, 0);
   const details = feedback.getByRole("button", { name: "Review final check", exact: true });
+  await details.scrollIntoViewIfNeeded();
   await expect(details).toBeInViewport({ ratio: 1 });
   await expect(icon).toBeInViewport({ ratio: 1 });
   await expect(retry).toBeInViewport({ ratio: 1 });

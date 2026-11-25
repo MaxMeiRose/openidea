@@ -82,7 +82,7 @@ test("Sticky Lines follows editor text, line numbers and the viewport below Find
   await expect(gutter).toBeVisible();
   await expect(sticky.locator(".cm-openidea-stickyNumber")).toHaveText(["27", "25", "24"]);
   const [liveGutter, pinnedGutter] = await Promise.all([
-    editor.locator(".cm-gutters").boundingBox(),
+    editor.locator(".cm-gutters-before").boundingBox(),
     gutter.boundingBox(),
   ]);
   expect(pinnedGutter!.x).toBeCloseTo(liveGutter!.x, 0);

@@ -479,7 +479,6 @@ export function activate(): () => void {
     }),
     registerOverlay({ id: "run.dialogs", component: RunDialogsOverlay }),
     registerOverlay({ id: "run.serviceImport", component: ServiceImportHost }),
-    registerOverlay({ id: "run.serviceImport", component: ServiceImportHost }),
     registerServiceProvider(runServiceProvider),
     registerRunServiceActions(),
     watchServiceRunningCount(),

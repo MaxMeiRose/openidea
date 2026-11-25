@@ -26,7 +26,7 @@ import { consoleLinkMenu, debugConsoleUrl, openTarget, openUrl } from "./navigat
 import { segmentLine, type SegmentMark } from "./segments";
 import styles from "./Run.module.css";
 import { useConsoleSelection } from "./useConsoleSelection";
-import { useConsoleSelectAll } from "./useConsoleSelectAll";
+import { useConsoleSelectAll } from "@/ui/useConsoleSelectAll";
 import { hostBinding, formatBinding, hasPrimaryModifier, registerKeyClaim } from "@/platform/keymap";
 import { WidestColumns } from "@/platform/consoleColumns";
 import { tx } from "@/platform/i18n";

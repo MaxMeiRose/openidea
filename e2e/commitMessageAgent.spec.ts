@@ -72,6 +72,7 @@ async function stubRepositoryAndAgent(page: Page, reply: string) {
       h.vcs_status = () => changes;
       h.vcs_pending_patch = () => patch;
       h.vcs_log = () => [{ id: "1111111", summary: "Bump the wrapper" }];
+      h.agent_models = () => [];
       h.agent_create = (args) => {
         const created = { ...task, id: "new", title: "Write a commit message", status: "starting", updatedMs: 9 };
         const request = args.request as { provider: string };

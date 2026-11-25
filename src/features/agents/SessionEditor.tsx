@@ -98,7 +98,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   // A docked task is on screen while its tool window is; a tab's own `shown` is its editor slot's.
   const toolWindowShown = useToolWindowShown();
   const onScreen = docked ? toolWindowShown : shown;
-  const canFocusInput = onScreen && !!task && task.status !== "archived" && !view;
+  const canFocusInput = onScreen && !!task && task.status !== "archived" && !view && !changesOpen;
   const session = useMemo<FocusedSession>(
     () => ({
       openFind: () => {
@@ -156,20 +156,22 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
           )}
         </EditorShownProvider>
       </div>
-      <div className={styles.composerHost}>
-        <QuestionCard task={task} entries={entries ?? null} drafts={drafts} />
-        <SessionComposer
-          task={task}
-          focusRequest={inputFocus}
-          focusRoot={sessionRoot}
-          entries={entries ?? null}
-          head={head}
-          changes={changes ?? null}
-          commits={commits}
-          onOpenChanges={() => setChangesOpen(true)}
-          onOpenSubagent={openSubagent}
-        />
-      </div>
+      <EditorShownProvider value={onScreen && !view && !changesOpen}>
+        <div className={styles.composerHost} hidden={!!view || changesOpen}>
+          <QuestionCard task={task} entries={entries ?? null} drafts={drafts} />
+          <SessionComposer
+            task={task}
+            focusRequest={inputFocus}
+            focusRoot={sessionRoot}
+            entries={entries ?? null}
+            head={head}
+            changes={changes ?? null}
+            commits={commits}
+            onOpenChanges={() => setChangesOpen(true)}
+            onOpenSubagent={openSubagent}
+          />
+        </div>
+      </EditorShownProvider>
       {changesOpen && (
         <aside className={styles.inlineChanges} aria-label={tx("Changes")}>
           <div className={styles.inlineChangesToolbar}>

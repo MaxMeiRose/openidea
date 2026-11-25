@@ -1032,8 +1032,17 @@ export const runServiceProvider: ServiceProviderContribution = {
   },
   detail: RunDetail,
   detailActions: (item) => (resolve(item).config ? actions(item) : []),
-  revealRunConsole: (config, focus) => {
+  revealRunConsole: (config, focus, addToServices) => {
     if (!useProject.getState().project) return false;
+    if (DOCKER_PROVIDER_KINDS.has(config.kind)) return false;
+    if (addToServices) {
+      addType(config.kind);
+      const hidden = currentHidden();
+      const excluded = hidden[config.kind] ?? [];
+      if (excluded.includes(config.id))
+        saveHidden({ ...hidden, [config.kind]: excluded.filter((id) => id !== config.id) });
+    }
+    if (!currentTypes().includes(config.kind) || currentHidden()[config.kind]?.includes(config.id)) return false;
     const key = CONFIG_PREFIX + config.id;
     useServicesTree.setState((state) => {
       const expand = [

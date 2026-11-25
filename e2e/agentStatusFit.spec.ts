@@ -63,7 +63,7 @@ test("the session status strip fits a narrow session instead of truncating every
   const strip = page.locator("[class*='_statusBar_']:visible");
   const provider = strip.getByText("codex", { exact: true });
   const chip = strip.getByRole("button", { name: /3 changed files/ });
-  const state = strip.getByText("Failed", { exact: true });
+  const state = strip.locator("[class*='_state_']").getByText("Failed", { exact: true });
   await expect(chip).toBeVisible();
   await expect(provider).toBeVisible();
   await expect(state).toBeVisible();

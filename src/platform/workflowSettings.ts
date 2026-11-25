@@ -337,7 +337,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     },
     commit: {
       nonModal: true,
-      includeChangesByDefault: false,
+      includeChangesByDefault: true,
       commitAllWhenNothingStaged: true,
       clearInitialMessage: false,
       analyzeCode: true,

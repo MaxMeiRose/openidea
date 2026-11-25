@@ -1,7 +1,8 @@
 import type { Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, stubDesktop, test } from "./fixtures";
 
 test.beforeEach(async ({ workbench: page }) => {
+  await stubDesktop(page);
   await page.evaluate(async () => {
     // Load the IPC module in Vite's browser realm, not Playwright's Node process.
     const ipcPath = "/src/platform/ipc.ts";
@@ -30,13 +31,13 @@ test.beforeEach(async ({ workbench: page }) => {
     window.addEventListener("test:agent-upgraded", () => {
       installed = "18.20.2";
     });
-    commands.agentProviders = async () => ({ status: "ok", data: [provider] });
-    commands.agentProbe = async (id: string, refresh: boolean) => {
+    const h = window.__ipc.handlers;
+    h.agent_subscribe = () => [];
+    h.agent_providers = () => [provider];
+    h.agent_models = () => [];
+    h.agent_probe = ({ provider: id, refresh }) => {
       if (refresh) cached = installed;
-      return {
-        status: "ok",
-        data: { provider: id, name: "omp", version: cached, protocol: "ACP v1", error: null },
-      };
+      return { provider: id, name: "omp", version: cached, protocol: "ACP v1", error: null };
     };
     commands.agentRefreshModels = async () => ({
       status: "ok",
@@ -50,9 +51,16 @@ test.beforeEach(async ({ workbench: page }) => {
         error: null,
       },
     });
+    const projectPath = "/src/platform/project.ts";
+    const { useProject } = await import(projectPath);
+    const project = useProject.getState().project;
+    if (project) useProject.setState({ project: { ...project, trusted: true } });
+    const storePath = "/src/features/agents/store.ts";
+    await (await import(storePath)).connect();
   });
   await page.getByRole("button", { name: "Agents", exact: true }).click();
   await page.getByRole("button", { name: "New Agent Task", exact: true }).click();
+  await chooseAgent(page);
   await expectVersion(page, "18.20.0");
 });
 
@@ -72,10 +80,19 @@ test("refreshes an upgraded agent's version when New Task is reopened", async ({
   await page.getByRole("button", { name: "Close Tab", exact: true }).click();
   await page.evaluate(() => window.dispatchEvent(new Event("test:agent-upgraded")));
   await page.getByRole("button", { name: "New Agent Task", exact: true }).click();
+  await chooseAgent(page);
   await expectVersion(page, "18.20.2");
 });
 
 /** The agent picker shows its icon; its name and version are in its tooltip. */
+async function chooseAgent(page: Page) {
+  await page.evaluate(async () => {
+    const storePath = "/src/features/agents/store.ts";
+    const { updateDraft } = await import(storePath);
+    updateDraft({ provider: "omp" });
+  });
+}
+
 async function expectVersion(page: Page, version: string) {
   await expect(page.locator(`[data-tooltip$=" ${version}"]`).filter({ visible: true })).toHaveCount(1);
 }

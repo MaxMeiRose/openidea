@@ -67,7 +67,7 @@ async function openService(page: Page, source = SOURCE) {
 }
 test("Service method form preserves cases, passes Spring options, and reuses the Services console", async ({
   workbench: page,
-}) => {
+}, testInfo) => {
   const panel = await openService(page);
   const args = panel.getByRole("textbox", { name: "Argument id", exact: true });
   await expect(args).toHaveValue("");
@@ -99,7 +99,7 @@ test("Service method form preserves cases, passes Spring options, and reuses the
   await expect(page.getByRole("region", { name: "Run", exact: true })).toBeHidden();
   await expect(page.getByRole("region", { name: "Services", exact: true }).getByRole("log")).toBeVisible();
   await expect(panel.getByRole("button", { name: "Run method", exact: true })).toBeEnabled();
-  await panel.screenshot({ path: "/tmp/openidea-method-test-panel.png", animations: "disabled" });
+  await panel.screenshot({ path: testInfo.outputPath("method-test-panel.png"), animations: "disabled" });
 });
 test("Stop cancels preparation and ignores its late response", async ({ workbench: page }) => {
   const panel = await openService(page);

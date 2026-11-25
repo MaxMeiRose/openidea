@@ -1106,7 +1106,8 @@ async function startRunIn(
       options.show !== false &&
       (focus || (options.show ?? config.openToolWindow ?? workflowSettings().run.showOnStart))
     ) {
-      if (rt.consoleInRun || !revealRunConsole(config, focus)) toolWindowService().show("run", focus);
+      if (rt.consoleInRun || !revealRunConsole(config, focus, options.consoleLocation === "services"))
+        toolWindowService().show("run", focus);
     }
   } catch {
     /* no workbench (tests) */

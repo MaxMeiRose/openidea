@@ -942,6 +942,10 @@ mod tests {
                 "agentModel": "",
                 "agentEffort": "",
                 "agentButton": true,
+                "aiProvider": "codex",
+                "aiPrompt": "",
+                "aiClaudeModel": "",
+                "aiCodexModel": "",
             })
         );
     }
