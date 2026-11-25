@@ -75,6 +75,19 @@ const names = () =>
   within(tree())
     .getAllByRole("treeitem")
     .map((el) => el.textContent);
+const npmFirst = [
+  "npm",
+  "Running",
+  "Not Started",
+  "Web",
+  "Worker",
+  "Spring Boot",
+  "Running",
+  "Not Started",
+  "Gateway",
+  "Portal",
+  "Docker",
+];
 const select = (text: string) => fireEvent.mouseDown(within(tree()).getByText(text).closest('[role="treeitem"]')!);
 
 describe("service reordering integration", () => {
@@ -142,11 +155,11 @@ describe("service reordering integration", () => {
     select("Spring Boot");
     expect(screen.getByRole("button", { name: "Move Up" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Move Down" }));
-    expect(names()).toEqual(["npm", "Web", "Worker", "Spring Boot", "Gateway", "Portal", "Docker"]);
+    expect(names()).toEqual(npmFirst);
     expect(localStorage.getItem("openidea.services.runTypes:/services")).toBe('["npm","spring-boot"]');
     unmount();
     render(<ServicesTreeView />);
-    expect(names()).toEqual(["npm", "Web", "Worker", "Spring Boot", "Gateway", "Portal", "Docker"]);
+    expect(names()).toEqual(npmFirst);
   });
 
   it("drags a run type's group onto another group", () => {
@@ -172,7 +185,7 @@ describe("service reordering integration", () => {
     pointer(window, "pointermove", 10);
     pointer(window, "pointerup", 10);
     expect(localStorage.getItem("openidea.services.runTypes:/services")).toBe('["npm","spring-boot"]');
-    expect(names()).toEqual(["npm", "Web", "Worker", "Spring Boot", "Gateway", "Portal", "Docker"]);
+    expect(names()).toEqual(npmFirst);
     vi.restoreAllMocks();
   });
 

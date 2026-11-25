@@ -85,14 +85,17 @@ describe("Rust workload contract", () => {
   });
 
   it("resolves target and Criterion overrides relative to cargo's cwd", () => {
-    expect(rustPaths("/work", {})).toEqual({ target: "/work/target", criterion: "/work/target/criterion" });
+    expect(rustPaths("/work", {})).toEqual({
+      target: resolve("/work/target"),
+      criterion: resolve("/work/target/criterion"),
+    });
     expect(rustPaths("/work", { CARGO_TARGET_DIR: "private" })).toEqual({
-      target: "/work/private",
-      criterion: "/work/private/criterion",
+      target: resolve("/work/private"),
+      criterion: resolve("/work/private/criterion"),
     });
     expect(rustPaths("/work", { CARGO_TARGET_DIR: "/private", CRITERION_HOME: "results" })).toEqual({
-      target: "/private",
-      criterion: "/work/results",
+      target: resolve("/private"),
+      criterion: resolve("/work/results"),
     });
   });
 
@@ -201,6 +204,8 @@ describe("Rust workload contract", () => {
     const result = inspectRustArtifacts(root, ["ide-text"]);
     expect(Object.keys(result.metrics)).toHaveLength(TEXT_BENCHMARKS - 1);
     expect(result.errors.length).toBeGreaterThan(0);
-    expect(result.artifacts).toContainEqual(expect.objectContaining({ path: "text/open_1mb/new/benchmark.json" }));
+    expect(result.artifacts).toContainEqual(
+      expect.objectContaining({ path: join("text/open_1mb/new/benchmark.json") }),
+    );
   });
 });

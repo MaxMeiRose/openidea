@@ -77,7 +77,8 @@
   border-radius: 50%;
   background: var(--accent);
 }
-.detail {
+.detail,
+.taskProject {
   display: block;
   min-width: 0;
   overflow: hidden;

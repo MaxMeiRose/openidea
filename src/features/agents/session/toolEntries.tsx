@@ -15,7 +15,7 @@ import { cancelTask } from "../store";
 import { openChangeDiff } from "./ChangesTab";
 import { Fold } from "./Folds";
 import { liveTool } from "./conversationRows";
-import { shortTitle, useNow } from "./shared";
+import { commandTitle, shortTitle, useNow } from "./shared";
 
 import { basename } from "@/platform/project";
 import { editorService } from "@/workbench/contributions";
@@ -251,13 +251,22 @@ export const ToolEntry = memo(function ToolEntry({
   const live = liveTool(entry);
   const took = toolDuration(entry);
   const run = entry.kind === "execute" ? toolRun(entry) : null;
-  const title = shortTitle(task, entry.title || entry.kind);
+  // Commands lose the `cd <dir> &&` agents start them with; another folder shows as a tag.
+  const { title, dir } =
+    entry.kind === "execute"
+      ? commandTitle(task, entry.title || entry.kind)
+      : { title: shortTitle(task, entry.title || entry.kind), dir: null };
   // A title that already names the file ("Read pom.xml") needs no second link to it.
   const links =
     entry.kind === "execute" ? [] : entry.locations.slice(0, 3).filter((path) => !title.includes(basename(path)));
   const head = (
     <>
       <Icon name={TOOL_ICONS[entry.kind] ?? "run"} size={14} className={styles.toolKindIcon} />
+      {dir && (
+        <span className={styles.toolDir} title={dir}>
+          {basename(dir)}
+        </span>
+      )}
       <span className={styles.toolTitle} title={entry.title || entry.kind}>
         {title}
       </span>

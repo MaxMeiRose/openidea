@@ -15,7 +15,7 @@ function run(codes: string[], input = "", python = PYTHON!) {
   // -I -S: no site-packages, so the plain-Python path even where IPython is installed.
   const flags = python === PYTHON ? ["-I", "-S", "-u"] : ["-u"];
   const result = spawnSync(python, [...flags, DRIVER], { input: stdin, encoding: "utf8" });
-  return { ...stdoutParser()(result.stdout), stderr: result.stderr, status: result.status };
+  return { ...stdoutParser()(result.stdout.replaceAll("\r\n", "\n")), stderr: result.stderr, status: result.status };
 }
 
 const variables = (messages: ConsoleMessage[]) =>

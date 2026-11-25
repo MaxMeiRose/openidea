@@ -8864,8 +8864,6 @@
   "This module has Kotlin sources, so debugging it needs the Kotlin debugger (kotlin-debug-adapter).": "Этот модуль содержит исходный код Kotlin, поэтому для его отладки требуется отладчик Kotlin (kotlin-debug-adapter).",
   "Implements {names}": "Реализует {names}",
   "Choose Implemented Interface of {name} ({count} found)": "Выберите реализуемый интерфейс для {name} (найдено: {count})",
-  "Search tasks": "Поиск задач",
-  "No matching tasks": "Подходящие задачи не найдены",
   "Move to Editor": "Переместить в редактор",
   "Moves a terminal tab, with its running session, into the editor area (arg: tab id).": "Перемещает вкладку терминала с запущенной сессией в область редактора (арг.: id вкладки).",
   "Starts a login shell where the session was.": "Запускает оболочку входа (login shell) на месте прежней сессии.",

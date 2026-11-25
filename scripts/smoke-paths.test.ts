@@ -18,20 +18,29 @@ import {
 } from "./smoke-paths.ts";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const workflowTest = it.runIf(process.platform === "linux");
 
 describe("the Language smoke workflow", () => {
   const workflow = readWorkflow(repo);
 
-  it("runs every language when a file the frontend smoke loads changes", async () => {
-    const { files, problems } = await smokeInputs(repo, workflow);
-    expect(problems).toEqual([]);
-    expect(describeUnselected(await unselected(workflow, [...files.keys()]), files)).toBe("");
-  }, 20000);
+  workflowTest(
+    "runs every language when a file the frontend smoke loads changes",
+    async () => {
+      const { files, problems } = await smokeInputs(repo, workflow);
+      expect(problems).toEqual([]);
+      expect(describeUnselected(await unselected(workflow, [...files.keys()]), files)).toBe("");
+    },
+    20000,
+  );
 
-  it("runs every language when a crate the smoke runs changes", async () => {
-    const crates = rustSmokeInputs(repo);
-    expect(describeUnselected(await unselected(workflow, [...crates.keys()]), crates)).toBe("");
-  }, 20000);
+  workflowTest(
+    "runs every language when a crate the smoke runs changes",
+    async () => {
+      const crates = rustSmokeInputs(repo);
+      expect(describeUnselected(await unselected(workflow, [...crates.keys()]), crates)).toBe("");
+    },
+    20000,
+  );
 });
 
 const dirs: string[] = [];
@@ -159,7 +168,7 @@ describe("the Changes step", () => {
     jobs: { changes: { steps: [{ id: "classify", run: step(arms) }] } },
   });
 
-  it("is run as written, with grep -E", async () => {
+  workflowTest("is run as written, with grep -E", async () => {
     expect(await selectedLanguages(workflow(), ["src/app.ts", "src/app2.ts", "src/only-a.ts"])).toEqual(
       new Map([
         ["src/app.ts", ["a", "b"]],
@@ -169,7 +178,7 @@ describe("the Changes step", () => {
     );
   });
 
-  it("decides with the path filters which paths could skip a language", async () => {
+  workflowTest("decides with the path filters which paths could skip a language", async () => {
     const reasons = await unselected(workflow(), [
       "src/app.ts",
       "src/app2.ts",
@@ -187,7 +196,7 @@ describe("the Changes step", () => {
     );
   });
 
-  it("fails when a case arm sends a path elsewhere than its patterns say", async () => {
+  workflowTest("fails when a case arm sends a path elsewhere than its patterns say", async () => {
     await expect(unselected(workflow("src/app.ts) ;;"), ["src/app.ts"])).rejects.toThrow(
       /for src\/app\.ts the Changes step runs no language/,
     );

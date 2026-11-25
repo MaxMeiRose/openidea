@@ -253,7 +253,12 @@ describe("contributed before-commit checks", () => {
     const check = vi.fn().mockReturnValue({ severity: "error", text: "Review this file." });
     disposers.push(registerCommitCheck({ id: "test.review", title: "Review", run: check }));
     await checkCommitChanges();
-    useCommit.setState({ checks: new Map([["/p/a.ts", "none"]]) });
+    useCommit.setState({
+      checks: new Map([
+        ["/p/a.ts", "none"],
+        ["/p/b.ts", "all"],
+      ]),
+    });
     expect(useCommit.getState().checkResult).toMatchObject({ stale: true, problems: [{ title: "Review" }] });
 
     expect(await commitChanges()).toBeUndefined();
@@ -271,6 +276,9 @@ describe("contributed before-commit checks", () => {
       heads,
       status: [files[0]!, { ...files[1]!, path: worker + "/b.ts" }],
     });
+    useCommit.setState((state) => ({
+      checks: new Map(state.checks).set(worker + "/b.ts", "all"),
+    }));
     useCommit.setState({ checkResult: { blocked: true, problems: [{ title: "Review", text: "Review first." }] } });
 
     useVcs.setState({ heads: { ...heads } });

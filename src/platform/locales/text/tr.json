@@ -1883,8 +1883,6 @@
   "This module has Kotlin sources, so debugging it needs the Kotlin debugger (kotlin-debug-adapter).": "Bu modülde Kotlin kaynakları var; hata ayıklama için Kotlin hata ayıklayıcısı (kotlin-debug-adapter) gerekiyor.",
   "Implements {names}": "{names} öğelerini uygular",
   "Choose Implemented Interface of {name} ({count} found)": "{name} Tarafından Uygulanan Arayüzü Seç ({count} bulundu)",
-  "Search tasks": "Görevleri ara",
-  "No matching tasks": "Eşleşen görev bulunamadı",
   "Move to Editor": "Düzenleyiciye Taşı",
   "Moves a terminal tab, with its running session, into the editor area (arg: tab id).": "Terminal sekmesini çalışan oturumuyla birlikte düzenleyici alanına taşır (argüman: sekme kimliği).",
   "Starts a login shell where the session was.": "Oturumun bulunduğu konumda oturum açma kabuğu başlatır.",

@@ -61,11 +61,11 @@ it("fetches only the selected repository from the project menu and retains the g
 
 it("shows and loads the selected repository in the push dialog", async () => {
   vi.spyOn(vcsStore, "refreshNow").mockResolvedValue(undefined);
-  const remote = vi.spyOn(ops, "runRemote").mockResolvedValue(true);
+  const remote = vi.spyOn(ops, "runRemoteRound").mockResolvedValue([]);
   render(<VcsDialogHost />);
   await act(async () => showPushDialog({ repo: "/p/front" }));
   expect(await screen.findByRole("dialog", { name: "Push Commits to front" })).toBeInTheDocument();
-  await screen.findByRole("textbox", { name: "Target branch of front" });
+  await screen.findByRole("combobox", { name: "Target branch of front" });
   expect(mocks.branch.mock.calls.map(([repo]) => repo)).toEqual(["/p/front"]);
   await waitFor(() => expect(mocks.remotes).toHaveBeenCalledWith("/p/front"));
   expect(mocks.log).toHaveBeenCalledWith("/p/front", expect.anything());
@@ -73,10 +73,9 @@ it("shows and loads the selected repository in the push dialog", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Push" }));
   await waitFor(() =>
     expect(remote).toHaveBeenCalledWith(
-      expect.objectContaining({ op: "push" }),
+      [expect.objectContaining({ repo: "/p/front", op: expect.objectContaining({ op: "pushSelected" }) })],
       expect.any(String),
-      ["/p/front"],
-      expect.any(Function),
+      expect.any(Object),
     ),
   );
 });

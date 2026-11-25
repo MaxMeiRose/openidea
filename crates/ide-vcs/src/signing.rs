@@ -73,6 +73,7 @@ impl Repo {
         let mut original = std::fs::File::open(&config)?;
         let mut staged = tempfile::NamedTempFile::new_in(config.parent().expect("repository config directory"))?;
         io::copy(&mut original, &mut staged)?;
+        let staged = staged.into_temp_path();
         let enabled = edit.enabled.map(|enabled| if enabled { "true" } else { "false" });
         for (name, value) in [("commit.gpgsign", enabled), ("user.signingkey", edit.key.as_deref())] {
             if let Some(value) = value {
@@ -81,7 +82,7 @@ impl Repo {
                     &[
                         "config",
                         "--file",
-                        staged.path().to_str().ok_or_else(|| IdeError::invalid("non-UTF-8 Git config path"))?,
+                        staged.to_str().ok_or_else(|| IdeError::invalid("non-UTF-8 Git config path"))?,
                         "--replace-all",
                         "--",
                         name,
@@ -92,7 +93,7 @@ impl Repo {
             }
         }
         // Git's config writer replaces the staging file, so reopen its final path.
-        let mut updated = std::fs::File::open(staged.path())?;
+        let mut updated = std::fs::File::open(&staged)?;
         lock.with_mut(|file| {
             io::copy(&mut updated, file)?;
             file.set_permissions(original.metadata()?.permissions())

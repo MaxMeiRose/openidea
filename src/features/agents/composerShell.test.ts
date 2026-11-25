@@ -24,6 +24,7 @@ vi.mock("@/platform/ipc", async (original) => ({
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
   editorService: () => ({ openInput: vi.fn(), closeInput: async () => true, openTabs: () => [] }),
+  toolWindowService: () => ({ show: vi.fn() }),
 }));
 
 const ok = { status: "ok" as const, data: null };

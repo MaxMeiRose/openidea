@@ -35,7 +35,7 @@ import {
 } from "./operations";
 import { canDownload } from "./download";
 import { isSameOrInside } from "./paths";
-import { repositoriesForSelection, scopeRepositoryActions } from "./gitContextMenu";
+import { repositoriesForSelection, repositoryAction, scopeRepositoryActions } from "./gitContextMenu";
 import { useVcs } from "@/features/vcs/store";
 import { useProjectTree } from "./store";
 import { tx, txPart } from "@/platform/i18n";
@@ -392,6 +392,7 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
             }),
             repos,
           ),
+          repositoryAction("vcs.showLog", "Show Git Log", repos),
         ],
         "branch",
       ),

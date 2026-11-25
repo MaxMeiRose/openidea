@@ -1656,6 +1656,47 @@ async fn shutdown_writes_the_saves_still_waiting_and_a_delete_drops_them() {
     assert_eq!(saved_title(&kept_path).as_deref(), Some("renamed"));
 }
 
+/// Closing a project with many restored/archived tasks must not rewrite tasks that never changed.
+#[tokio::test]
+async fn shutdown_skips_rewriting_untouched_restored_tasks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let untouched = idle_task(&mgr, "untouched").await;
+    let archived = idle_task(&mgr, "archived").await;
+    mgr.archive(&archived.id).unwrap();
+    let dirty = idle_task(&mgr, "dirty").await;
+    mgr.shutdown();
+
+    let (untouched_path, archived_path, dirty_path) =
+        (task_file(tmp.path(), &untouched.id), task_file(tmp.path(), &archived.id), task_file(tmp.path(), &dirty.id));
+    let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let before_untouched = FILE_WRITES.lock().get(&untouched_path).copied().unwrap_or(0);
+    let before_archived = FILE_WRITES.lock().get(&archived_path).copied().unwrap_or(0);
+    let before_dirty = FILE_WRITES.lock().get(&dirty_path).copied().unwrap_or(0);
+
+    let dirty_handle = restored.task(&dirty.id).unwrap();
+    dirty_handle.state.lock().task.title = "updated".into();
+    dirty_handle.persist_soon();
+
+    restored.shutdown();
+
+    assert_eq!(
+        FILE_WRITES.lock().get(&untouched_path).copied().unwrap_or(0),
+        before_untouched,
+        "untouched task should not be rewritten on shutdown"
+    );
+    assert_eq!(
+        FILE_WRITES.lock().get(&archived_path).copied().unwrap_or(0),
+        before_archived,
+        "archived task should not be rewritten on shutdown"
+    );
+    assert!(
+        FILE_WRITES.lock().get(&dirty_path).copied().unwrap_or(0) > before_dirty,
+        "pending persist_soon task must still be flushed on shutdown"
+    );
+    assert_eq!(saved_title(&dirty_path).as_deref(), Some("updated"));
+}
+
 /// Archiving saves the task as it is, including changes nobody asked to be saved.
 #[tokio::test]
 async fn archiving_saves_the_task_before_it_returns() {
@@ -4147,6 +4188,7 @@ fn a_running_tools_output_is_sent_as_appends() {
     let call = |status, output: Option<&str>| AgentEntry::Tool {
         id: "t1".into(),
         title: "cargo build".into(),
+        name: None,
         kind: "execute".into(),
         status,
         locations: Vec::new(),
@@ -4366,15 +4408,16 @@ async fn claude_configuration_is_available_before_a_task_and_does_not_create_one
     let tmp = tempfile::tempdir().unwrap();
     let agent = Arc::new(FakeAgent::default());
     let mgr = manager_at(tmp.path(), &tmp.path().join("models.json"), agent.clone());
+    let catalog = mgr.providers().into_iter().find(|p| p.id == "claude").unwrap().config;
     let config = mgr.configuration("claude", None, None).await.unwrap();
     assert_eq!(config[0].current.as_deref(), Some("big"));
-    assert_eq!(mgr.providers().into_iter().find(|p| p.id == "claude").unwrap().config, config);
+    assert_eq!(mgr.providers().into_iter().find(|p| p.id == "claude").unwrap().config, catalog);
     let specific = mgr.configuration("claude", Some("small"), None).await.unwrap();
     assert_eq!(specific[0].current.as_deref(), Some("small"));
     assert_eq!(
         mgr.providers().into_iter().find(|p| p.id == "claude").unwrap().config,
-        config,
-        "model-specific discovery keeps the default cache"
+        catalog,
+        "configuration discovery keeps the model catalog"
     );
     assert!(mgr.tasks.read().is_empty());
     assert!(!agent.calls.lock().iter().any(|m| m == "session/new" || m == "session/prompt"));
@@ -4385,7 +4428,6 @@ async fn claude_configuration_is_available_before_a_task_and_does_not_create_one
 async fn claude_restored_task_recovers_missing_choices_without_prompting() {
     let tmp = tempfile::tempdir().unwrap();
     let agent = Arc::new(FakeAgent::default());
-    agent.model_options.lock().insert("small".into(), effort_options(&["minimal"], "minimal"));
     let mgr = manager(tmp.path(), agent);
     let task = mgr
         .create(NewAgentTask {
@@ -4394,15 +4436,31 @@ async fn claude_restored_task_recovers_missing_choices_without_prompting() {
             provider: "claude".into(),
             config: vec![],
             mcp_overrides: Default::default(),
+            skill_overrides: Default::default(),
+            idle: false,
             isolation: Isolation::Local,
             base: None,
         })
         .await
         .unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
-    // Populate the model catalog from the live fake session, without an installed Claude CLI.
-    mgr.set_config(&task.id, "model", "small".into()).await.unwrap();
-    mgr.set_config(&task.id, "model", "big".into()).await.unwrap();
+    let config = mgr.task(&task.id).unwrap().state.lock().task.config.clone();
+    let levels = config::options_of(&json!({"configOptions": effort_options(&["minimal"], "minimal")}));
+    {
+        let mut known = mgr.shared.known.lock();
+        known.entry("claude".into()).or_default().catalogs.insert(
+            mgr.shared.root_key(),
+            serde_json::from_value(json!({
+                "fingerprint": "test",
+                "schema": 2,
+                "config": config,
+                "thoughtLevels": {"big": [], "small": levels},
+                "refreshedAtMs": 1
+            }))
+            .unwrap(),
+        );
+        mgr.shared.persist_known(&known);
+    }
     mgr.shutdown();
     let old = mgr.task(&task.id).unwrap();
     old.state.lock().task.config.clear();

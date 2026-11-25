@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEntry } from "@/bindings";
-import { foldedTurns } from "../timeline";
+import { foldedTurns, summarizeWork } from "../timeline";
 import { conversationRows, foldTurnRows, rowEntries, sameRow } from "./conversationRows";
 
 const user = (text: string): AgentEntry => ({
@@ -44,6 +44,29 @@ describe("conversationRows", () => {
     const rows = conversationRows(entries, 0);
     expect(rows.map((row) => row.kind)).toEqual(["entry", "process", "entry"]);
     expect(rows[1]!.kind === "process" ? rows[1]!.entries.length : 0).toBe(7);
+  });
+
+  it("groups shell commands and counts reads, searches and executions by their behavior", () => {
+    const run = (id: string, title: string): AgentEntry => ({
+      ...(tool(id, "execute") as Extract<AgentEntry, { type: "tool" }>),
+      title,
+    });
+    const entries: AgentEntry[] = [
+      user("a"),
+      { type: "thought", text: "look around" },
+      run("c1", "cd /repo && git grep -n foo -- src"),
+      run("c2", "sed -n 1,40p src/a.ts"),
+      { type: "thought", text: "now test" },
+      run("c3", "pnpm test"),
+      run("c4", "git diff --stat"),
+      run("c5", "cat a.ts | head"),
+      agent("done"),
+    ];
+    const rows = conversationRows(entries, 0);
+    expect(rows.map((row) => row.kind)).toEqual(["entry", "process", "entry"]);
+    expect(rows[1]!.kind === "process" ? rows[1]!.entries.map((e) => e.index) : []).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    const work = summarizeWork(rowEntries(rows[1]!));
+    expect([work.search, work.read, work.run]).toEqual([1, 3, 1]);
   });
 
   it("flattens grouped runs inside a folded turn to avoid nested folds", () => {
